@@ -13,6 +13,19 @@ masks, extra LoRAs and a sparse Refiner are rejected or unsupported here.
 Veda was released for an eight-NFE recipe: quality on the original 50-step
 Base must be measured; a faster kernel alone is not a quality pass.
 
+The existing managers, pipeline loops and Refiner chain retain ownership.
+The optional callback replaces only the attention leaf inside Base:
+
+```mermaid
+flowchart LR
+    P[Existing Base attention processor] --> S[Original SP / PHAA]
+    S --> L[Legacy AttnManager]
+    S -->|explicit opt-in| A[Base-local attention adapter]
+    A --> O[Pinned Spark / Veda operators]
+    L --> R[Original SP return and output projection]
+    O --> R
+```
+
 ## Source and optional compilation
 
 Use the Apache-2.0 snapshot preceding the project's noncommercial license
@@ -21,6 +34,9 @@ No vLLM or vLLM-Omni runtime is installed or imported by this integration.
 The existing Torch/TorchNPU/CANN installation must also provide compatible
 Ascend Triton and CMake to compile the optional kernels. Main requirements
 and default imports do not change.
+XGEN owns the Base adapter, PHAA hook, shared-predictor lifetime and metrics;
+the pinned optional checkout supplies Spark and the shared native/Triton
+kernels/configuration. This is not a self-contained vendoring of every kernel.
 
 ```bash
 git clone https://github.com/Huage001/Ascend-H3.git optional/Ascend-H3
@@ -69,6 +85,8 @@ Veda predictor source:
 `Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview`, revision
 `76f202874608115408d73280be9531c4ab888242`, file
 `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`.
+The validated file is 275,415,648 bytes, SHA256
+`2a8d8845c5342756a2781e8e69563940e4bb573c9a40ebb534915ff8fd76573a`.
 FP8 file size is not the predictor's runtime memory footprint. The decoded
 predictor has immutable CPU masters, is shared across layers/head chunks,
 loads to NPU for Base, and offloads before Refiner/VAE. No condition cache or
@@ -79,10 +97,15 @@ request retry is added. Routing is recomputed for every Q/K call.
 Each request writes `<output>.attention.rankN.json`: backend, actual Base
 steps, per-rank global head IDs, predictor load count, and operator/pack/unpack
 spans. Operator spans include prediction and routing; do not call them pure
-attention-kernel time. First-use program/JIT/graph setup is separately marked
-and must not be mistaken for steady-state latency. No silent fallback occurs.
+attention-kernel time. `first_use` marks the first invocation of a head-shard
+program, not every later layer's first JIT specialization. Compare complete
+first-request and subsequent-request times to account for all compilation and
+graph setup; do not infer steady-state latency from a single flagged span.
+No silent fallback occurs.
 After a request error or backend/predictor change, restart the worker. To roll
 back, restart without the new flags or with `--h3_attention legacy`.
+Also restore the deployment's original task-queue environment if it was
+changed for Spark; selecting `legacy` does not rewrite process environment.
 
 Qualification requires frozen inputs and separate numerical and performance
 runs: compare the adapter against pinned upstream math on identical Q/K/V
@@ -94,5 +117,19 @@ Full decoding and same-time screenshots are required; screenshots alone do
 not establish temporal/audio quality. Repeated Laser controls establish the
 existing nondeterminism floor before attributing output differences.
 
-Validated numerical tolerances, hardware scope, memory increments, timing
-tables, screenshots and failures are recorded only after actual execution.
+The CPU contract tests require the repository's `origin/v0.1` and `origin/v0.2`
+baseline refs. Run them from the repository root; the NPU operator checker
+additionally requires the optional compiled dependencies above:
+
+```bash
+python x_diffusers/tests/test_h3_refiner_opt_in.py
+python x_diffusers/tests/test_h3_attention_contract.py
+TASK_QUEUE_ENABLE=1 python tools/check_h3_attention.py \
+  --backend spark --output verification/spark-operator.json
+TASK_QUEUE_ENABLE=1 python tools/check_h3_attention.py \
+  --backend veda --predictor weights/veda/predictor.safetensors \
+  --output verification/veda-operator.json
+```
+
+See [the 50-step qualification results](H3-ATTENTION-VALIDATION.md) for actual
+hardware scope, timings, memory observations and the limits of quality review.

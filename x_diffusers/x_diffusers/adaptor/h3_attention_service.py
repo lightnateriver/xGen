@@ -8,6 +8,11 @@ def apply_startup_settings(config, args, argv):
             config[name]=getattr(args,name)
 
 
+def validate_warmup(config, enabled):
+    if enabled and config.get('h3_attention','legacy')!='legacy':
+        raise ValueError('Sparse H3 attention requires a full 50-step first request, not reduced-step warmup')
+
+
 def validate_request(config, data, errors):
     for name in ('h3_attention','h3_veda_predictor'):
         if name in data:
@@ -16,7 +21,8 @@ def validate_request(config, data, errors):
         errors.append('Initial sparse H3 attention requires duration=5')
     if data.get('task_type',config.get('task_type','t2va'))!='t2va':
         errors.append('Initial sparse H3 attention requires t2va')
-    if data.get('num_inference_steps',config.get('num_inference_steps',51))!=51:
+    steps=data.get('num_inference_steps',config.get('num_inference_steps',51))
+    if type(steps) is not int or steps!=51:
         errors.append('Initial sparse H3 attention requires 51 schedule points / 50 actual steps')
     resolution='2k' if config.get('h3_refiner',False) else '768p'
     if data.get('resolution',resolution)!=resolution or data.get('aspect_ratio','16:9')!='16:9':

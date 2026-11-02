@@ -65,7 +65,10 @@ class ContractTests(unittest.TestCase):
                         dict(frames=243),dict(width=2560,height=1440),dict(cache_dit=True),
                         dict(h3_refiner=True,h3_refiner_seconds=10,width=2560,height=1440),
                         dict(keyframe_image='image.png'),dict(reference_paths=['r.png']),
-                        dict(lora_path_list=['lora.safetensors']),dict(h3_attention='unknown')]:
+                        dict(lora_path_list=['lora.safetensors']),dict(h3_attention='unknown'),
+                        dict(num_inference_steps=51.0),dict(sp=8.0),dict(frames=124.0),
+                        dict(width=1344.0),dict(height=768.0),dict(save_fps=24.0),
+                        dict(h3_refiner=True,h3_refiner_seconds=5.0,width=2560,height=1440)]:
             with self.subTest(changes=changes),self.assertRaises(ValueError):contract.validate(args(**changes))
 
     def test_predictor_required_only_for_veda(self):
@@ -79,7 +82,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(config['h3_attention'],'veda')
         for data in [dict(h3_attention='spark'),dict(h3_veda_predictor='elsewhere'),dict(duration=10),
                      dict(duration=True),dict(task_type='ref2va'),dict(resolution='2k'),dict(num_inference_steps=21),
-                     dict(first_frame='image.png'),dict(attention_sparse=True)]:
+                     dict(first_frame='image.png'),dict(attention_sparse=True),dict(num_inference_steps=51.0)]:
             errors=[];service.validate_request(config,data,errors)
             self.assertTrue(errors,data)
 
@@ -92,12 +95,21 @@ class ContractTests(unittest.TestCase):
         spec=service.parameter_spec(config)
         self.assertEqual(spec['parameters']['duration']['allowed_values'],[5])
 
+    def test_explicit_legacy_rollback_restores_original_warmup(self):
+        config=dict(h3_attention='veda')
+        service.apply_startup_settings(config,args(h3_attention='legacy'),['--h3_attention','legacy'])
+        self.assertEqual(config['h3_attention'],'legacy')
+        service.validate_warmup(config,True)
+        with self.assertRaisesRegex(ValueError,'50-step'):
+            service.validate_warmup(dict(h3_attention='spark'),True)
+        service.validate_warmup(dict(h3_attention='spark'),False)
+
     def test_v03_does_not_modify_refiner_loop_or_legacy_codecs(self):
         for name in ['x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py',
                      'x_diffusers/x_diffusers/framework/vae/minimax_h3.py',
                      'x_diffusers/x_diffusers/framework/vae/h3_refiner_output.py',
                      'x_base/x_base/vae_parallelism/save_av_stream.py']:
-            old=subprocess.check_output(['git','show','v0.2:'+name],cwd=ROOT)
+            old=subprocess.check_output(['git','show','origin/v0.2:'+name],cwd=ROOT)
             self.assertEqual(old,(ROOT/name).read_bytes(),name)
 
     def test_vendored_veda_accepts_shared_bundle_without_vllm_dependency(self):

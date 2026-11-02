@@ -3279,10 +3279,10 @@ def main():
     
     _apply_service_config(service, args, rank)
     if args.h3_attention != 'legacy' or service.default_config.get('h3_attention', 'legacy') != 'legacy':
-        from x_diffusers.adaptor.h3_attention_service import apply_startup_settings as apply_sparse_settings
+        from x_diffusers.adaptor.h3_attention_service import (
+            apply_startup_settings as apply_sparse_settings, validate_warmup as validate_sparse_warmup)
         apply_sparse_settings(service.default_config, args, sys.argv[1:])
-        if args.warmup:
-            raise ValueError('Sparse H3 attention requires a full 50-step first request, not reduced-step warmup')
+        validate_sparse_warmup(service.default_config, args.warmup)
 
     if args.h3_refiner:
         from x_diffusers.adaptor.h3_refiner_service import apply_startup_settings

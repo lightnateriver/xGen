@@ -17,6 +17,9 @@ def validate(args):
         raise ValueError('Unknown H3 attention backend')
     if args.h3_attention == 'spark' and os.environ.get('TASK_QUEUE_ENABLE') not in ('0', '1'):
         raise ValueError('Spark NPU graph capture requires TASK_QUEUE_ENABLE=1 (or 0) before process startup')
+    if any(type(getattr(args, field)) is not int for field in
+           ('sp', 'num_inference_steps', 'frames', 'width', 'height', 'save_fps')):
+        raise ValueError('Sparse H3 parallelism, schedule and video dimensions must be integers')
     if args.model != 'MiniMax-H3' or args.task_type != 't2va':
         raise ValueError('Experimental H3 attention initially supports T2VA only')
     if args.dtype != 'bf16' or args.atten != 'laser' or args.sp != 8:
@@ -26,7 +29,7 @@ def validate(args):
     expected = (2560, 1440) if getattr(args, 'h3_refiner', False) else (1344, 768)
     if (args.width, args.height) != expected or args.save_fps != 24:
         raise ValueError('Use 5s landscape 768P, or the existing 2K Refiner chain, at 24fps')
-    if getattr(args, 'h3_refiner', False) and args.h3_refiner_seconds != 5:
+    if getattr(args, 'h3_refiner', False) and (type(args.h3_refiner_seconds) is not int or args.h3_refiner_seconds != 5):
         raise ValueError('Initial H3 attention supports five seconds only')
     if any(getattr(args, key, None) for key in ('keyframe_image', 'keyframe_last_image', 'reference_paths',
                                                'h3_turbo_sla_lora', 'lora_path_list', 'cache_dit')):

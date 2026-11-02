@@ -1,0 +1,36 @@
+# ============================================================
+# ComfyUI 专用量化配置 — MiniMax-H3
+#
+# ComfyUI 的 MiniMaxH3Model (comfy.ldm.minimax.model) 属性名
+# 与 diffusers 不同，需要独立的 pattern。
+#
+# 显式 float32 的层（必须跳过，npu_dynamic_quant 不支持 fp32）:
+#   - video_patch_proj   (输入投影)
+#   - audio_patch_proj   (输入投影)
+#   - video_out          (final_layer 输出头)
+#   - audio_out          (final_layer 输出头)
+#   - time_embedder      (时间嵌入)
+#   - adaln_proj         (use_adaln_curves=True 时为 float32)
+# ============================================================
+
+include_patterns: null
+exclude_patterns:
+  - "video_patch_proj"     # float32 — 输入投影
+  - "audio_patch_proj"     # float32 — 输入投影
+  - "video_out"            # float32 — final_layer 输出头
+  - "audio_out"            # float32 — final_layer 输出头
+  - "time_embedder"        # float32 — 时间嵌入
+  - "adaln_proj"           # float32 — use_adaln_curves=True 时
+  - "token_refiner"        # 精度敏感
+  - "condition_proj"       # 条件投影
+  - "rope"                 # RoPE
+  - "lora"
+layer_types:
+  - "Linear"
+int8_patterns: null        # 全量化（排除上面的黑名单）
+int4_patterns: []
+mxfp4_patterns:
+  - "*blocks*to_q*"
+  - "*blocks*to_k*"
+  - "*blocks*to_v*"
+  - "*blocks*to_out*"

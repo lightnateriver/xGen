@@ -1,0 +1,63 @@
+diff --git a/nodes.py b/nodes.py
+index 8e265dc..3eb462b 100644
+--- a/nodes.py
++++ b/nodes.py
+@@ -1937,7 +1937,6 @@ class WanVideoDecode:
+     CATEGORY = "WanVideoWrapper"
+ 
+     def decode(self, vae, samples, enable_vae_tiling, tile_x, tile_y, tile_stride_x, tile_stride_y, normalization="default"):
+-        mm.soft_empty_cache()
+         video = samples.get("video", None)
+         if video is not None:
+             video.clamp_(-1.0, 1.0)
+@@ -1953,8 +1952,6 @@ class WanVideoDecode:
+ 
+         latents = latents.to(device = device, dtype = vae.dtype)
+ 
+-        mm.soft_empty_cache()
+-
+         if has_ref:
+             latents = latents[:, :, 1:]
+         if drop_last:
+@@ -1989,10 +1986,6 @@ class WanVideoDecode:
+         if end_image is not None: 
+             images = images[:, 0:-1]
+ 
+-        
+-        vae.to(offload_device)
+-        mm.soft_empty_cache()
+-
+         images.clamp_(0.0, 1.0)
+ 
+         return (images.permute(1, 2, 3, 0),)
+diff --git a/wanvideo/wan_video_vae.py b/wanvideo/wan_video_vae.py
+index a4df70c..0a6f00b 100644
+--- a/wanvideo/wan_video_vae.py
++++ b/wanvideo/wan_video_vae.py
+@@ -5,7 +5,8 @@ import torch.nn as nn
+ import torch.nn.functional as F
+ from tqdm import tqdm
+ from comfy.utils import ProgressBar
+-
++import torch.distributed as dist
++from ..comfyui_ascendx.modules.vae_decode_multi import spatial_tiled_decode
+ CACHE_T = 2
+ 
+ 
+@@ -1325,7 +1326,15 @@ class WanVideoVAE(nn.Module):
+                 if end_:
+                     video = self.double_decode(hidden_state, device)
+                 else:
+-                    video = self.single_decode(hidden_state, device, pbar=pbar)
++                    if not dist.is_initialized():
++                        world_size = 1
++                    else:
++                        world_size = dist.get_world_size()
++                    if world_size == 1:
++                        video = self.single_decode(hidden_state, device, pbar=pbar)
++                    else:
++                        decoder_wrapper = self.single_decode
++                        video = spatial_tiled_decode(hidden_state, device, decoder_wrapper, pbar = True)
+             video = video.squeeze(0)
+             videos.append(video)
+         return videos

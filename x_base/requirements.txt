@@ -1,0 +1,4 @@
+torch
+transformers
+pyyaml
+mindiesd==3.1.0

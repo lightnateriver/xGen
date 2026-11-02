@@ -1,0 +1,100 @@
+diff --git a/nodes_model_loading.py b/nodes_model_loading.py
+index 684c275..60c9bbd 100644
+--- a/nodes_model_loading.py
++++ b/nodes_model_loading.py
+@@ -1,5 +1,7 @@
+ import torch
+ import torch.nn as nn
++import torch_npu
++from torch_npu.contrib import transfer_to_npu
+ import os, gc, uuid
+ from .utils import log, apply_lora
+ import numpy as np
+@@ -24,6 +26,8 @@ try:
+     from gguf import GGMLQuantizationType
+ except:
+     pass
++from .comfyui_ascendx.nodes_model_loading import NPUWanVideoModelLoader
++from .comfyui_ascendx.modules.quant import enable_weight_quant_linear
+ 
+ script_directory = os.path.dirname(os.path.abspath(__file__))
+ 
+@@ -1019,13 +1023,13 @@ class WanVideoModelLoader:
+         mm.unload_all_models()
+         mm.cleanup_models()
+         mm.soft_empty_cache()
+-
++        '''
+         if "sage" in attention_mode:
+             try:
+                 from sageattention import sageattn
+             except Exception as e:
+                 raise ValueError(f"Can't import SageAttention: {str(e)}")
+-
++        '''
+         gguf = False
+         if model.endswith(".gguf"):
+             if quantization != "disabled":
+@@ -1086,14 +1090,14 @@ class WanVideoModelLoader:
+                         if "scaled_fp8" in sd:
+                             quantization = "fp8_e5m2_scaled"
+                         break
+-        
++        '''
+         if torch.cuda.is_available():
+             #only warning for now
+             major, minor = torch.cuda.get_device_capability(device)
+             log.info(f"CUDA Compute Capability: {major}.{minor}")
+             if compile_args is not None and "e4" in quantization and (major, minor) < (8, 9):
+                 log.warning("WARNING: Torch.compile with fp8_e4m3fn weights on CUDA compute capability < 8.9 is not supported. Please use fp8_e5m2, GGUF or higher precision instead.")
+-
++        '''
+         if "scaled_fp8" in sd and "scaled" not in quantization:
+             raise ValueError("The model is a scaled fp8 model, please set quantization to '_scaled'")
+ 
+@@ -1224,6 +1228,9 @@ class WanVideoModelLoader:
+         if dim == 3072:
+             log.info(f"5B model detected, no Teacache or MagCache coefficients available, consider using EasyCache for this model")
+         log.info(f"Model variant detected: {model_variant}")
++
++        if "sage" in attention_mode and base_dtype != torch.bfloat16:
++            base_dtype = torch.bfloat16
+         
+         TRANSFORMER_CONFIG= {
+             "dim": dim,
+@@ -1427,6 +1434,9 @@ class WanVideoModelLoader:
+             from .fp8_optimization import convert_fp8_linear
+             convert_fp8_linear(transformer, base_dtype, params_to_keep, scale_weight_keys=scale_weights)
+ 
++        if "w8a8" in quantization:
++            transformer = enable_weight_quant_linear(transformer)
++
+         if vram_management_args is not None:
+             if gguf:
+                 raise ValueError("GGUF models don't support vram management")
+@@ -1498,8 +1508,24 @@ class WanVideoModelLoader:
+         for model in mm.current_loaded_models:
+             if model._model() == patcher:
+                 mm.current_loaded_models.remove(model)
++
++        wan_fsdp_enable = os.getenv('WAN_FSDP_ENABLE')
++        if wan_fsdp_enable and wan_fsdp_enable.lower() == 'true':
++            precision_fsdp = {
++                "bf16": torch.bfloat16,
++                "fp16": torch.float16
++            }
++            from .comfyui_ascendx.modules.fsdp import fsdp
++            patcher.model.diffusion_model.blocks = fsdp(patcher.model.diffusion_model.blocks,
++                torch.npu.current_device(),
++                param_dtype=precision_fsdp[base_precision],
++                reduce_dtype=precision_fsdp[base_precision],
++                buffer_dtype=precision_fsdp[base_precision])
+         return (patcher,)
+-    
++
++
++WanVideoModelLoader.INPUT_TYPES = NPUWanVideoModelLoader.INPUT_TYPES
++
+ # class WanVideoSaveModel:
+ #     @classmethod
+ #     def INPUT_TYPES(s):

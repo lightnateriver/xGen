@@ -1,0 +1,61 @@
+0. 准备
+从对外发布的包里面找到并安装
+pip install ascendx_video-0.1.0-py3-none-any.whl
+
+从对外发布的包里面找到并安装 cann ops
+source /path/to/user-home/operate/AscendTurbo/set_env.bash
+source /path/to/user-home/operate/vendors/customize/bin/set_env.bash
+source /path/to/user-home/operate/vendors/customize_cloud/bin/set_env.bash
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/path/to/user-home/anaconda3/envs/PyTorch-2.5.1/lib/python3.11/site-packages/torch_npu/lib:/path/to/user-home/anaconda3/envs/PyTorch-2.5.1/lib/python3.11/site-packages/torch/lib/
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+1. 下载ComfyUI-WanVideoWrapper 节点，指定版本
+git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git
+git reset --hard 37365817e82c3d6057fcb0a5d7f952f7376f096a
+
+2. 将代码目录custom_nodes/ComfyUI-WanVideoWrapper/comfyui_ascendx放在comfui原生代码custom_nodes/ComfyUI-WanVideoWrapper目录下
+
+3. 在comfyui_ascendx目录下执行patch_apply.sh
+
+4. 修复多卡场景下视频保存bug
+cd custom_nodes
+git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
+cd ComfyUI-VideoHelperSuite/
+git checkout 6e7f63867584bb1fb4944d36172e7f98436da9a1
+pip install -r requirements.txt
+将代码目录custom_nodes/ComfyUI-VideoHelperSuite/video_save_adaptor.patch 放在comfui原生代码custom_nodes/ComfyUI-VideoHelperSuite目录下
+git apply video_save_adaptor.patch
+
+5. 安装mindie(可选：支持lazer atten)
+下载：https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann&ie=2.1.RC1&pt=7.1.0&cann=8.2.RC1
+安装：./Ascend-mindie_2.0.RC2_linux-aarch64.run --install
+source /usr/local/Ascend/mindie/set_env.sh
+source /usr/local/Ascend/nnal/atb/set_env.sh
+source /usr/local/Ascend/nnal/asdsip/set_env.sh
+source /path/to/user-home/operate/AscendTurbo/set_env.bash
+source /path/to/user-home/operate/vendors/customize/bin/set_env.bash
+source /usr/local/Ascend/mindie/set_env.sh
+注意：mindie需要torch 2.1.0的基础镜像
+
+6. 启动comfyui
+单卡启动：
+python main.py --port 8080 --listen 0.0.0.0
+
+多卡启动：
+将main_multi.py拷贝到comfyui目录下
+执行 torchrun --nproc_per_node=2 --master_addr 127.0.0.1 --master_port 29505  main_multi.py --port 8080 --listen 0.0.0.0
+
+7. 通过设置变量开启FSDP：export WAN_FSDP_ENABLE=true
+8. 通过设置变量开启通算并行：export PHAA_ENABLE=true
+
+*************************************
+目前实现的功能：
+1. w8a8线性层量化
+2. sage attention
+3. sp
+4. laser attention(可选)
+5. vae并行能力
+6. FSDP
+7. 通算并行
+
+

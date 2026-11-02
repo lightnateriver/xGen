@@ -171,7 +171,10 @@ class AscendMiniMaxH3AttnProcessor:
         value = value.transpose(1, 2)
 
 
-        if getattr(attn, "_h3_turbo_sla", False):
+        if getattr(attn, '_h3_attention_backend', None) is not None:
+            hidden_states = attn._h3_attention_backend(
+                query, key, value, attn_mask=attention_mask)
+        elif getattr(attn, "_h3_turbo_sla", False):
             from x_base.operator.h3_sla import sparse_attention
             # A full real sequence is published by the transformer before SP
             # adds tail padding. Text-refiner attention is never SP-sharded.
@@ -238,6 +241,7 @@ class AscendMiniMaxH3AttnProcessor:
             rotary_emb=rotary_emb,
             attention_mask=attention_mask,
             pad_key="mmh3_seq",
+            attention_fn=getattr(attn, '_h3_attention_backend', None),
         )
 
         hidden_states = attn.to_out[0](hidden_states)

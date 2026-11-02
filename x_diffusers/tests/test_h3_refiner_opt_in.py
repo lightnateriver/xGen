@@ -128,7 +128,7 @@ class ContractTests(unittest.TestCase):
             old = vars(namespace['parse_args']())
         now = vars(args())
         self.assertEqual(old, {key:now[key] for key in old})
-        self.assertEqual(set(now)-set(old),{'h3_refiner','h3_refiner_weights','h3_refiner_prepared',
+        self.assertEqual(set(now)-set(old),{'h3_attention','h3_veda_predictor','h3_refiner','h3_refiner_weights','h3_refiner_prepared',
                                          'h3_refiner_seconds','h3_refiner_loading'})
 
     def test_exact_native_padding_and_output_counts(self):
@@ -206,22 +206,24 @@ class ContractTests(unittest.TestCase):
 class LegacyBranchNormalizer(ast.NodeTransformer):
     """Specialize only feature gates to their default values; do not erase old logic."""
     def visit_ImportFrom(self,node):
-        if node.module and node.module.endswith(('h3_refiner_config','h3_refiner_service')):
+        if node.module and node.module.endswith(('h3_refiner_config','h3_refiner_service','h3_attention_config')):
             return None
         return self.generic_visit(node)
 
     def visit_Expr(self,node):
-        if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id=='add_arguments':
+        if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id in ('add_arguments','add_h3_attention_arguments'):
             return None
         return self.generic_visit(node)
 
     def visit_Assign(self,node):
-        if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id=='add_arguments':
+        if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id in ('add_arguments','add_h3_attention_arguments'):
             return None
         return self.generic_visit(node)
 
     def visit_If(self,node):
         test=ast.unparse(node.test)
+        if 'h3_attention' in test:
+            return [self.visit(n) for n in node.orelse]
         if ('h3_refiner' in test and not isinstance(node.test,ast.BoolOp)) or "'failed', False" in test:
             return [self.visit(n) for n in node.orelse]
         if test=='frame_callback is None':

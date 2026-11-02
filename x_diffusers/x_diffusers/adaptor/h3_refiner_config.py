@@ -27,7 +27,8 @@ def model_key(args):
     fields = ('model', 'task_type', 'pretrained_model_name_or_path', 'transformer_path',
               'adaln_cache_file', 'num_inference_steps', 'dtype', 'sp', 'text_encoder_tp',
               'matmul_quant', 'vae_matmul_quant', 'atten', 'phaa_num', 'rope_fused',
-              'h3_refiner_weights', 'h3_refiner_prepared', 'h3_refiner_loading')
+              'h3_refiner_weights', 'h3_refiner_prepared', 'h3_refiner_loading',
+              'h3_attention', 'h3_veda_predictor')
     return tuple(getattr(args, name, None) for name in fields)
 
 

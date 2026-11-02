@@ -109,3 +109,8 @@ bash infer_wan2.2_14b_t2v_720p.sh
 `x_base/x_base/infinite_vram/scripts/infer_wan_2.1_14b_t2v_infinite_vram.sh` 在基线中已有引号/编码问题，无法通过 `bash -n`。本分支保留该历史文件作为版本对照；常规启动请使用 `example/diffusers/scripts/` 中对应模型的示例。
 
 部署示例使用相对路径或外部配置。旧版本的绝对占位路径已移植；生产部署请明确配置模型与输出位置。云存储凭据目录由外部 `OBS_CREDENTIAL_DIR` 配置，不能提交凭据。
+# v0.3 attention development
+
+Experimental, default-off Spark-H3/Veda Base attention is described in
+[H3-ATTENTION.md](docs/H3-ATTENTION.md). Qualification is tracked separately
+from v0.2 results; implementation alone does not establish accuracy or speed.

@@ -10,6 +10,8 @@ def parse_args(namespace=None, mode="infer"):
     parser = add_minimax_h3_args(parser)
     from .h3_refiner_config import add_arguments
     parser = add_arguments(parser)
+    from .h3_attention_config import add_arguments as add_h3_attention_arguments
+    parser = add_h3_attention_arguments(parser)
     parser = add_abilities_args(parser)
     if mode == "benchmark":
         parser = add_benchmark_args(parser)

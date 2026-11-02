@@ -522,6 +522,8 @@ class InferenceManager(object):
             enable_rope_cache()
 
         # ModularPipeline returns a dict when ``output=`` is specified.
+        if getattr(args, 'h3_attention', 'legacy') != 'legacy':
+            self.pipe.transformer._h3_attention_session.begin(args)
         result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
 
         videos = result.get("videos")
@@ -870,6 +872,11 @@ class InferenceManager(object):
         return self.infer_batch_from_testdata(args)
 
     def infer(self, args) -> float:
+        if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
+                getattr(self.init_args, 'h3_attention', 'legacy') != 'legacy'):
+            from .h3_attention_config import key
+            if self.init_args is not None and key(self.init_args) != key(args):
+                raise ValueError('Restart the manager to change H3 attention backend or predictor')
         if args.sp not in [1, 2, 4, 8, 16]:
             raise ValueError(f"--sp must be one of [1, 2, 4, 8, 16], got {args.sp}")
 

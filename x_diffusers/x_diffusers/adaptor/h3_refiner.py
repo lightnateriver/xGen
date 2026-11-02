@@ -52,4 +52,6 @@ def infer(manager, args):
     validate_settings(args)
     validate_inputs(args)
     prepare(manager, args)
+    if getattr(args, 'h3_attention', 'legacy') != 'legacy':
+        manager.pipe.transformer._h3_attention_session.begin(args)
     return manager.sr_pipe(args)

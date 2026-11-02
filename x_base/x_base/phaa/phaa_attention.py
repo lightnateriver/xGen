@@ -53,6 +53,7 @@ def run_phaa_attention(
     k_ref=None,                   # (B, heads, S_ref, D) cached reference K for prefix attention
     v_ref=None,                   # (B, heads, S_ref, D) cached reference V for prefix attention
     num_ref_global=0,             # number of ref tokens in the global (post-all2all) sequence
+    attention_fn=None,            # optional model-local operator; receives local head offset
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -177,9 +178,14 @@ def run_phaa_attention(
             key_ = torch.cat([k_ref_chunk, key_], dim=2)
             value_ = torch.cat([v_ref_chunk, value_], dim=2)
 
-        hidden_states_buf[step] = attention_manager.attention(
-            query_, key_, value_, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        ).type_as(query)
+        if attention_fn is None:
+            hidden_states_buf[step] = attention_manager.attention(
+                query_, key_, value_, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            ).type_as(query)
+        else:
+            hidden_states_buf[step] = attention_fn(
+                query_, key_, value_, head_offset=head_offset, attn_mask=attention_mask
+            ).type_as(query)
         if k_ref is not None:
             S_full = hidden_states_buf[step].shape[2] + num_ref_global
             out_full = torch.zeros(

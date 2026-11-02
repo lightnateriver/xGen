@@ -369,6 +369,9 @@ def to_dtype(name: str):
 
 
 def load_pipe(args):
+    if getattr(args, 'h3_attention', 'legacy') != 'legacy':
+        from .h3_attention_config import validate
+        validate(args)
     from .h3_turbo_sla import validate_args
     validate_args(args)
     # 查看是否在自定义pipeline注册
@@ -601,6 +604,9 @@ def update_pipe(pipe, args):
     operator_ability(pipe, args)
     general_ability(pipe, args)
     parallelism_ability(pipe, args)
+    if getattr(args, 'h3_attention', 'legacy') != 'legacy':
+        from ..framework.transformer.h3_attention import install
+        install(pipe.transformer, args)
     return pipe
 
 

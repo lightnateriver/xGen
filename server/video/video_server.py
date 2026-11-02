@@ -362,6 +362,10 @@ class VideoInferenceManager:
         self.current_model = None
 
     def initialize_pipe(self, args):
+        if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
+                getattr(getattr(self, 'init_args', None), 'h3_attention', 'legacy') != 'legacy'):
+            from x_diffusers.adaptor.h3_attention_service import validate_manager
+            validate_manager(self, args)
         if getattr(args, 'h3_refiner', False):
             from x_diffusers.adaptor.h3_refiner import prepare
             return prepare(self, args)
@@ -744,6 +748,8 @@ class VideoInferenceManager:
             output_keys += ["audio", "sampling_rate"]
 
         try:
+            if getattr(args, 'h3_attention', 'legacy') != 'legacy':
+                self.pipe.transformer._h3_attention_session.begin(args)
             result = self.pipe(output=output_keys, **infer_params)
         finally:
             self._mmh3_cleanup(transformer, denoiser_patched, orig_denoiser_call)
@@ -1601,6 +1607,9 @@ class VideoGenerationService:
 
     def _validate_minimax_h3_params(self, data: Dict[str, Any], errors: List[str], warnings: List[str]) -> tuple:
         """Validate parameters for MiniMax-H3 model (t2va/fl2va/ref2va)."""
+        if self.default_config.get('h3_attention', 'legacy') != 'legacy':
+            from x_diffusers.adaptor.h3_attention_service import validate_request as validate_sparse_request
+            validate_sparse_request(self.default_config, data, errors)
         if self.default_config.get('h3_refiner', False):
             from x_diffusers.adaptor.h3_refiner_service import validate_request
             return validate_request(self, data, errors, warnings)
@@ -1947,6 +1956,9 @@ class VideoGenerationService:
     def _setup_config_routes(self):
         @self.app.route('/params', methods=['GET'])
         def get_param_spec():
+            if self.default_config.get('h3_attention', 'legacy') != 'legacy':
+                from x_diffusers.adaptor.h3_attention_service import parameter_spec as sparse_parameter_spec
+                return jsonify(sparse_parameter_spec(self.default_config))
             if self.default_config.get('h3_refiner', False):
                 from x_diffusers.adaptor.h3_refiner_service import parameter_spec
                 return jsonify(parameter_spec(self.default_config))
@@ -2560,6 +2572,9 @@ class VideoGenerationService:
             if self.default_config.get('h3_refiner', False):
                 from x_diffusers.adaptor.h3_refiner_service import configure_args
                 configure_args(self.default_config, data, args)
+            if self.default_config.get('h3_attention', 'legacy') != 'legacy':
+                from x_diffusers.adaptor.h3_attention_service import configure_args as configure_sparse_args
+                configure_sparse_args(self.default_config, data, args)
             return args
 
         # --- Wan2.2 original path ---
@@ -3175,6 +3190,8 @@ def main():
     parser = argparse.ArgumentParser(description="Video Generation Service")
     from x_diffusers.adaptor.h3_refiner_config import add_arguments
     add_arguments(parser)
+    from x_diffusers.adaptor.h3_attention_config import add_arguments as add_h3_attention_arguments
+    add_h3_attention_arguments(parser)
 
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Service host')
     parser.add_argument('--port', type=int, default=5001, help='Service port')
@@ -3261,6 +3278,11 @@ def main():
     service = VideoGenerationService(config_path=args.config)
     
     _apply_service_config(service, args, rank)
+    if args.h3_attention != 'legacy' or service.default_config.get('h3_attention', 'legacy') != 'legacy':
+        from x_diffusers.adaptor.h3_attention_service import apply_startup_settings as apply_sparse_settings
+        apply_sparse_settings(service.default_config, args, sys.argv[1:])
+        if args.warmup:
+            raise ValueError('Sparse H3 attention requires a full 50-step first request, not reduced-step warmup')
 
     if args.h3_refiner:
         from x_diffusers.adaptor.h3_refiner_service import apply_startup_settings

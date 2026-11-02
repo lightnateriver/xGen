@@ -2,12 +2,14 @@
 import argparse
 import ast
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 path=ROOT/'x_diffusers/x_diffusers/adaptor/h3_attention_config.py'
@@ -31,6 +33,16 @@ def args(**changes):
 
 
 class ContractTests(unittest.TestCase):
+    def setUp(self):
+        environment=patch.dict(os.environ,TASK_QUEUE_ENABLE='1')
+        environment.start();self.addCleanup(environment.stop)
+
+    def test_spark_rejects_incompatible_graph_environment_before_loading(self):
+        with patch.dict(os.environ,TASK_QUEUE_ENABLE='2'):
+            with self.assertRaisesRegex(ValueError,'TASK_QUEUE_ENABLE'):
+                contract.validate(args())
+            contract.validate(SimpleNamespace(h3_attention='legacy'))
+
     def test_default_does_not_import_optional_or_torch(self):
         before=set(sys.modules)
         parser=contract.add_arguments(argparse.ArgumentParser())
@@ -88,7 +100,7 @@ class ContractTests(unittest.TestCase):
             old=subprocess.check_output(['git','show','v0.2:'+name],cwd=ROOT)
             self.assertEqual(old,(ROOT/name).read_bytes(),name)
 
-    def test_vendored_veda_math_unchanged_except_bundle_dependency(self):
+    def test_vendored_veda_accepts_shared_bundle_without_vllm_dependency(self):
         source=(ROOT/'x_base/x_base/operator/h3_attention/veda_vendor.py').read_text(encoding='utf-8')
         tree=ast.parse(source)
         init=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='__init__')

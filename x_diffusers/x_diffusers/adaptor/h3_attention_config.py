@@ -1,4 +1,5 @@
 """CPU-only experimental Base-attention contract. No optional imports on startup."""
+import os
 from pathlib import Path
 
 
@@ -14,6 +15,8 @@ def validate(args):
         return
     if args.h3_attention not in ('spark', 'veda'):
         raise ValueError('Unknown H3 attention backend')
+    if args.h3_attention == 'spark' and os.environ.get('TASK_QUEUE_ENABLE') not in ('0', '1'):
+        raise ValueError('Spark NPU graph capture requires TASK_QUEUE_ENABLE=1 (or 0) before process startup')
     if args.model != 'MiniMax-H3' or args.task_type != 't2va':
         raise ValueError('Experimental H3 attention initially supports T2VA only')
     if args.dtype != 'bf16' or args.atten != 'laser' or args.sp != 8:

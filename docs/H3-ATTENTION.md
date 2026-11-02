@@ -44,10 +44,18 @@ CANN, ABI and SoC. Never reuse unverified binaries across environments.
 Use the existing 2K launcher and asset preparation in H3-DEPLOYMENT.md:
 
 ```bash
+export TASK_QUEUE_ENABLE=1  # Spark graph capture; use the same mode for baseline comparisons.
 bash example/diffusers/scripts/infer_minimax_h3_refiner.sh --h3_attention spark
 bash example/diffusers/scripts/infer_minimax_h3_refiner.sh \
   --h3_attention veda --h3_veda_predictor weights/veda/predictor.safetensors
 ```
+
+For Spark, export `TASK_QUEUE_ENABLE=1` before starting Python/torchrun
+(queue mode 0 is also graph-compatible). TorchNPU rejects Spark's NPU graph
+capture with queue mode 2; validation fails before model loading if mode 1/0
+was not explicitly selected. This integration does not change the environment
+automatically. Benchmark Laser and Spark with the same queue mode; a queue-2
+Laser baseline is not a controlled queue-1 Spark comparison.
 
 The launcher requires the existing BASE_MODEL, BASE_TRANSFORMER, BASE_ADALN,
 REFINER_WEIGHTS and REFINER_PREPARED environment variables. Do not replace

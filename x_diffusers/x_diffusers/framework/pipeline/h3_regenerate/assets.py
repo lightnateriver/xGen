@@ -1,0 +1,55 @@
+"""Prepared-model integrity and offline refresh validation (CPU only)."""
+import hashlib
+import json
+from pathlib import Path
+
+
+def validate_base_schedule(points, metadata=None):
+    if type(points) is not int or points not in (21, 51):
+        raise ValueError("Resident Base requires 21 or 51 schedule points for 20 or 50 DiT evaluations")
+    evaluations = points - 1
+    if metadata is not None and int(metadata.get("num_eval_steps", "-1")) != evaluations:
+        raise ValueError("Base AdaLN cache evaluation count differs from the configured schedule")
+    return evaluations
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(16 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def model_digests(folder):
+    folder = Path(folder)
+    files = sorted(p for p in folder.rglob("*") if p.is_file()
+                   and p.suffix in (".json", ".safetensors", ".bin"))
+    if not (folder / "config.json").is_file() or not any(p.suffix in (".safetensors", ".bin") for p in files):
+        raise ValueError(f"Missing model config or weights: {folder}")
+    return {p.relative_to(folder).as_posix(): digest(p) for p in files}
+
+
+def prepared_cache(folder):
+    folder = Path(folder)
+    record = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    name = record.get("cache_file", "adaln_cache.safetensors")
+    if not isinstance(name, str) or name in ("", ".", "..") or Path(name).name != name:
+        raise ValueError("Invalid prepared cache filename")
+    cache = folder / name
+    if digest(cache) != record["cache_sha256"]:
+        raise ValueError("Prepared AdaLN cache checksum mismatch")
+    return cache
+
+
+def validate_refresh(output, fingerprint, base_digests):
+    output = Path(output)
+    prepared_cache(output)
+    record = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    if record.get("source_base_sha256") != base_digests:
+        raise ValueError("Base weights changed or legacy manifest; prepare into a new directory")
+    if record.get("adapters_sha256") != fingerprint:
+        raise ValueError("Adapter weights changed; prepare into a new directory")
+    if record.get("transformer_sha256") != model_digests(output / "transformer"):
+        raise ValueError("Prepared transformer changed; prepare into a new directory")
+    return record

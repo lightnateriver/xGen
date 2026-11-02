@@ -1,0 +1,26 @@
+{
+  "historical_cases": 72,
+  "historical_pairs": 36,
+  "comparable_pairs": 34,
+  "historical_technical_pass": 72,
+  "v02_smoke_requests": 2,
+  "v02_smoke_rank_metrics": 16,
+  "v02_smoke_identity_stable": true,
+  "v02_smoke_all_rank_allocated_delta_bytes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "v02_smoke_reserved_delta_mib": 576.0,
+  "v02_smoke_workers_released": true,
+  "long_term_leak_free_proven": false,
+  "host_pss_per_request_in_v02_smoke": "not_sampled",
+  "manual_visual_review": "pending",
+  "manual_audio_review": "pending",
+  "source_policy": "numeric fields only; no prompts, media, machine addresses, private source paths, image IDs, input hashes or process IDs"
+}

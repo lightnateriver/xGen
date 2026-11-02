@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Local deployment assets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+weights/
+model-cache/
+outputs/
+logs/

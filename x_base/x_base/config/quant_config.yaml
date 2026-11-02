@@ -1,0 +1,198 @@
+# ============================================================
+# 量化层配置
+# 支持白名单和黑名单模式，针对不同模型定制量化策略
+#
+# 每种量化类型（int8/int4/mxfp4）各有一组 patterns:
+#   null  = 全量化（所有通过 include/exclude 过滤的层）
+#   []    = 禁用该量化类型
+#   有值  = 只量化匹配这些模式的层（支持 glob 和子串匹配）
+#
+# 运行时通过 dtype 参数三选一: 'int8' / 'int4' / 'mxfp4'
+# ============================================================
+
+# 默认量化策略（所有模型）
+default:
+  include_patterns: null
+  exclude_patterns:
+    - "timesteps_proj"
+    - "time_embedder"
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  mxfp4_patterns: null
+
+# Qwen Image 模型量化策略
+qwen_image:
+  include_patterns:
+    - "img_mlp"
+    - "txt_mlp"
+  exclude_patterns:
+    - "timesteps_proj"
+    - "time_embedder"
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  mxfp4_patterns: null
+
+# Wan 模型量化策略
+wan:
+  include_patterns: null
+  exclude_patterns:
+    - "timesteps_proj"
+    - "time_embedder"
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  # mxfp4 只量化 attention QKVO，不量化 FFN（精度敏感）
+  mxfp4_patterns:
+    - "*blocks*to_q*"
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_out*"
+
+# Hunyuan 模型量化策略
+hunyuan:
+  include_patterns: null
+  exclude_patterns:
+    - "timesteps_proj"
+    - "time_embedder"
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  mxfp4_patterns: null
+
+# CogVideoX 模型量化策略
+cogvideox:
+  include_patterns: null
+  exclude_patterns:
+    - "timesteps_proj"
+    - "time_embedder"
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  mxfp4_patterns: null
+
+# z_image 模型量化策略
+z_image:
+  include_patterns:
+    - all_x_embedder
+    - adaLN_modulation
+  exclude_patterns:
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  mxfp4_patterns: null
+
+# longcat_image 模型量化策略
+longcat_image:
+  include_patterns: null
+  exclude_patterns:
+    - "lora"
+    - "time_proj"
+    - "timestep_embedder"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns:
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_q*"
+    - "*blocks*to_out*"
+    - "*blocks*proj*"
+  mxfp4_patterns: null
+
+# MiniMax-H3 模型量化策略（参考官方 modules_to_not_convert）
+minimax_h3:
+  include_patterns: null
+  exclude_patterns:
+    - "proj_in"
+    - "audio_proj_in"
+    - "context_embedder"
+    - "time_embedder"
+    - "time_proj"
+    - "token_refiner"
+    - "norm_out"
+    - "proj_out"
+    - "audio_proj_out"
+    - "rope"
+    - "lora"
+  layer_types:
+    - "Linear"
+  int8_patterns: null
+  int4_patterns: []
+  # mxfp4 只量化 attention QKVO，不量化 FFN（精度敏感，参考 Wan 策略）
+  mxfp4_patterns:
+    - "*blocks*to_q*"
+    - "*blocks*to_k*"
+    - "*blocks*to_v*"
+    - "*blocks*to_out*"
+
+# MiniMax-H3 VAE 量化策略
+minimax_h3_vae:
+  include_patterns: null
+  exclude_patterns:
+    - "norm"          # RMSNorm / LayerNorm 不量化
+    - "rope"          # RoPE 不量化
+    - "proj_in"       # 入口投影精度敏感（24→2048，输入维度过小）
+    - "proj_out"      # 出口投影精度敏感（→3072，直接影响像素）
+  layer_types:
+    - "Linear"
+  int8_patterns: null   # 全量化（排除上面的黑名单）
+  int4_patterns: []
+  mxfp4_patterns: []
+
+# ============================================================
+# 模型类型映射（自动推断）
+# 将模型类名/类型映射到配置名称
+# ============================================================
+model_type_mapping:
+  "QwenImageTransformer2DModel": "qwen_image"
+  "WanTransformer3DModel": "wan"
+  "HunyuanVideoTransformer3DModel": "hunyuan"
+  "CogVideoXTransformer3DModel": "cogvideox"
+  "ZImageTransformer2DModel": "z_image"
+  "LongCatImageTransformer2DModel": "longcat_image"
+  "MiniMaxH3Transformer3DModel": "minimax_h3"
+  "AutoencoderKLMiniMaxH3": "minimax_h3_vae"

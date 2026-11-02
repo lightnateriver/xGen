@@ -1,0 +1,118 @@
+diff --git a/nodes.py b/nodes.py
+index 7d560f1..11155d5 100644
+--- a/nodes.py
++++ b/nodes.py
+@@ -1,5 +1,7 @@
+ import os
+ import torch
++import torch_npu
++from torch_npu.contrib import transfer_to_npu
+ import json
+ import numpy as np
+ import tempfile
+@@ -28,7 +30,59 @@ if not "thinksound" in folder_paths.folder_names_and_paths:
+ # Enhanced ThinkSound module import with better error handling
+ print("🔍 DEBUG: Starting enhanced ThinkSound import process...")
+ print(f"🔍 DEBUG: Script directory = {script_directory}")
++def interpolate_video_to_25fps(video_tensor: torch.Tensor, duration_sec: float) -> torch.Tensor:
++    """
++    专为 (t, h, w, c) 形状张量设计，插帧到 25fps
++    Args:
++        video_tensor: 输入张量，形状 (t, h, w, c)，支持 uint8（0-255）/ float32（0-1）
++        duration_sec: 视频总时长（秒），用于计算 25fps 对应的目标帧数
++    Returns:
++        插帧后张量，形状 (target_t, h, w, c)，与输入维度、 dtype 完全一致
++    """
++    # 1. 提取 (t, h, w, c) 各维度（明确对应你的输入形状）
++    t, h, w, c = video_tensor.shape
++    dtype = video_tensor.dtype
++    device = video_tensor.device
+ 
++    # 2. 计算 25fps 对应的目标帧数（核心公式：目标帧数 = 帧率 × 时长）
++    target_t = int(25 * duration_sec)
++    print(f"适配 (t, h, w, c) 输入 → 原始帧数：{t} → 25fps 目标帧数：{target_t}")
++
++    # 3. 无需插帧的情况直接返回
++    if t == target_t:
++        return video_tensor
++
++    # 4. 数据类型转换（插值需 float32，最后还原原类型）
++    video_float = video_tensor.to(torch.float32) / 255.0 if dtype == torch.uint8 else video_tensor.clone()
++
++    # 5. 维度转换：(t, h, w, c) → (1, c, t, h, w)（适配 PyTorch 插值函数要求）
++    # 步骤拆解：
++    # (t, h, w, c) → permute(3, 0, 1, 2) → (c, t, h, w)（把通道 c 移到第2维，时间 t 移到第3维）
++    # 再 unsqueeze(0) → 增加 batch 维度，最终得到 (1, c, t, h, w)
++    video_reshaped = video_float.permute(3, 0, 1, 2).unsqueeze(0)
++
++    # 6. 核心插帧：仅在时间轴（t 维度）拉伸到 target_t，空间维度 (h, w) 不变
++    video_interpolated = F.interpolate(
++        input=video_reshaped,
++        size=(target_t, h, w),  # 仅修改时间维度为 target_t，h/w 保持原样
++        mode='trilinear',       # 时间+空间联合插值，视频更流畅
++        align_corners=False     # 避免边缘失真
++    )
++
++    # 7. 还原维度：(1, c, target_t, h, w) → (target_t, h, w, c)（回到你的原始格式）
++    # 步骤拆解：
++    # squeeze(0) → 去掉 batch 维度 → (c, target_t, h, w)
++    # permute(1, 2, 3, 0) → 重新排列为 (target_t, h, w, c)
++    video_out = video_interpolated.squeeze(0).permute(1, 2, 3, 0)
++
++    # 8. 还原原数据类型（uint8 需转回 0-255）
++    if dtype == torch.uint8:
++        video_out = (video_out * 255.0).clamp(0, 255).to(torch.uint8)
++
++    # 验证输出形状是否符合 (target_t, h, w, c)
++    assert video_out.shape == (target_t, h, w, c), f"输出形状错误！期望 ({target_t}, {h}, {w}, {c})"
++    print(f"插帧完成，输出形状：{video_out.shape}（保持 t, h, w, c 顺序）")
++    return video_out
+ def safe_import_with_fallbacks():
+     """Enhanced import function with multiple fallback strategies"""
+     import sys
+@@ -290,6 +344,8 @@ def enhanced_process_video_tensor(video_tensor: torch.Tensor, duration_sec: floa
+             v2.ToDtype(torch.float32, scale=True),
+             v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+         ])
++
++        video_tensor=interpolate_video_to_25fps(video_tensor,duration_sec)
+         
+         total_frames = video_tensor.shape[0]
+         
+diff --git a/thinksound/data/v2a_utils/feature_utils_224.py b/thinksound/data/v2a_utils/feature_utils_224.py
+index 8563190..862f08e 100644
+--- a/thinksound/data/v2a_utils/feature_utils_224.py
++++ b/thinksound/data/v2a_utils/feature_utils_224.py
+@@ -2,6 +2,8 @@ from typing import Literal, Optional
+ import json
+ import open_clip
+ import torch
++import torch_npu
++from torch_npu.contrib import transfer_to_npu
+ import torch.nn as nn
+ import torch.nn.functional as F
+ from einops import rearrange
+diff --git a/thinksound/models/mmdit.py b/thinksound/models/mmdit.py
+index abf140f..b007782 100644
+--- a/thinksound/models/mmdit.py
++++ b/thinksound/models/mmdit.py
+@@ -3,6 +3,8 @@ from dataclasses import dataclass
+ from typing import Optional
+ 
+ import torch
++import torch_npu
++from torch_npu.contrib import transfer_to_npu
+ import torch.nn as nn
+ import torch.nn.functional as F
+ import sys
+@@ -305,7 +307,9 @@ class MMmodule(nn.Module):
+         # upsample the sync features to match the audio
+         sync_f = sync_f.transpose(1, 2)  # (B, D, VN)
+         # sync_f = resample(sync_f, self._latent_seq_len)
+-        sync_f = F.interpolate(sync_f, size=self._latent_seq_len, mode='nearest-exact')
++        #sync_f = F.interpolate(sync_f, size=self._latent_seq_len, mode='nearest-exact')
++        sync_f = F.interpolate(sync_f, size=self._latent_seq_len, mode='nearest')
++
+         sync_f = sync_f.transpose(1, 2)  # (B, N, D)
+ 
+         # get conditional features from the clip side

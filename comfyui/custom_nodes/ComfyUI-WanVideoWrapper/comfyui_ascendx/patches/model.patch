@@ -1,0 +1,197 @@
+diff --git a/wanvideo/modules/model.py b/wanvideo/modules/model.py
+index a494845..bcdf0db 100644
+--- a/wanvideo/modules/model.py
++++ b/wanvideo/modules/model.py
+@@ -12,7 +12,9 @@ try:
+ except:
+     pass
+ 
+-from .attention import attention
++from ...comfyui_ascendx.modules.attention import attention
++from ...comfyui_ascendx.modules.model import SPWanSelfAttention, SPWanT2VCrossAttention, SPWanI2VCrossAttention, SP_PhaaWanAttentionBlock, get_sp_group, is_phaa_enabled
++from ascendx_video.base.sequence_parallelism.comm import get_pad, set_pad, split_sequence, gather_sequence
+ import numpy as np
+ from tqdm import tqdm
+ import gc
+@@ -682,7 +684,7 @@ class WanT2VCrossAttention(WanSelfAttention):
+ 
+ class WanI2VCrossAttention(WanSelfAttention):
+ 
+-    def __init__(self, in_features, out_features, num_heads, qk_norm=True, eps=1e-6, attention_mode='sdpa', rms_norm_function="default"):
++    def __init__(self, in_features, out_features, num_heads, qk_norm=True, eps=1e-6, attention_mode='sdpa', rms_norm_function="default", sp_group=None):
+         super().__init__(in_features, out_features, num_heads, qk_norm, eps, rms_norm_function=rms_norm_function)
+         self.k_img = nn.Linear(in_features, out_features)
+         self.v_img = nn.Linear(in_features, out_features)
+@@ -840,7 +842,8 @@ class WanAttentionBlock(nn.Module):
+                  rms_norm_function="default",
+                  use_motion_attn=False,
+                  use_humo_audio_attn=False,
+-                 face_fuser_block=False
++                 face_fuser_block=False,
++                 sp_group=None
+                  ):
+         super().__init__()
+         self.dim = out_features
+@@ -862,7 +865,11 @@ class WanAttentionBlock(nn.Module):
+ 
+         # layers
+         self.norm1 = WanLayerNorm(out_features, eps)
+-        self.self_attn = WanSelfAttention(in_features, out_features, num_heads, qk_norm, eps, self.attention_mode, rms_norm_function=rms_norm_function)
++        self.sp_group = sp_group
++        if self.sp_group is not None:
++            self.self_attn = SPWanSelfAttention(in_features, out_features, num_heads, qk_norm, eps, self.attention_mode, rms_norm_function=rms_norm_function, sp_group=self.sp_group)
++        else:
++            self.self_attn = WanSelfAttention(in_features, out_features, num_heads, qk_norm, eps, self.attention_mode, rms_norm_function=rms_norm_function)
+ 
+         # MTV Crafter motion attn
+         if self.use_motion_attn:
+@@ -871,7 +878,13 @@ class WanAttentionBlock(nn.Module):
+ 
+         if cross_attn_type != "no_cross_attn":
+             self.norm3 = WanLayerNorm(out_features, eps, elementwise_affine=True) if cross_attn_norm else nn.Identity()
+-            self.cross_attn = WAN_CROSSATTENTION_CLASSES[cross_attn_type](in_features, out_features, num_heads, qk_norm, eps, rms_norm_function=rms_norm_function)
++            if self.sp_group is not None:
++                WAN_CROSSATTENTION_CLASSES['t2v_cross_attn'] = SPWanT2VCrossAttention
++                WAN_CROSSATTENTION_CLASSES['i2v_cross_attn'] = SPWanI2VCrossAttention
++                self.cross_attn = WAN_CROSSATTENTION_CLASSES[cross_attn_type](in_features, out_features, num_heads, qk_norm, eps, rms_norm_function=rms_norm_function, sp_group=self.sp_group)
++            else:
++                self.cross_attn = WAN_CROSSATTENTION_CLASSES[cross_attn_type](in_features, out_features, num_heads, qk_norm, eps, rms_norm_function=rms_norm_function)
++
+         self.norm2 = WanLayerNorm(out_features, eps)
+         self.ffn = nn.Sequential(
+             nn.Linear(in_features, ffn_dim), nn.GELU(approximate='tanh'),
+@@ -1502,6 +1515,7 @@ class WanModel(torch.nn.Module):
+                 # WanAnimate
+                 is_wananimate=False,
+                 motion_encoder_dim=512,
++                comm_stream=None,
+                 ):
+         r"""
+         Initialize the diffusion model backbone.
+@@ -1538,6 +1552,7 @@ class WanModel(torch.nn.Module):
+         """
+ 
+         super().__init__()
++        self.comm_stream = torch.npu.Stream()
+ 
+         self.model_type = model_type
+ 
+@@ -1615,6 +1630,13 @@ class WanModel(torch.nn.Module):
+ 
+         self.motion_encoder_dim = motion_encoder_dim
+ 
++        self.sp_group, self.sp_size = get_sp_group()
++        if self.sp_group is not None and self.num_heads % self.sp_size != 0:
++            log.warning(f"Number of heads {self.num_heads} can not be divisible by sequence parallel size {self.sp_size}, sp will not be available ")
++            self.sp_group = None
++        if self.sp_group is not None:
++            log.info(f"sp is available. sp_size:{self.sp_size}")
++
+         # embeddings
+         self.patch_embedding = nn.Conv3d(
+             in_dim, dim, kernel_size=patch_size, stride=patch_size)
+@@ -1664,14 +1686,33 @@ class WanModel(torch.nn.Module):
+             else:
+                 cross_attn_type = 'no_cross_attn'
+ 
+-            self.blocks = nn.ModuleList([
+-                WanAttentionBlock(cross_attn_type, self.in_features, self.out_features, ffn_dim, ffn2_dim, num_heads,
+-                                qk_norm, cross_attn_norm, eps,
+-                                attention_mode=self.attention_mode, rope_func=self.rope_func, rms_norm_function=rms_norm_function, 
+-                                use_motion_attn=(i % 4 == 0 and use_motion_attn), use_humo_audio_attn=self.humo_audio,
+-                                face_fuser_block = (i % 5 == 0 and is_wananimate))
+-                for i in range(num_layers)
+-            ])
++            phaa_enable = is_phaa_enabled()
++            phaa_actually_enabled = False # 标记开关是否真正生效
++            if phaa_enable:
++                if self.sp_group is None:
++                    log.warning("sp_group is None, PHAA_ENABLE switch is disabled!")
++                else:
++                    phaa_actually_enabled = True
++                    log.info("PHAA_ENABLE switch is enabled!")
++                    self.blocks = nn.ModuleList([
++                        SP_PhaaWanAttentionBlock(cross_attn_type, self.in_features, self.out_features, ffn_dim, ffn2_dim, num_heads,
++                                        qk_norm, cross_attn_norm, eps,
++                                        attention_mode=self.attention_mode, rope_func=self.rope_func, rms_norm_function=rms_norm_function,
++                                        use_motion_attn=(i % 4 == 0 and use_motion_attn), use_humo_audio_attn=self.humo_audio,
++                                        face_fuser_block = (i % 5 == 0 and is_wananimate),
++                                        sp_group=self.sp_group, comm_stream=self.comm_stream)
++                        for i in range(num_layers)
++                    ])
++            if not phaa_actually_enabled:
++                self.blocks = nn.ModuleList([
++                    WanAttentionBlock(cross_attn_type, self.in_features, self.out_features, ffn_dim, ffn2_dim, num_heads,
++                                    qk_norm, cross_attn_norm, eps,
++                                    attention_mode=self.attention_mode, rope_func=self.rope_func, rms_norm_function=rms_norm_function,
++                                    use_motion_attn=(i % 4 == 0 and use_motion_attn), use_humo_audio_attn=self.humo_audio,
++                                    face_fuser_block = (i % 5 == 0 and is_wananimate),
++                                    sp_group=self.sp_group)
++                    for i in range(num_layers)
++                ])
+         #MTV Crafter
+         if use_motion_attn:
+             self.pad_motion_tokens = torch.zeros(1, 1, 2048)
+@@ -1771,9 +1812,12 @@ class WanModel(torch.nn.Module):
+                 dtype=dtype
+             )
+ 
++    def len_fsdp_aware(self, module):
++        return len(module.module if hasattr(module, 'module') else module)
++
+     def block_swap(self, blocks_to_swap, offload_txt_emb=False, offload_img_emb=False, vace_blocks_to_swap=None, prefetch_blocks=0, block_swap_debug=False):
+         # Clamp blocks_to_swap to valid range
+-        blocks_to_swap = max(0, min(blocks_to_swap, len(self.blocks)))
++        blocks_to_swap = max(0, min(blocks_to_swap, self.len_fsdp_aware(self.blocks)))
+         
+         log.info(f"Swapping {blocks_to_swap} transformer blocks")
+         self.blocks_to_swap = blocks_to_swap
+@@ -1787,9 +1831,9 @@ class WanModel(torch.nn.Module):
+         total_main_memory = 0
+         
+         # Calculate the index where swapping starts
+-        swap_start_idx = len(self.blocks) - blocks_to_swap
++        swap_start_idx = self.len_fsdp_aware(self.blocks) - blocks_to_swap
+        
+-        for b, block in tqdm(enumerate(self.blocks), total=len(self.blocks), desc="Initializing block swap"):
++        for b, block in tqdm(enumerate(self.blocks), total=self.len_fsdp_aware(self.blocks), desc="Initializing block swap"):
+             block_memory = get_module_memory_mb(block)
+             
+             if b < swap_start_idx:
+@@ -2614,18 +2658,18 @@ class WanModel(torch.nn.Module):
+             if torch.cuda.is_available():
+                 cuda_stream = None #torch.cuda.Stream(device=device, priority=0) # todo causes issues on some systems
+                 events = [torch.cuda.Event() for _ in self.blocks]
+-                swap_start_idx = len(self.blocks) - self.blocks_to_swap if self.blocks_to_swap > 0 else len(self.blocks)
++                swap_start_idx = self.len_fsdp_aware(self.blocks) - self.blocks_to_swap if self.blocks_to_swap > 0 else self.len_fsdp_aware(self.blocks)
+             else:
+                 cuda_stream = None
+                 events = None
+-                swap_start_idx = len(self.blocks)
++                swap_start_idx = self.len_fsdp_aware(self.blocks)
+ 
+             for b, block in enumerate(self.blocks):
+                 # Prefetch blocks if enabled
+                 if self.prefetch_blocks > 0:
+                     for prefetch_offset in range(1, self.prefetch_blocks + 1):
+                         prefetch_idx = b + prefetch_offset
+-                        if prefetch_idx < len(self.blocks) and self.blocks_to_swap > 0 and prefetch_idx >= swap_start_idx:
++                        if prefetch_idx < self.len_fsdp_aware(self.blocks) and self.blocks_to_swap > 0 and prefetch_idx >= swap_start_idx:
+                             context_mgr = torch.cuda.stream(cuda_stream) if torch.cuda.is_available() else nullcontext()
+                             with context_mgr:
+                                 self.blocks[prefetch_idx].to(self.main_device, non_blocking=self.use_non_blocking)
+@@ -2648,7 +2692,14 @@ class WanModel(torch.nn.Module):
+                     if b in self.slg_blocks and is_uncond:
+                         if self.slg_start_percent <= current_step_percentage <= self.slg_end_percent:
+                             continue
++
++                if self.sp_group is not None:
++                    set_pad("pad", x.shape[1], self.sp_group)
++                    x = split_sequence(x, self.sp_group, dim=1, pad=get_pad("pad"))
+                 x, x_ip = block(x, x_ip=x_ip, **kwargs) #run block
++                if self.sp_group is not None:
++                    x = gather_sequence(x, self.sp_group, dim=1, pad=get_pad("pad"))
++
+                 if self.audio_injector is not None and s2v_audio_input is not None:
+                     x = self.audio_injector_forward(b, x, merged_audio_emb, scale=s2v_audio_scale) #s2v
+                 if block.has_face_fuser_block and motion_vec is not None:

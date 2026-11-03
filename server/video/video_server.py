@@ -32,6 +32,7 @@ from obs_client import ObsStorageClient
 from file_util import file_util
 
 from x_diffusers import init_env, parse_args
+from x_base.device import device_type
 from x_diffusers.adaptor.load_pipe import load_pipe, load_v2v_pipe, update_pipe, pipe_to_device, load_seedvr2_pipe, update_lora
 from x_diffusers.adaptor.infer_tools import InferenceManager, GUIDANCE_SCALE_MAP
 from x_diffusers.framework.vae.wan import vfi
@@ -156,6 +157,8 @@ def get_device_for_comm():
     if backend == 'gloo':
         return 'cpu'
     if backend in ['nccl', 'hccl']:
+        if device_type() == "cuda":
+            return f"cuda:{torch.cuda.current_device()}"
         if hasattr(torch, 'npu') and torch.npu.is_available():
             rank = dist.get_rank()
             return f'npu:{rank}'

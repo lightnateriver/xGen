@@ -8,8 +8,9 @@ This feature is experimental; implementation is not a claim of validation.
 Initial qualification: T2VA, batch one, 1344x768 Base, 124 native frames,
 24fps, SP8, BF16 Q/K/V, 50 actual DiT evaluations (`num_inference_steps=51`).
 The existing optional Refiner exports 2560x1440/120 frames with three Laser
-steps. Only Base attention changes. I2VA/R2VA, other frame counts, arbitrary
-masks, extra LoRAs and a sparse Refiner are rejected or unsupported here.
+steps. Only Base attention changes. The additional offline 10-second Veda
+I2VA profile is described below. R2VA, arbitrary masks, extra LoRAs and
+sparse Refiner attention remain outside the qualified profiles.
 Veda was released for an eight-NFE recipe: quality on the original 50-step
 Base must be measured; a faster kernel alone is not a quality pass.
 
@@ -55,7 +56,8 @@ CANN, ABI and SoC. Never reuse unverified binaries across environments.
 | Parameter | Default | Purpose |
 |---|---|---|
 | `--h3_attention` | `legacy` | `legacy`, `spark`, or `veda`; Base only |
-| `--h3_veda_predictor` | unset | Local published predictor file; required only by Veda |
+| `--h3_veda_predictor` | unset | Local published predictor file, required by Veda |
+| `--h3_veda_sparsity` | `0.9` | Offline Veda nominal block sparsity, `0.7` or `0.9` |
 
 Use the existing 2K launcher and asset preparation in H3-DEPLOYMENT.md:
 
@@ -173,13 +175,36 @@ Use the existing offline CLI with MiniMax-H3, `--task_type fl2va`, one
 `--keyframe_image`, 1344×768, 243 native frames, 24 fps and SP8. Set
 `--num_inference_steps 21` for 20 Base DiT evaluations and use matching Base
 AdaLN assets if the transformer has been stripped. The validated NPU recipe
-uses INT8 DiT/VAE linear layers, text encoder TP8 and PHAA2. Example additions:
+uses INT8 DiT/VAE linear layers, text encoder TP8 and PHAA2.
+
+Prepare a T2VA AdaLN table for the original Base transformer at 20
+evaluations. The same table includes the constant video-conditioning
+entries needed by the first-frame path. Use the matching stripped
+transformer and AdaLN table as a pair.
 
 ```bash
---h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR" --h3_veda_sparsity 0.7 \
---task_type fl2va --keyframe_image "$FIRST_FRAME" --frames 243 \
---width 1344 --height 768 --save_fps 24 --num_inference_steps 21
+export PYTHONPATH="$PWD/optional/Ascend-H3/src:$PWD/x_diffusers:$PWD/x_base${PYTHONPATH:+:$PYTHONPATH}"
+python -m x_diffusers.framework.pipeline.h3_regenerate.prepare_base_cache \
+  --source "$BASE_MODEL/transformer" --model-variant T2VA --eval-steps 20 \
+  --stripped-output "$BASE_TRANSFORMER" --output "$BASE_ADALN"
+
+export TASK_QUEUE_ENABLE=2
+torchrun --nproc_per_node=8 --max_restarts=0 example/diffusers/infer.py \
+  --model MiniMax-H3 --pretrained_model_name_or_path "$BASE_MODEL" \
+  --transformer_path "$BASE_TRANSFORMER" --adaln_cache_file "$BASE_ADALN" \
+  --task_type fl2va --keyframe_image "$FIRST_FRAME" --frames 243 \
+  --width 1344 --height 768 --save_fps 24 --num_inference_steps 21 --seed 42 \
+  --dtype bf16 --sp 8 --text_encoder_tp 8 --phaa_num 2 --rope_fused \
+  --atten laser --matmul_quant int8 --vae_matmul_quant int8 --vae_lightning decoder \
+  --h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR" \
+  --h3_veda_sparsity 0.7 --prompt "$(cat "$PROMPT_FILE")" --save_path "$OUTPUT_VIDEO"
 ```
+
+Set the asset and output variables to deployment-local paths. The command
+uses one worker group for one video. The performance table's second-request
+latency was measured with the same `InferenceManager` resident across two
+requests. Launching this command twice creates two worker groups. For the
+Laser baseline, omit the three Veda flags and keep `--atten laser`.
 
 `--h3_veda_sparsity` accepts `0.7` and `0.9` and defaults to `0.9` when
 Veda is enabled. These are nominal block sparsities. The first-frame
@@ -187,3 +212,5 @@ conditioning tokens stay in the dense prefix. The 243-frame path uses the
 actual 72×24×42 generation grid with the upstream 345-frame tuning profile.
 For a warm benchmark, send a full request with the same token layout before
 measuring another request. This I2VA profile is experimental and offline.
+
+See [measured I2VA results](H3-ATTENTION-VALIDATION.md#10-second-i2va--20-actual-base-steps).

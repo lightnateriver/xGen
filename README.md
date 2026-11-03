@@ -117,3 +117,5 @@ bash infer_wan2.2_14b_t2v_720p.sh
 算子移植对齐、视频抽检和性能收益分别记录；新后端不自动成为默认配置。
 
 5 秒 T2VA 的 LightX2V 8 步离线实验使用独立开关 `--h3_turbo8`。权重准备与 768P/2K 示例见[参数说明](docs/H3-ATTENTION.md#experimental-lightx2v-turbo-8-step-offline)。
+
+10 秒 I2VA 可通过离线 CLI 选择 Veda 0.9 / 0.7。参见[启动命令](docs/H3-ATTENTION.md#veda-i2va-10-second-profile)与[三后端热态对比](docs/H3-ATTENTION-VALIDATION.md#10-second-i2va--20-actual-base-steps)。

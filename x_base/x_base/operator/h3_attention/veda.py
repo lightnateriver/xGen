@@ -82,4 +82,3 @@ class VedaAttention:
         if m.pack_workspace is not None:
             m.pack_workspace.prepare((q, k, v))
         return m(q, k, v, layer)
-

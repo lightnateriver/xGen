@@ -93,3 +93,53 @@ testing, diverse prompts, other durations/resolutions and long-running memory
 stability remain unqualified. Raw videos, prompts, rank identities and
 deployment traces are private review artifacts and are not redistributed.
 See [integration and rollback instructions](H3-ATTENTION.md).
+
+## 10-second I2VA — 20 actual Base steps
+
+Final runtime source `931c329`, with three independent eight-card worker
+groups. Each group processed one preheat request and one measured request
+with identical input geometry. The three measured requests used the same
+first frame, prompt and seed. All six requests used 75,786 attention rows
+and 4+3 local heads per rank. The 1344×768 output retains 243 native frames
+at 24 FPS. DiT and VAE linears use INT8, with BF16 main dtype, SP8, PHAA2,
+text TP8, fused RoPE and queue mode 2. The 21-point AdaLN table matches the
+original Base schedule. No Refiner is used in this profile.
+
+| Backend | Initialization (s) | Preheat E2E (s) | Warm attention (s) | Warm E2E (s) | Warm peak allocated (GiB/card) |
+|---|---:|---:|---:|---:|---:|
+| Laser | 35.28 | 151.86 | 83.97 | 147.68 | 30.87 |
+| Veda 0.9 | 44.88 | 117.72 | 39.00 | 106.58 | 30.89 |
+| Veda 0.7 | 45.30 | 140.34 | 61.19 | 127.97 | 30.89 |
+
+Attention is the maximum rank's sum of operator call intervals, including
+the adapter's layout work. These spans can overlap communication. E2E
+includes audio/video output and excludes worker initialization. The warm
+Veda requests registered zero new program first-use events and one
+predictor load per rank. Relative to warm Laser, E2E fell by 27.8% with
+0.9 and 13.3% with 0.7. Each value is one measured request.
+
+All six clips passed full decode and technical checks. Twelve sampled
+frames per measured clip showed no obvious corruption. Full playback,
+dialogue and lip sync remain outside this verification. These measurements
+do not establish a quality improvement from lower sparsity. See
+[offline launch](H3-ATTENTION.md#veda-i2va-10-second-profile).
+
+## LightX2V Turbo — 8 actual Base steps
+
+Runtime source `0b45f7e`. T2VA 5-second profile, SP8/PHAA2, queue mode 2,
+INT8 Base linears. Laser and Veda share the same prepared LightX2V 768P
+LoRA, matching 9-point AdaLN table and 6/3 video/audio shifts. The 2K path
+adds three Refiner evaluations. A subsequent request is one matched
+seed-43 sample after the initial seed-42 request.
+
+| Output | Backend | Initialization (s) | First E2E (s) | Subsequent E2E (s) |
+|---|---|---:|---:|---:|
+| 768P | Laser | 37.54 | 39.19 | 35.91 |
+| 768P | Veda 0.9 | 52.24 | 40.83 | 32.02 |
+| 2K | Laser | 66.15 | 109.15 | 97.13 |
+| 2K | Veda 0.9 | 74.97 | 112.40 | 95.26 |
+
+All eight clips passed technical checks. Full playback and audio quality
+are outside this verification. The original 50-step run and this Turbo
+run use different weights and schedules, so the tables describe complete
+profiles. See [Turbo preparation and launch](H3-ATTENTION.md#experimental-lightx2v-turbo-8-step-offline).

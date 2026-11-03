@@ -154,4 +154,3 @@ class NpuVeda:
                 receipts.append(dict(shape=key, heads=heads.cpu(), features_q=fq.cpu(), features_k=fk.cpu(), logits=logits.cpu(), mask=block_mask.cpu(), selected=selected.index.cpu(), keep=selected.keep.cpu(), output=result.cpu()))
         result = out[:self.seq].clone() if self.output_workspace else out[:self.seq]
         return (result, receipts) if audit else result
-

@@ -31,11 +31,11 @@ class Program:
 
 class TransportTests(unittest.TestCase):
     def test_permutation_padding_and_global_last_head_shards(self):
-        args=SimpleNamespace(h3_attention='spark',h3_veda_predictor=None,save_path='unused.mp4')
+        args=SimpleNamespace(h3_attention='spark',h3_veda_predictor=None,task_type='t2va',save_path='unused.mp4')
         model=FakeModel()
         with patch.object(h3_attention,'Telemetry',Recorder),patch('h3_ascend.backends.spark.SparkAttention',Program):
             session=h3_attention.BaseAttentionSession(model,args)
-            session.request=args;session.operator_calls=0;session.routed_heads=set()
+            session.request=args;session.expected_steps=50;session.operator_calls=0;session.routed_heads=set()
             n=37*24*42
             # Deliberately start native video before audio; the sparse layout must
             # gather text/audio first and scatter results to original token IDs.
@@ -56,7 +56,7 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(set(session.programs),{(49,4),(53,3)})
 
     def test_reject_incomplete_real_token_layout(self):
-        model=FakeModel();args=SimpleNamespace(h3_attention='spark',h3_veda_predictor=None)
+        model=FakeModel();args=SimpleNamespace(h3_attention='spark',h3_veda_predictor=None,task_type='t2va')
         with patch.object(h3_attention,'Telemetry',Recorder):
             session=h3_attention.BaseAttentionSession(model,args);session.request=args
             n=37*24*42

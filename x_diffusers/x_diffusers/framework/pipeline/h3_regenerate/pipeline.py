@@ -8,6 +8,7 @@ import time
 import torch
 import torch.distributed as dist
 
+from x_base.device import device_type
 from x_base.infinite_vram.immutable_weights import CpuWeights
 from x_base.utils.stage_metrics import Telemetry
 from .assets import prepared_cache, validate_base_schedule
@@ -35,6 +36,8 @@ class H3RefinerPipeline:
         from x_base.adaln_cache import install_adaln_cache, release_adaln_weights, validate_stripped_checkpoint
         from x_base.phaa.utils import inject_phaa_for_minimax_h3
         self.base, self.args = base, args
+        self.backend = device_type()
+        self.accelerator = torch.get_device_module(self.backend)
         self.rank = dist.get_rank()
         self.failed = False
         self.completed = 0
@@ -69,7 +72,8 @@ class H3RefinerPipeline:
         self.vae = AutoencoderKLMiniMaxH3.from_pretrained(str(weights/'base_model'), subfolder='vae',
             torch_dtype=torch.bfloat16, local_files_only=True).eval()
         prepare_vae_precision(self.vae)
-        self.vae.set_attention_backend(AttentionBackendName._NATIVE_NPU)
+        if self.backend == 'npu':
+            self.vae.set_attention_backend(AttentionBackendName._NATIVE_NPU)
         self.vae.enable_tiling(tile_sample_min_height=256, tile_sample_min_width=256,
                               tile_sample_min_overlap_height=64, tile_sample_min_overlap_width=64)
         vae_fast.install(self.vae, batch=1, distributed=True)
@@ -78,8 +82,9 @@ class H3RefinerPipeline:
                 raise ValueError('H3/Refiner VAE normalization differs: '+field)
         self.vae_weights = CpuWeights(self.vae, 'refiner.vae_weights', self.metrics)
         self.node = upscaler.load(weights/'latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors')
-        resolve = self.node._resolve_device
-        self.node._resolve_device = lambda backend: torch.device('npu') if backend == 'cuda' else resolve(backend)
+        if self.backend == 'npu':
+            resolve = self.node._resolve_device
+            self.node._resolve_device = lambda backend: torch.device('npu') if backend == 'cuda' else resolve(backend)
         self.node.load_model('upscaler', torch.device('cpu'), 'bf16')
         self.upscale_model = next(iter(self.node.MODEL_CACHE.values()))
         self.upscale_weights = CpuWeights(self.upscale_model, 'upscaler.weights', self.metrics)
@@ -151,7 +156,7 @@ class H3RefinerPipeline:
         self.base_audio.onload()
         av = self.base.audio_vae
         with self.metrics.span('refiner.silence_encode'):
-            silence = av.encode(torch.zeros(2,1,round(spec['generation_frames']/24*32000),device='npu'),
+            silence = av.encode(torch.zeros(2,1,round(spec['generation_frames']/24*32000),device=self.backend),
                                 return_dict=False)[0].mode()[...,:spec['audio_frames']]
             if silence.shape[-1] != spec['audio_frames']:
                 raise ValueError('Short silent conditioning')
@@ -173,14 +178,14 @@ class H3RefinerPipeline:
     def _refine(self, args, spec, conditions):
         from diffusers.modular_pipelines.minimax_h3.before_denoise import patchify_video_latents
         self.ref_weights.onload(self.ref_weights.nonblocks, 'refiner.initial_h2d_wait')
-        audio = geometry.pack_audio_latents(conditions['audio'][None]).to('npu')
+        audio = geometry.pack_audio_latents(conditions['audio'][None]).to(self.backend)
         shape = geometry.MiniMaxH3Geometry(spec['latent_frames'],90,160,conditions['audio'].shape[-1])
-        layout = geometry.build_t2va_layout(conditions['text_token_tags'],shape).to('npu')
-        prompt = conditions['prompt_embeds'][None].to('npu')
-        low = patchify_video_latents(conditions['upscaled'][None].to('npu'),shape.patch_size).reshape(
+        layout = geometry.build_t2va_layout(conditions['text_token_tags'],shape).to(self.backend)
+        prompt = conditions['prompt_embeds'][None].to(self.backend)
+        low = patchify_video_latents(conditions['upscaled'][None].to(self.backend),shape.patch_size).reshape(
             1,shape.num_video_rows,shape.video_row_dim).float()
-        state = (1-SCHEDULES[3][0])*low+SCHEDULES[3][0]*torch.randn(low.shape,device='npu',
-            generator=torch.Generator(device='npu').manual_seed(args.seed),dtype=torch.float32)
+        state = (1-SCHEDULES[3][0])*low+SCHEDULES[3][0]*torch.randn(low.shape,device=self.backend,
+            generator=torch.Generator(device=self.backend).manual_seed(args.seed),dtype=torch.float32)
         for index,(sigma,following) in enumerate(zip(SCHEDULES[3][:-1],SCHEDULES[3][1:])):
             times,indices = geometry.build_row_timestep_plan(layout,video_sigma=sigma,audio_sigma=0.,keyframe_noise_aug=1.)
             with self.metrics.span('refiner.step',step=index):
@@ -210,7 +215,7 @@ class H3RefinerPipeline:
         if getattr(args, 'enable_audio', True):
             self.base_audio.onload()
             with self.metrics.span('audio.decode'):
-                latent = audio.to('npu')
+                latent = audio.to(self.backend)
                 av = self.base.audio_vae
                 mean = latent.new_tensor(av.config.latents_mean).view(1,-1,1)
                 std = latent.new_tensor(av.config.latents_std).view(1,-1,1)
@@ -222,7 +227,7 @@ class H3RefinerPipeline:
         self.vae_weights.onload()
         try:
             with self.metrics.span('vae.decode'):
-                latent = final[None].to('npu').float()
+                latent = final[None].to(self.backend).float()
                 mean = latent.new_tensor(self.vae.config.latents_mean).view(1,24,1,1,1)
                 std = latent.new_tensor(self.vae.config.latents_std).view(1,24,1,1,1)
                 pixels = native_vae._decode_chunks_streaming(self.vae,(latent*std+mean).bfloat16(),None,sink,
@@ -251,12 +256,12 @@ class H3RefinerPipeline:
         started = time.perf_counter()
         self.metrics.reset()
         self.calls = dict(h3=0,refiner=0)
-        torch.npu.reset_peak_memory_stats()
+        self.accelerator.reset_peak_memory_stats()
         try:
             infer_info.update_info(args)
             infer_info.vae_lightning = 'none'
             torch.manual_seed(args.seed)
-            torch.npu.manual_seed(args.seed)
+            self.accelerator.manual_seed(args.seed)
             set_phaa_split_num(args.phaa_num)
             native, audio = self._draft(args,spec)
             rope_manager.is_rope_fused = False
@@ -272,8 +277,8 @@ class H3RefinerPipeline:
             record = dict(experimental=True, startup_seconds=self.startup_seconds,
                 request_seconds=time.perf_counter()-started, actual_dit=dict(self.calls),
                 profile=spec, phases=self.metrics.resolve(), completed_requests=self.completed+1,
-                peak_allocated_bytes=torch.npu.max_memory_allocated(),peak_reserved_bytes=torch.npu.max_memory_reserved(),
-                allocated_after=torch.npu.memory_allocated(),reserved_after=torch.npu.memory_reserved(),
+                peak_allocated_bytes=self.accelerator.max_memory_allocated(),peak_reserved_bytes=self.accelerator.max_memory_reserved(),
+                allocated_after=self.accelerator.memory_allocated(),reserved_after=self.accelerator.memory_reserved(),
                 model_and_cpu_master_reused=True)
             atomic_json(Path(args.save_path).with_suffix(f'.metrics.rank{self.rank}.json'),record)
             dist.barrier()

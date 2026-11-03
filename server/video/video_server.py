@@ -28,7 +28,6 @@ except ImportError:
     CORS_AVAILABLE = False
 
 import sys
-from obs_client import ObsStorageClient
 from file_util import file_util
 
 from x_diffusers import init_env, parse_args
@@ -2813,6 +2812,8 @@ class VideoGenerationService:
 
             obs_local_path = os.environ.get("OBS_LOCAL_PATH")
             if obs_local_path:
+                from obs_client import ObsStorageClient
+
                 file_util.copy_file(save_path, obs_local_path)
                 obs_client = ObsStorageClient()
                 filename = Path(save_path).name

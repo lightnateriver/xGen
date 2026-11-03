@@ -69,6 +69,7 @@ def prepare(weights, output, refresh_cache=False):
     curve.strength = 1.0
     model.time_proj.to(backend)
     model.time_embedder.to(backend)
+    time_dtype = next(model.time_embedder.parameters()).dtype if backend == 'cuda' else torch.bfloat16
     sigmas = SCHEDULES[3]
     times, embeddings, tables = [], [], {}
     for i, sigma in enumerate(sigmas[:-1]):
@@ -78,7 +79,7 @@ def prepare(weights, output, refresh_cache=False):
         t = t.to(backend)
         times.append(t)
         tables[f"step{i}_timesteps"] = t.cpu()
-        embeddings.append(F.silu(model.time_embedder(model.time_proj(t).to(torch.bfloat16))))
+        embeddings.append(F.silu(model.time_embedder(model.time_proj(t).to(time_dtype))))
     for j, block in enumerate(model.transformer_blocks):
         linear = block.adaln_proj.linear.to(backend)
         for i, (t, emb) in enumerate(zip(times, embeddings)):
@@ -94,6 +95,8 @@ def prepare(weights, output, refresh_cache=False):
         print("CACHED_BLOCK", j, flush=True)
     model.norm_out.linear.to(backend)
     for i, emb in enumerate(embeddings):
+        if backend == 'cuda':
+            emb = emb.to(model.norm_out.linear.weight.dtype)
         tables[f"step{i}_final"] = model.norm_out.linear(emb).cpu().contiguous()
     model.cpu()
     model._forward_pre_hooks.clear()

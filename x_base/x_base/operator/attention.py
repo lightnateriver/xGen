@@ -3,6 +3,8 @@ import os
 
 import torch
 import torch.nn.functional as F
+
+from x_base.device import device_type
 logger = logging.getLogger("attention")
 
 try:
@@ -91,6 +93,7 @@ def laser_attention_infer(query, key, value, attn_mask=None, dropout_p=0.0, is_c
 class AttentionManager:
     def __init__(self):
         self.is_sage_attention = False
+        self.cuda_sage_attention = None
         self.is_laser_attention = False
         self.is_sparse_attention = False
 
@@ -109,7 +112,11 @@ class AttentionManager:
         self.is_rainfusion_attention = False
 
     def enable_sage_attention(self):
-        if not CANN_OPS_AVAILABLE:
+        if device_type() == "cuda":
+            from sageattention import sageattn
+            self.cuda_sage_attention = sageattn
+            self.is_sage_attention = True
+        elif not CANN_OPS_AVAILABLE:
             logger.error("Not install CANN-OPS")
         else:
             self.is_sage_attention = True
@@ -299,6 +306,12 @@ class AttentionManager:
 
     def attention(self, query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None):
         if self.is_sage_attention:
+            if query.is_cuda:
+                if (attn_mask is not None or dropout_p or query.shape[-1] not in (64, 128)
+                        or query.dtype not in (torch.float16, torch.bfloat16)):
+                    return base_attention_infer(query, key, value, attn_mask, dropout_p, is_causal, scale)
+                return self.cuda_sage_attention(query, key, value, tensor_layout="HND",
+                                                is_causal=is_causal, sm_scale=scale)
             return sage_attention_infer(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
                                         is_causal=is_causal, scale=scale)
         elif self.is_laser_attention:

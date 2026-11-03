@@ -43,6 +43,11 @@ class RuntimeTests(unittest.TestCase):
         output=vae.decoder(vae.post_quant_conv(torch.ones(1,2,2,2,2,dtype=torch.bfloat16)))
         self.assertTrue(torch.isfinite(output).all())
 
+        namespace['prepare_vae_precision'](vae, backend='cuda')
+        self.assertEqual(vae.decoder[1].weight.dtype,torch.bfloat16)
+        output=vae.decoder(vae.post_quant_conv(torch.ones(1,2,2,2,2,dtype=torch.bfloat16)))
+        self.assertTrue(torch.isfinite(output).all())
+
     def test_legacy_and_callback_decode_are_numerically_identical(self):
         path='x_diffusers/x_diffusers/framework/vae/minimax_h3.py'
         original=subprocess.check_output(['git','show','origin/v0.1:'+path],cwd=ROOT).decode()

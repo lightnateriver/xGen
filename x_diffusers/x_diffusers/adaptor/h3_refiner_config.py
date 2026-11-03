@@ -1,6 +1,7 @@
 """CPU-only opt-in contract shared by the existing CLI and video service."""
 from contextlib import contextmanager
 from pathlib import Path
+import os
 
 
 def add_arguments(parser):
@@ -37,8 +38,13 @@ def validate_settings(args):
         return None
     if args.model != 'MiniMax-H3' or args.task_type not in ('t2va', 'fl2va', 'ref2va'):
         raise ValueError('H3 Refiner requires MiniMax-H3 t2va/fl2va/ref2va')
-    if args.sp != 8 or args.dtype != 'bf16' or args.atten != 'laser':
-        raise ValueError('Experimental H3 Refiner requires SP8, BF16 and Laser attention')
+    cuda = os.environ.get('XGEN_DEVICE', 'npu') == 'cuda'
+    if args.sp != 8 or args.dtype != 'bf16':
+        raise ValueError('Experimental H3 Refiner requires SP8 and BF16')
+    if cuda and args.atten != 'none':
+        raise ValueError('Experimental CUDA H3 Refiner requires --atten none (native attention)')
+    if not cuda and args.atten != 'laser':
+        raise ValueError('Experimental NPU H3 Refiner requires Laser attention')
     points = (9,) if getattr(args, "h3_turbo8", False) else (21, 51)
     if args.num_inference_steps not in points:
         raise ValueError('Base schedule does not match the selected inference profile')
@@ -46,6 +52,8 @@ def validate_settings(args):
         raise ValueError('Experimental H3 Refiner supports landscape 2560x1440 at 24fps only')
     if not 1 <= args.phaa_num <= 7:
         raise ValueError('H3 Refiner requires phaa_num in [1,7]')
+    if cuda and args.matmul_quant != 'none':
+        raise ValueError('Experimental CUDA H3 Refiner requires --matmul_quant none')
     if args.matmul_quant not in ('none', 'int8') or args.vae_matmul_quant != 'none':
         raise ValueError('Base supports BF16/INT8; Refiner and VAE require BF16 (vae_matmul_quant=none)')
     if args.vae_lightning != 'none' or int(args.inf_vram_blocks_num) != 0:

@@ -174,3 +174,18 @@ GPUS=8 ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 XGEN_PHAA_FP8=1 \
 常驻版为 99.94 秒，加 VAE SP 后为 96.07 秒。常驻版与逐层搬运版的解码后
 音视频哈希一致。加 VAE SP 后音频哈希一致，画面 SSIM 为 0.9948。
 这些耗时从 pipeline 初始化完成后开始计量。
+
+CUDA 在线推理复用原有视频服务。以双卡 FL2VA 为例，在服务 JSON 中设置
+`model=MiniMax-H3`、`sp=2`、`text_encoder_tp=1`、`phaa_num=2`、
+`atten=sage`、`vae_lightning=none`、`matmul_quant=none`、
+`vae_matmul_quant=none` 和 `rope_fused=false`。设置模型目录和
+`h3_nvfp4_checkpoint`，将 `transformer_path` 和 `adaln_cache_file` 设为
+`null`，以覆盖服务的 NPU 模型默认值。
+
+```bash
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=2 \
+  server/video/video_server.py --init --config ./h3-cuda.json --host 127.0.0.1
+```
+
+通过原有 `/generate` 提交 `task_type=fl2va`、`first_frame` 和 `prompt`，
+使用 `/status/<task_id>` 查询结果。测试覆盖同一服务串行处理两条 768P 请求。

@@ -114,6 +114,7 @@ class AttentionManager:
 
     def configure_cuda_attention(self, backend):
         self.cuda_attention = None
+        self.cuda_attention_head_chunk = 0
         if backend == "sage":
             from sageattention import sageattn
             self.cuda_attention = sageattn
@@ -122,6 +123,9 @@ class AttentionManager:
             topk = float(os.environ.get("XGEN_SPARGE_TOPK", "0.5"))
             if not 0 < topk <= 1:
                 raise ValueError("XGEN_SPARGE_TOPK must be in (0, 1]")
+            self.cuda_attention_head_chunk = int(os.environ.get("XGEN_SPARGE_HEAD_CHUNK", "0"))
+            if self.cuda_attention_head_chunk < 0:
+                raise ValueError("XGEN_SPARGE_HEAD_CHUNK must be nonnegative")
             self.cuda_attention = partial(
                 spas_sage2_attn_meansim_topk_cuda, topk=topk, smooth_k=True,
                 pvthreshd=50, return_sparsity=False,
@@ -326,8 +330,18 @@ class AttentionManager:
                     or min(query.shape[-2], key.shape[-2]) < 128):
                 return base_attention_infer(query, key, value, attn_mask, dropout_p, is_causal, scale)
             scale_kw = "scale" if isinstance(self.cuda_attention, partial) else "sm_scale"
-            return self.cuda_attention(query, key, value, tensor_layout="HND",
-                                       is_causal=is_causal, **{scale_kw: scale})
+            kwargs = {"tensor_layout": "HND", "is_causal": is_causal, scale_kw: scale}
+            chunk = self.cuda_attention_head_chunk
+            heads = query.shape[1]
+            if 0 < chunk < heads and heads == key.shape[1] == value.shape[1]:
+                output = torch.empty_like(query, memory_format=torch.contiguous_format)
+                for start in range(0, heads, chunk):
+                    end = start + chunk
+                    output[:, start:end].copy_(self.cuda_attention(
+                        query[:, start:end], key[:, start:end], value[:, start:end], **kwargs
+                    ))
+                return output
+            return self.cuda_attention(query, key, value, **kwargs)
         if self.is_sage_attention:
             return sage_attention_infer(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
                                         is_causal=is_causal, scale=scale)

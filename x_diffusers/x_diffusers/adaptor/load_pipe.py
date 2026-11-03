@@ -192,11 +192,11 @@ def load_minimax_h3_pipe(args):
     if packed_checkpoint and (
         device_type() != "cuda" or task_type != "fl2va" or dtype != torch.bfloat16
         or args.matmul_quant != "none" or any(getattr(args, name, None) for name in (
-            "transformer_path", "adaln_cache_file", "h3_refiner", "h3_turbo8",
+            "transformer_path", "adaln_cache_file", "h3_turbo8",
             "h3_turbo_sla_lora", "lora_path_list", "fsdp",
         ))
     ):
-        raise ValueError("H3 NVFP4 requires CUDA BF16 FL2VA without extra quantization, LoRA, AdaLN cache, FSDP or Refiner")
+        raise ValueError("H3 NVFP4 requires CUDA BF16 FL2VA without extra quantization, LoRA, AdaLN cache or FSDP")
 
     if task_type == "ref2va":
         logger.info("building minimax-h3 ref2va modular pipeline...")
@@ -426,10 +426,10 @@ def load_pipe(args):
             args.model != "MiniMax-H3", args.atten not in ("none", "sage", "sparge"), args.matmul_quant != "none",
             args.vae_matmul_quant != "none", args.vae_lightning != "none", args.rope_fused,
             args.text_encoder_tp > 1, args.inf_vram_blocks_num, args.fsdp,
-            getattr(args, "h3_refiner", False), getattr(args, "h3_attention", "legacy") != "legacy",
+            getattr(args, "h3_attention", "legacy") != "legacy",
         )
         if any(unsupported):
-            raise ValueError("CUDA currently supports Base MiniMax-H3 with SDPA, SageAttention or SpargeAttention, "
+            raise ValueError("CUDA currently supports MiniMax-H3 with SDPA, SageAttention or SpargeAttention, "
                              "group offload, and without NPU-specific optimizations")
     if getattr(args, "h3_turbo8", False):
         from .h3_turbo8 import validate, validate_assets

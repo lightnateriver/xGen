@@ -29,7 +29,7 @@ def model_key(args):
               'adaln_cache_file', 'num_inference_steps', 'dtype', 'sp', 'text_encoder_tp',
               'matmul_quant', 'vae_matmul_quant', 'atten', 'phaa_num', 'rope_fused',
               'h3_refiner_weights', 'h3_refiner_prepared', 'h3_refiner_loading',
-              'h3_attention', 'h3_veda_predictor', 'h3_turbo8')
+              'h3_attention', 'h3_veda_predictor', 'h3_turbo8', 'h3_nvfp4_checkpoint')
     return tuple(getattr(args, name, None) for name in fields)
 
 
@@ -41,6 +41,9 @@ def validate_settings(args):
     cuda = os.environ.get('XGEN_DEVICE', 'npu') == 'cuda'
     if args.sp != 8 or args.dtype != 'bf16':
         raise ValueError('Experimental H3 Refiner requires SP8 and BF16')
+    if cuda and (args.task_type != 'fl2va' or not getattr(args, 'h3_nvfp4_checkpoint', None) or
+                 getattr(args, 'h3_nvfp4_resident', False) or getattr(args, 'h3_nvfp4_compile', False)):
+        raise ValueError('CUDA H3 Refiner requires a packed FL2VA Base checkpoint with staged residency')
     if cuda and args.atten != 'none':
         raise ValueError('Experimental CUDA H3 Refiner requires --atten none (native attention)')
     if not cuda and args.atten != 'laser':

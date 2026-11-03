@@ -1,7 +1,10 @@
 from torch.hub import download_url_to_file, get_dir
 from urllib.parse import urlparse
 import torch
-import torch_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
 import typing
 import gc
 import torchvision.transforms.functional as transform

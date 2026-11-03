@@ -6,7 +6,10 @@ import math
 import numpy as np
 import torch
 from torch import nn
-import torch_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
 import torch.distributed as dist
 from typing import Union, Tuple, Optional
 

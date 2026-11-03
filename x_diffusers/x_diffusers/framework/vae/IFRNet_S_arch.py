@@ -1,7 +1,10 @@
 # https://github.com/ltkong218/IFRNet/blob/main/models/IFRNet_S.py
 # https://github.com/ltkong218/IFRNet/blob/main/utils.py
 import torch
-import torch_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
 import torch.nn as nn
 import torch.nn.functional as F
 

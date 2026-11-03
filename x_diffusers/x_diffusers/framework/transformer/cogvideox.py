@@ -4,8 +4,11 @@ from typing import Optional, Tuple, Union, Dict, Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_npu
-from torch_npu.contrib import transfer_to_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
+    from torch_npu.contrib import transfer_to_npu
 from diffusers.models.attention import FeedForward
 from diffusers.models.transformers import cogvideox_transformer_3d
 from diffusers.configuration_utils import ConfigMixin, register_to_config

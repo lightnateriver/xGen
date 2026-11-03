@@ -1,5 +1,8 @@
 import torch
-import torch_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 from typing import List, Optional, Union

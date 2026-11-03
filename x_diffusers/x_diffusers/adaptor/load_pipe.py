@@ -14,6 +14,7 @@ from diffusers.utils import logging
 
 from x_base import fsdp_init, turbo_on_pipe, cache_dit_on_pipe, attention_manager, matmul_manager, \
     rope_manager, phaa_on_pipe, OffloadManager, OffloadManager_For_Save_Memory, offload_config_manager
+from x_base.device import device_type
 from x_base.config import QWEN_LORA_SCHEDULER_CONFIG
 from .distillation import update_wan_distillation_pipe_params, load_distillation_model
 from ..framework.pipeline import WanImageToVideoPipelineJoint, WanVideoToVideoPipeline
@@ -268,9 +269,10 @@ def load_minimax_h3_pipe(args):
 
     # Group offloading: stream blocks between CPU and NPU to avoid OOM
     # low_cpu_mem_usage=True to skip pin_memory() which causes NPU host memory OOM
-    npu_device = torch.device("npu", torch.npu.current_device())
+    backend = device_type()
+    onload_device = torch.device(backend, torch.get_device_module(backend).current_device())
     offload = dict(
-        onload_device=npu_device,
+        onload_device=onload_device,
         offload_device=torch.device("cpu"),
         use_stream=True,
         low_cpu_mem_usage=True,
@@ -285,8 +287,11 @@ def load_minimax_h3_pipe(args):
         apply_group_offloading(pipe.text_encoder, offload_type="leaf_level", **offload)
 
     # VAEs are small enough to stay on device
-    pipe.vae.to(npu_device)
-    pipe.audio_vae.to(npu_device)
+    pipe.vae.to(onload_device)
+    pipe.audio_vae.to(onload_device)
+
+    if backend == "cuda":
+        return pipe
 
     # VAE decoder to bf16, keep norm weights in fp32
     # NPU aclnnRmsNorm accepts BF16 input + FP32 weight → BF16 output natively,
@@ -372,6 +377,16 @@ def to_dtype(name: str):
 
 
 def load_pipe(args):
+    if device_type() == "cuda":
+        unsupported = (
+            args.model != "MiniMax-H3", args.atten != "none", args.matmul_quant != "none",
+            args.vae_matmul_quant != "none", args.vae_lightning != "none", args.rope_fused,
+            args.text_encoder_tp > 1, args.inf_vram_blocks_num, args.fsdp,
+            getattr(args, "h3_refiner", False), getattr(args, "h3_attention", "legacy") != "legacy",
+        )
+        if any(unsupported):
+            raise ValueError("CUDA currently supports Base MiniMax-H3 with native attention, "
+                             "group offload, and without NPU-specific optimizations")
     if getattr(args, "h3_turbo8", False):
         from .h3_turbo8 import validate, validate_assets
         validate(args)
@@ -485,7 +500,8 @@ def _apply_adaln_cache(pipe, args):
 
 def operator_ability(pipe, args):
     # 设置自定义attention backend
-    apply_npu_attention(pipe)
+    if device_type() == "npu":
+        apply_npu_attention(pipe)
     _apply_attention_backend(args)
     _apply_matmul_quant(pipe, args)
 
@@ -824,7 +840,7 @@ def _pipe_to_device_full(pipe, args):
             _fsdp_modules[name] = module
             setattr(pipe, name, None)
     try:
-        pipe.to("npu")
+        pipe.to(device_type())
     finally:
         for name, module in _fsdp_modules.items():
             setattr(pipe, name, module)

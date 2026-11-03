@@ -4,8 +4,11 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_npu
-from torch_npu.contrib import transfer_to_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
+    from torch_npu.contrib import transfer_to_npu
 from diffusers.models.transformers import transformer_wan
 from diffusers.models.transformers.transformer_wan import WanImageEmbedding, _get_added_kv_projections, \
     _get_qkv_projections

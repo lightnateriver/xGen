@@ -7,7 +7,10 @@ import os
 
 import torch
 import torch.nn.functional as F
-import torch_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
 
 _orig_rms_norm = F.rms_norm
 _patched = False

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from torch.npu import Stream
+import torch
+
+from x_base.device import device_type
 
 from .globals import enable_phaa, set_phaa_split_num
 
@@ -34,7 +36,7 @@ def check_split_num_correctness(attn, split_num):
 
 
 def inject_phaa_for_wan(transformer, split_num):
-    comm_stream = Stream()
+    comm_stream = torch.get_device_module(device_type()).Stream()
     for block in transformer.blocks:
         check_split_num_correctness(block.attn1, split_num)
         check_split_num_correctness(block.attn2, split_num)
@@ -43,7 +45,7 @@ def inject_phaa_for_wan(transformer, split_num):
 
 
 def inject_phaa_for_minimax_h3(transformer, split_num):
-    comm_stream = Stream()
+    comm_stream = torch.get_device_module(device_type()).Stream()
     for block in transformer.transformer_blocks:
         if hasattr(block, "attn"):
             check_split_num_correctness(block.attn, split_num)

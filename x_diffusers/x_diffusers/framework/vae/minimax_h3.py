@@ -32,8 +32,11 @@ from concurrent.futures import ThreadPoolExecutor
 _USE_COPY_STREAM = os.environ.get("VAE_COPY_STREAM", "0") == "1"
 
 import torch
-import torch_npu  # noqa: F401
-from torch_npu.contrib import transfer_to_npu  # noqa: F401
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu  # noqa: F401
+    from torch_npu.contrib import transfer_to_npu  # noqa: F401
 import numpy as np
 
 from diffusers.models.autoencoders import autoencoder_kl_minimax_h3

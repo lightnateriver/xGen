@@ -20,8 +20,11 @@ from typing import Any, Optional
 
 import torch
 import torch.distributed as dist
-import torch_npu  # noqa: F401  – registers NPU kernels
-from torch_npu.contrib import transfer_to_npu  # noqa: F401
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu  # noqa: F401  – registers NPU kernels
+    from torch_npu.contrib import transfer_to_npu  # noqa: F401
 import torch.nn as nn
 
 from diffusers.models.transformers import transformer_minimax_h3

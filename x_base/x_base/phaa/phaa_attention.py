@@ -38,7 +38,7 @@ def run_phaa_attention(
     key: torch.Tensor,           # (B, Skv, H)
     value: torch.Tensor,         # (B, Skv, H)
     *,
-    comm_stream,                  # torch.npu.Stream
+    comm_stream,                  # accelerator communication stream
     sp_group,                     # SP process group
     sp_size: int,                # W_S
     heads: int,                   # total attention heads
@@ -96,11 +96,12 @@ def run_phaa_attention(
     chunk_sizes = [base + (1 if i < remainder else 0) for i in range(fa_split_num)]
 
     # --- prepare events ---
-    all2all_before_attn_is_finished = [torch.npu.Event() for _ in range(fa_split_num)]
-    fa_is_finished = [torch.npu.Event() for _ in range(fa_split_num)]
+    accelerator = torch.cuda if query.device.type == "cuda" else torch.npu
+    all2all_before_attn_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
+    fa_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     has_extra = extra_attn_fn is not None
     if has_extra:
-        fa_extra_is_finished = [torch.npu.Event() for _ in range(fa_split_num)]
+        fa_extra_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
 
     # --- prepare per-chunk buffers (variable size) ---
     query_a2a_bufs = [torch.empty((W_S, Sq, B, cs, D), device=query.device, dtype=query.dtype)
@@ -141,8 +142,8 @@ def run_phaa_attention(
         c_offset += cs
 
     # --- 1. first chunk all2all on comm_stream ---
-    comm_stream.wait_stream(torch.npu.current_stream())
-    with torch.npu.stream(comm_stream):
+    comm_stream.wait_stream(accelerator.current_stream())
+    with accelerator.stream(comm_stream):
         torch.distributed.all_to_all_single(query_a2a_bufs[0], query_chunks[0],
                                             group=sp_group, async_op=False)
         torch.distributed.all_to_all_single(key_a2a_bufs[0], key_chunks[0],
@@ -159,7 +160,7 @@ def run_phaa_attention(
         cs = chunk_sizes[step]
 
         # 2.1 compute attention
-        torch.npu.current_stream().wait_event(all2all_before_attn_is_finished[step])
+        accelerator.current_stream().wait_event(all2all_before_attn_is_finished[step])
         query_ = reshape_for_attention(query_a2a_bufs[step])
         key_ = reshape_for_attention(key_a2a_bufs[step])
         value_ = reshape_for_attention(value_a2a_bufs[step])
@@ -212,7 +213,7 @@ def run_phaa_attention(
         query_a2a_bufs[step] = key_a2a_bufs[step] = value_a2a_bufs[step] = None
 
         # 2.3 communication on comm_stream
-        with torch.npu.stream(comm_stream):
+        with accelerator.stream(comm_stream):
             # next chunk all2all
             if step + 1 < fa_split_num:
                 torch.distributed.all_to_all_single(

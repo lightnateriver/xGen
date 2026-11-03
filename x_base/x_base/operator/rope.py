@@ -1,5 +1,8 @@
 import torch
-import torch_npu
+from x_base.device import device_type
+
+if device_type() == "npu":
+    import torch_npu
 import logging
 
 logger = logging.getLogger("attention")

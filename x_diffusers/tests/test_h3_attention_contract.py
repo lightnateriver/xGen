@@ -149,7 +149,16 @@ class ContractTests(unittest.TestCase):
                      'x_diffusers/x_diffusers/framework/vae/h3_refiner_output.py',
                      'x_base/x_base/vae_parallelism/save_av_stream.py']:
             old=subprocess.check_output(['git','show','origin/v0.2:'+name],cwd=ROOT)
-            self.assertEqual(old,(ROOT/name).read_bytes(),name)
+            actual = (ROOT/name).read_bytes()
+            if name.endswith('/vae/minimax_h3.py'):
+                # Device selection may guard imports. Keep the decoder body byte-identical.
+                guarded = (b'from x_base.device import device_type\n\nif device_type() == "npu":\n'
+                           b'    import torch_npu  # noqa: F401\n'
+                           b'    from torch_npu.contrib import transfer_to_npu  # noqa: F401\n')
+                original = (b'import torch_npu  # noqa: F401\n'
+                            b'from torch_npu.contrib import transfer_to_npu  # noqa: F401\n')
+                actual = actual.replace(guarded, original, 1)
+            self.assertEqual(old,actual,name)
 
     def test_vendored_veda_accepts_shared_bundle_without_vllm_dependency(self):
         source=(ROOT/'x_base/x_base/operator/h3_attention/veda_vendor.py').read_text(encoding='utf-8')

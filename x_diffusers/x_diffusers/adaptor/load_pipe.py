@@ -417,11 +417,18 @@ def to_dtype(name: str):
 
 
 def load_pipe(args):
+    backend = device_type()
+    if (backend != "cuda" or args.model != "MiniMax-H3") and any((
+        getattr(args, "h3_nvfp4_checkpoint", None),
+        getattr(args, "h3_nvfp4_resident", False),
+        getattr(args, "h3_nvfp4_compile", False),
+    )):
+        raise ValueError("H3 NVFP4 options require CUDA MiniMax-H3")
     if getattr(args, "h3_cuda_vae_sp", False) and (
-        device_type() != "cuda" or args.model != "MiniMax-H3" or args.sp < 2
+        backend != "cuda" or args.model != "MiniMax-H3" or args.sp < 2
     ):
         raise ValueError("--h3_cuda_vae_sp requires CUDA MiniMax-H3 and SP > 1")
-    if device_type() == "cuda":
+    if backend == "cuda":
         unsupported = (
             args.model != "MiniMax-H3", args.atten not in ("none", "sage", "sparge"), args.matmul_quant != "none",
             args.vae_matmul_quant != "none", args.vae_lightning != "none", args.rope_fused,

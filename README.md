@@ -148,3 +148,6 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 端到端的画质和速度需用目标硬件验证。
 配合 `XGEN_PHAA_GATHER_PRIORITY=1` 可优先提交全部 Q/K/V 通信。
 默认仍交错提交 Q/K/V 与 attention 输出通信。
+实验性 `XGEN_PHAA_DUAL_COMM=1` 将输出通信放到独立的 CUDA 流和 NCCL 通信器。
+它需要开启 FP8、SP 覆盖全部进程、NCCL 2.26 或更新版本，并在启动前设置
+`NCCL_LAUNCH_ORDER_IMPLICIT=1`。

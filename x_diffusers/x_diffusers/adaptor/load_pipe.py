@@ -546,10 +546,23 @@ def parallelism_ability(pipe, args):
         if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
             raise ValueError("XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num")
         gather_priority = os.environ.get("XGEN_PHAA_GATHER_PRIORITY") == "1"
+        dual_comm = os.environ.get("XGEN_PHAA_DUAL_COMM") == "1"
+        scatter_group = scatter_stream = None
+        if dual_comm:
+            from x_base.phaa.utils import phaa_cuda_scatter_group
+
+            sp_group = pipe.transformer.parallel_manager.sp_group
+            if dist.get_process_group_ranks(sp_group) != list(range(dist.get_world_size())):
+                raise ValueError("PHAA dual communication requires a world-spanning SP group")
+            scatter_group = phaa_cuda_scatter_group(dist.group.WORLD)
+            scatter_stream = torch.cuda.Stream()
         for block in pipe.transformer.transformer_blocks:
             block.attn._h3_phaa_fp8 = True
             block.attn._h3_phaa_gather_priority = gather_priority
-        logger.info("Experimental H3 PHAA E4M3 transport enabled, gather_priority=%s", gather_priority)
+            block.attn._h3_phaa_scatter_group = scatter_group
+            block.attn._h3_phaa_scatter_stream = scatter_stream
+        logger.info("Experimental H3 PHAA E4M3 transport enabled, gather_priority=%s, dual_comm=%s",
+                    gather_priority, dual_comm)
 
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).

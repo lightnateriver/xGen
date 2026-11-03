@@ -25,6 +25,8 @@ Note (P1-4):
     Callers that need it (e.g. Wan img attention) should capture it via closure.
 """
 
+from contextlib import nullcontext
+
 import torch
 
 # ✅ Import from sub-modules to avoid circular dependency (P1-1)
@@ -56,6 +58,8 @@ def run_phaa_attention(
     attention_fn=None,            # optional model-local operator; receives local head offset
     fp8_transport=False,
     gather_priority=False,
+    scatter_stream=None,
+    scatter_group=None,
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -110,6 +114,11 @@ def run_phaa_attention(
 
     if gather_priority and not fp8_transport:
         raise ValueError("PHAA gather priority requires FP8 transport")
+    if (scatter_stream is None) != (scatter_group is None) or (
+            scatter_stream is not None and not fp8_transport):
+        raise ValueError("Separate PHAA scatter requires FP8, a stream and a process group")
+    output_stream = scatter_stream if scatter_stream is not None else comm_stream
+    output_group = scatter_group if scatter_group is not None else sp_group
 
     all2all_before_attn_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     fa_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
@@ -164,6 +173,8 @@ def run_phaa_attention(
 
     # --- 1. first chunk all2all on comm_stream ---
     comm_stream.wait_stream(accelerator.current_stream())
+    if scatter_stream is not None:
+        scatter_stream.wait_stream(accelerator.current_stream())
     with accelerator.stream(comm_stream):
         for index in range(fa_split_num if gather_priority else 1):
             gather_chunk(index)
@@ -233,17 +244,15 @@ def run_phaa_attention(
             # next chunk all2all
             if not gather_priority and step + 1 < fa_split_num:
                 gather_chunk(step + 1)
-            # output all2all
-            comm_stream.wait_event(fa_is_finished[step])
-            exchange(
-                output_a2a_bufs[step], hidden_states_buf[step],
-                group=sp_group)
-            # extra output all2all
-            if has_extra and hidden_states_extra_buf[step] is not None:
-                comm_stream.wait_event(fa_extra_is_finished[step])
-                torch.distributed.all_to_all_single(
-                    output_extra_a2a_bufs[step], hidden_states_extra_buf[step],
-                    group=sp_group, async_op=False)
+            scatter_context = accelerator.stream(scatter_stream) if scatter_stream is not None else nullcontext()
+            with scatter_context:
+                output_stream.wait_event(fa_is_finished[step])
+                exchange(output_a2a_bufs[step], hidden_states_buf[step], group=output_group)
+                if has_extra and hidden_states_extra_buf[step] is not None:
+                    output_stream.wait_event(fa_extra_is_finished[step])
+                    torch.distributed.all_to_all_single(
+                        output_extra_a2a_bufs[step], hidden_states_extra_buf[step],
+                        group=output_group, async_op=False)
         # Send/output references stay alive through the final stream join.
         head_offset += cs
 
@@ -251,6 +260,8 @@ def run_phaa_attention(
     # Bound the lifetime to one attention call. A host-visible stream join
     # allows safe reuse without accumulating cross-stream allocator records.
     comm_stream.synchronize()
+    if scatter_stream is not None:
+        scatter_stream.synchronize()
     query_chunks.clear()
     key_chunks.clear()
     value_chunks.clear()

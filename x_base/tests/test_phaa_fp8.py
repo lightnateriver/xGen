@@ -42,8 +42,18 @@ def test_fp8_phaa_uneven_heads_and_padding(monkeypatch, batch_size):
             *qkv, **options, fp8_transport=True, gather_priority=True,
         )
         assert exchange.call_count == 4
+        exchange.reset_mock()
+        scatter_group = object()
+        dual = phaa_attention.run_phaa_attention(
+            *qkv, **options, fp8_transport=True,
+            scatter_group=scatter_group, scatter_stream=torch.cuda.Stream(),
+        )
+        assert [c.kwargs["group"] for c in exchange.call_args_list] == [
+            None, None, scatter_group, scatter_group,
+        ]
 
     assert dense.shape == fp8.shape == qkv[0].shape
     assert torch.isfinite(fp8).all()
     assert torch.equal(fp8, gather_first)
+    assert torch.equal(fp8, dual)
     assert F.cosine_similarity(dense.float().flatten(), fp8.float().flatten(), dim=0) > 0.99

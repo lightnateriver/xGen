@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 import torch
 
 from x_base.device import device_type
 
 from .globals import enable_phaa, set_phaa_split_num
+
+
+@lru_cache(maxsize=1)
+def phaa_cuda_scatter_group(world_group):
+    """Create one secondary communicator per world-spanning CUDA job."""
+    if os.environ.get("NCCL_LAUNCH_ORDER_IMPLICIT") != "1" or torch.cuda.nccl.version() < (2, 26):
+        raise ValueError("PHAA dual communication requires NCCL >= 2.26 and NCCL_LAUNCH_ORDER_IMPLICIT=1")
+    return torch.distributed.new_group(
+        ranks=torch.distributed.get_process_group_ranks(world_group), backend="nccl"
+    )
 
 
 def phaa_on_pipe(pipe: DiffusionPipeline, transformer_2=False, transformer_3=False, phaa_split_num=1, *args, **kwargs):

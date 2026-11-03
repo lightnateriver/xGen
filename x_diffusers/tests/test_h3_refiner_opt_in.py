@@ -133,7 +133,11 @@ class ContractTests(unittest.TestCase):
         now = vars(args())
         self.assertEqual(old, {key:now[key] for key in old})
         self.assertEqual(set(now)-set(old),{'h3_turbo8','h3_attention','h3_veda_predictor','h3_veda_sparsity','h3_refiner','h3_refiner_weights','h3_refiner_prepared',
-                                         'h3_refiner_seconds','h3_refiner_loading'})
+                                         'h3_refiner_seconds','h3_refiner_loading','h3_nvfp4_checkpoint','h3_nvfp4_resident',
+                                         'h3_nvfp4_compile','h3_cuda_vae_sp'})
+        self.assertIsNone(now['h3_nvfp4_checkpoint'])
+        for flag in ('h3_nvfp4_resident','h3_nvfp4_compile','h3_cuda_vae_sp'):
+            self.assertFalse(now[flag])
 
     def test_exact_native_padding_and_output_counts(self):
         for seconds, generation, latent in [(5,124,37),(10,243,72),(15,362,107)]:

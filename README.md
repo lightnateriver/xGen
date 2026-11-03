@@ -133,6 +133,8 @@ bash infer_wan2.2_14b_t2v_720p.sh
 AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 checkpoint。
 显存充足时可额外传入 `--h3_nvfp4_resident`，让打包 DiT 常驻每张卡，省去逐层
 搬运。文本编码器仍按原策略 offload。移除该参数即可恢复逐层搬运。
+常驻模式下可试验 `--h3_nvfp4_compile`，只编译重复的 DiT block。首个请求
+包含编译开销，换形状可能再次编译。移除参数即可恢复 eager 执行。
 
 设置 `MODEL_PATH`、`NVFP4_CHECKPOINT`、`FIRST_FRAME` 和 `PROMPT_FILE` 后，
 运行 [CUDA NVFP4 推理示例](example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh)。

@@ -184,6 +184,9 @@ def load_minimax_h3_pipe(args):
     task_type = getattr(args, "task_type", "t2va")
     packed_checkpoint = getattr(args, "h3_nvfp4_checkpoint", None)
     packed_resident = getattr(args, "h3_nvfp4_resident", False)
+    packed_compile = getattr(args, "h3_nvfp4_compile", False)
+    if packed_compile and not packed_resident:
+        raise ValueError("--h3_nvfp4_compile requires --h3_nvfp4_resident")
     if packed_resident and not packed_checkpoint:
         raise ValueError("--h3_nvfp4_resident requires --h3_nvfp4_checkpoint")
     if packed_checkpoint and (
@@ -306,6 +309,11 @@ def load_minimax_h3_pipe(args):
     if packed_resident:
         logger.info("Keeping packed H3 DiT resident on %s", onload_device)
         pipe.transformer.to(onload_device)
+        if packed_compile:
+            for block in pipe.transformer.transformer_blocks:
+                block.compile(dynamic=False, options={"triton.cudagraphs": False})
+            logger.info("Regional compilation enabled for %d H3 DiT blocks",
+                        len(pipe.transformer.transformer_blocks))
     elif args.matmul_quant == 'none' and not getattr(args, 'h3_refiner', False):
         pipe.transformer.enable_group_offload(offload_type="block_level", num_blocks_per_group=1, **offload)
     if args.text_encoder_tp <= 1:

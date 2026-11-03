@@ -134,10 +134,11 @@ class ContractTests(unittest.TestCase):
             service.validate_warmup(dict(h3_attention='spark'),True)
         service.validate_warmup(dict(h3_attention='spark'),False)
 
-    def test_v03_does_not_modify_refiner_loop_or_legacy_codecs(self):
+    def test_refiner_loop_and_legacy_codecs_preserve_npu_path(self):
         pipeline = 'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py'
         original = subprocess.check_output(['git','show','origin/v0.2:'+pipeline], cwd=ROOT)
-        for source in (original, (ROOT/pipeline).read_bytes()):
+        current = (ROOT/pipeline).read_bytes().replace(b'self.accelerator.', b'torch.npu.')
+        for source in (original, current):
             cls = next(node for node in ast.parse(source).body
                        if isinstance(node, ast.ClassDef) and node.name == 'H3RefinerPipeline')
             loop = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '__call__')
@@ -151,13 +152,19 @@ class ContractTests(unittest.TestCase):
             old=subprocess.check_output(['git','show','origin/v0.2:'+name],cwd=ROOT)
             actual = (ROOT/name).read_bytes()
             if name.endswith('/vae/minimax_h3.py'):
-                # Device selection may guard imports. Keep the decoder body byte-identical.
+                # Compare the default branch after removing the CUDA-only import guard and dispatch.
                 guarded = (b'from x_base.device import device_type\n\nif device_type() == "npu":\n'
                            b'    import torch_npu  # noqa: F401\n'
                            b'    from torch_npu.contrib import transfer_to_npu  # noqa: F401\n')
                 original = (b'import torch_npu  # noqa: F401\n'
                             b'from torch_npu.contrib import transfer_to_npu  # noqa: F401\n')
+                cuda_dispatch = (b'    cuda_parallel = getattr(self, "_h3_cuda_vae_parallel", None)\n'
+                                 b'    if cuda_parallel is not None:\n'
+                                 b'        decoded = _decode_sp_full(self, z, cuda_parallel)\n'
+                                 b'        infer_info._route_b_saved = False\n'
+                                 b'    elif is_lightning_mode and is_distributed:')
                 actual = actual.replace(guarded, original, 1)
+                actual = actual.replace(cuda_dispatch, b'    if is_lightning_mode and is_distributed:', 1)
             self.assertEqual(old,actual,name)
 
     def test_vendored_veda_accepts_shared_bundle_without_vllm_dependency(self):

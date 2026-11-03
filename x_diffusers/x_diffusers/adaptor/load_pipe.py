@@ -310,7 +310,14 @@ def load_minimax_h3_pipe(args):
         logger.info("Keeping packed H3 DiT resident on %s", onload_device)
         pipe.transformer.to(onload_device)
         if packed_compile:
+            from x_base.operator.h3_nvfp4 import H3NVFP4Linear
+
             for block in pipe.transformer.transformer_blocks:
+                # Keep stream choreography and packed custom kernels outside Dynamo.
+                block.attn.forward = torch.compiler.disable(block.attn.forward)
+                for module in block.ff.modules():
+                    if isinstance(module, H3NVFP4Linear):
+                        module.forward = torch.compiler.disable(module.forward)
                 block.compile(dynamic=False, options={"triton.cudagraphs": False})
             logger.info("Regional compilation enabled for %d H3 DiT blocks",
                         len(pipe.transformer.transformer_blocks))

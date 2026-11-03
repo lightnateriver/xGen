@@ -134,7 +134,8 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 显存充足时可额外传入 `--h3_nvfp4_resident`，让打包 DiT 常驻每张卡，省去逐层
 搬运。文本编码器仍按原策略 offload。移除该参数即可恢复逐层搬运。
 常驻模式下可试验 `--h3_nvfp4_compile`，只编译重复的 DiT block。首个请求
-包含编译开销，换形状可能再次编译。移除参数即可恢复 eager 执行。
+包含编译开销，换形状可能再次编译。Attention 通信和 NVFP4 自定义算子继续 eager 执行。
+移除参数即可让整个 DiT 恢复 eager。
 编译环境需要可用的 C 编译器和与运行时匹配的 Python 开发头文件。
 多卡可用 `--h3_cuda_vae_sp` 试验 CUDA VAE 序列并行，复用 xGen 的 VAE
 分片逻辑和原有音视频保存流程。VAE attention 头数需能整除 SP 卡数。

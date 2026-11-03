@@ -1,4 +1,4 @@
-"""CPU LoRA merge and NPU AdaLN precomputation; never modify source weights."""
+"""CPU LoRA merge and accelerator AdaLN precomputation; never modify source weights."""
 import argparse
 import gc
 import tempfile
@@ -18,7 +18,11 @@ CURVE_SHA256 = "c02a6c11888297688c1e6278185ea1f947023acfc69f9003bbcdcec9a229a8e7
 
 @torch.inference_mode()
 def prepare(weights, output, refresh_cache=False):
-    import torch_npu
+    from x_base.device import device_type
+
+    backend = device_type()
+    if backend == 'npu':
+        import torch_npu  # noqa: F401
     from diffusers import MiniMaxH3Transformer3DModel
     weights, output = Path(weights), Path(output)
     if refresh_cache and not output.is_dir():
@@ -37,8 +41,10 @@ def prepare(weights, output, refresh_cache=False):
         raise ValueError("Cache refresh requires re-merging LoRA affecting time modulation")
     if not refresh_cache:
         output.mkdir(parents=True)
-    torch.npu.set_device(0)
-    torch.npu.set_compile_mode(jit_compile=False)
+    accelerator = torch.get_device_module(backend)
+    accelerator.set_device(0)
+    if backend == 'npu':
+        accelerator.set_compile_mode(jit_compile=False)
     print("LOAD_BASE", flush=True)
     model = MiniMaxH3Transformer3DModel.from_pretrained(
         str(weights / "base_model"), subfolder="transformer",
@@ -61,20 +67,20 @@ def prepare(weights, output, refresh_cache=False):
     pairs, curve = adapters.attach(model, weights)
     del pairs
     curve.strength = 1.0
-    model.time_proj.to("npu")
-    model.time_embedder.to("npu")
+    model.time_proj.to(backend)
+    model.time_embedder.to(backend)
     sigmas = SCHEDULES[3]
     times, embeddings, tables = [], [], {}
     for i, sigma in enumerate(sigmas[:-1]):
         layout = geometry.build_t2va_layout(torch.ones(1, dtype=torch.long),
                                             geometry.MiniMaxH3Geometry(1, 2, 2, 1))
         t, _ = geometry.build_row_timestep_plan(layout, video_sigma=sigma, audio_sigma=0., keyframe_noise_aug=1.)
-        t = t.to("npu")
+        t = t.to(backend)
         times.append(t)
         tables[f"step{i}_timesteps"] = t.cpu()
         embeddings.append(F.silu(model.time_embedder(model.time_proj(t).to(torch.bfloat16))))
     for j, block in enumerate(model.transformer_blocks):
-        linear = block.adaln_proj.linear.to("npu")
+        linear = block.adaln_proj.linear.to(backend)
         for i, (t, emb) in enumerate(zip(times, embeddings)):
             curve.pre(model, (), {"timestep": t})
             actual = linear(emb).detach()
@@ -86,7 +92,7 @@ def prepare(weights, output, refresh_cache=False):
             tables[f"step{i}_block{j}"] = actual.cpu().contiguous()
         block.adaln_proj.linear = linear.base.cpu()
         print("CACHED_BLOCK", j, flush=True)
-    model.norm_out.linear.to("npu")
+    model.norm_out.linear.to(backend)
     for i, emb in enumerate(embeddings):
         tables[f"step{i}_final"] = model.norm_out.linear(emb).cpu().contiguous()
     model.cpu()

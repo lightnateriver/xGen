@@ -18,9 +18,11 @@ from .vendor.sigmas import SCHEDULES
 logger = logging.getLogger(__name__)
 
 
-def prepare_vae_precision(vae):
+def prepare_vae_precision(vae, backend="npu"):
     """Override from_pretrained's keep-in-FP32 Conv policy before BF16 tile inputs."""
     vae.to(dtype=torch.bfloat16)
+    if backend == 'cuda':
+        return vae
     for module in vae.decoder.modules():
         if isinstance(module, (torch.nn.LayerNorm, torch.nn.GroupNorm, torch.nn.RMSNorm)):
             module.float()
@@ -71,7 +73,7 @@ class H3RefinerPipeline:
         self.text.update_components(text_encoder=base.text_encoder, tokenizer=base.tokenizer, processor=base.processor)
         self.vae = AutoencoderKLMiniMaxH3.from_pretrained(str(weights/'base_model'), subfolder='vae',
             torch_dtype=torch.bfloat16, local_files_only=True).eval()
-        prepare_vae_precision(self.vae)
+        prepare_vae_precision(self.vae, self.backend)
         if self.backend == 'npu':
             self.vae.set_attention_backend(AttentionBackendName._NATIVE_NPU)
         self.vae.enable_tiling(tile_sample_min_height=256, tile_sample_min_width=256,

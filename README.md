@@ -234,4 +234,4 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_ser
 
 已验证 8 张 RTX 5090 上的 5 秒 2K 离线推理和两次串行在线请求。
 在线原生 attention 也验证了同一服务从 5 秒切换到 10 秒，两条请求复用模型和 CPU 权重。
-10 秒请求的单卡 PyTorch 峰值保留显存约 30.34 GiB。15 秒、并发和长期内存趋势仍需实测。
+10 秒请求的单卡 PyTorch 峰值保留显存约 30.34 GiB。两条近同时提交的 5 秒请求也已验证排队与串行执行。15 秒、队列满载和长期内存趋势仍需实测。

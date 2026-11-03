@@ -3,12 +3,13 @@ import os
 from pathlib import Path
 
 
-def add_arguments(parser):
+def add_arguments(parser, *, offline=True):
     group = parser.add_argument_group('Experimental H3 Base attention (disabled by default)')
     group.add_argument('--h3_attention', choices=('legacy', 'spark', 'veda'), default='legacy')
     group.add_argument('--h3_veda_predictor', default=None, help='Published Veda predictor safetensors')
-    group.add_argument('--h3_veda_sparsity', type=float, choices=(0.7, 0.9), default=0.9,
-                       help='Experimental Veda nominal block sparsity')
+    if offline:
+        group.add_argument('--h3_veda_sparsity', type=float, choices=(0.7, 0.9), default=0.9,
+                           help='Experimental Veda nominal block sparsity')
     return parser
 
 

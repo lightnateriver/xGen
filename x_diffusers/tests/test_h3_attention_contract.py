@@ -51,6 +51,13 @@ class ContractTests(unittest.TestCase):
         self.assertIsNone(contract.validate(value))
         self.assertFalse(any(s.startswith(('torch','h3_ascend','triton')) for s in set(sys.modules)-before))
 
+    def test_veda_sparsity_is_an_offline_argument(self):
+        offline = contract.add_arguments(argparse.ArgumentParser())
+        self.assertEqual(offline.parse_args(['--h3_veda_sparsity', '0.7']).h3_veda_sparsity, 0.7)
+        service_parser = contract.add_arguments(argparse.ArgumentParser(), offline=False)
+        _, unknown = service_parser.parse_known_args(['--h3_veda_sparsity', '0.7'])
+        self.assertEqual(unknown, ['--h3_veda_sparsity', '0.7'])
+
     def test_original_args_without_new_fields_still_disabled(self):
         self.assertIsNone(contract.validate(SimpleNamespace()))
         self.assertEqual(contract.key(SimpleNamespace()),('legacy',None,False,0.9))

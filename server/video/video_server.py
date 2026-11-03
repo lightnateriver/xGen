@@ -3191,7 +3191,7 @@ def main():
     from x_diffusers.adaptor.h3_refiner_config import add_arguments
     add_arguments(parser)
     from x_diffusers.adaptor.h3_attention_config import add_arguments as add_h3_attention_arguments
-    add_h3_attention_arguments(parser)
+    add_h3_attention_arguments(parser, offline=False)
 
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Service host')
     parser.add_argument('--port', type=int, default=5001, help='Service port')

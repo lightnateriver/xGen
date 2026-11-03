@@ -154,7 +154,15 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 `--phaa_num` 开启。它复用 PHAA 的分头和流调度，以 E4M3 和逐头 FP32 scale
 传输 Q、K、V 和 attention 输出。128 维时每头每 token 的载荷从 256 降至
 132 字节，每个头分块的 Q/K/V 合并为一次 all-to-all。量化会改变结果，
-端到端的画质和速度需用目标硬件验证。
+接收端将数据还原到原张量 dtype。对 BF16 attention 输出，这一路径就是 BF16 → FP8
+回程传输 → BF16。该开关同时控制去程和回程。
+
+RTX 5090 上的 SageAttention CUDA 分派使用 INT8 Q/K 和 FP8 P×V。计算精度由
+`ATTENTION_BACKEND=sage` 选择，通信精度由 `XGEN_PHAA_FP8` 选择。
+使用上面的 FL2VA 示例时，设置 `GPUS=8 ATTENTION_BACKEND=sage XGEN_PHAA_FP8=1`，
+并附加 `--phaa_num 2 --h3_nvfp4_resident`，即可使用已验证的 50 次 DiT 组合。
+该配置在 8 张 RTX 5090 上生成并保存约 5 秒的 768P 音视频耗时 102.77 秒，
+已通过完整音视频解码。端到端的画质和速度需用目标输入复核。
 配合 `XGEN_PHAA_GATHER_PRIORITY=1` 可优先提交全部 Q/K/V 通信。
 默认仍交错提交 Q/K/V 与 attention 输出通信。
 实验性 `XGEN_PHAA_DUAL_COMM=1` 将输出通信放到独立的 CUDA 流和 NCCL 通信器。

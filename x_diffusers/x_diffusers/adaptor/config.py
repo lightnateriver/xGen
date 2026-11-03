@@ -169,7 +169,7 @@ def add_abilities_args(parser: argparse.ArgumentParser):
                         help='Enable Fully Sharded Data Parallel (FSDP). '
                              'The default is the all model, with options for text_encoder and transformer models')
     group.add_argument("--atten",
-                       choices=['none', 'sage', 'laser', 'rainfusion', 'sparse', 'mxfp4'],
+                       choices=['none', 'sage', 'laser', 'rainfusion', 'sparse', 'mxfp4', 'sparge'],
                        default='none',
                        help="Attention type: none (base), sage (A8W8), laser, rainfusion, sparse, mxfp4")
     group.add_argument("--rainfusion_ratio", default=0.0, type=float,

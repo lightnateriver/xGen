@@ -379,13 +379,13 @@ def to_dtype(name: str):
 def load_pipe(args):
     if device_type() == "cuda":
         unsupported = (
-            args.model != "MiniMax-H3", args.atten not in ("none", "sage"), args.matmul_quant != "none",
+            args.model != "MiniMax-H3", args.atten not in ("none", "sage", "sparge"), args.matmul_quant != "none",
             args.vae_matmul_quant != "none", args.vae_lightning != "none", args.rope_fused,
             args.text_encoder_tp > 1, args.inf_vram_blocks_num, args.fsdp,
             getattr(args, "h3_refiner", False), getattr(args, "h3_attention", "legacy") != "legacy",
         )
         if any(unsupported):
-            raise ValueError("CUDA currently supports Base MiniMax-H3 with SDPA or SageAttention, "
+            raise ValueError("CUDA currently supports Base MiniMax-H3 with SDPA, SageAttention or SpargeAttention, "
                              "group offload, and without NPU-specific optimizations")
     if getattr(args, "h3_turbo8", False):
         from .h3_turbo8 import validate, validate_assets
@@ -428,7 +428,11 @@ def apply_npu_attention(pipe):
 
 
 def _apply_attention_backend(args):
-    if args.atten == 'sage':
+    if device_type() == 'cuda':
+        attention_manager.configure_cuda_attention(args.atten)
+    elif args.atten == 'sparge':
+        raise ValueError('SpargeAttention requires CUDA')
+    elif args.atten == 'sage':
         attention_manager.enable_sage_attention()
     elif args.atten == 'laser':
         attention_manager.enable_laser_attention()

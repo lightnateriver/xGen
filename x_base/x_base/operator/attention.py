@@ -1,5 +1,6 @@
 import logging
 import os
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -93,7 +94,7 @@ def laser_attention_infer(query, key, value, attn_mask=None, dropout_p=0.0, is_c
 class AttentionManager:
     def __init__(self):
         self.is_sage_attention = False
-        self.cuda_sage_attention = None
+        self.cuda_attention = None
         self.is_laser_attention = False
         self.is_sparse_attention = False
 
@@ -111,11 +112,24 @@ class AttentionManager:
     def disable_rainfusion_attention(self):
         self.is_rainfusion_attention = False
 
+    def configure_cuda_attention(self, backend):
+        self.cuda_attention = None
+        if backend == "sage":
+            from sageattention import sageattn
+            self.cuda_attention = sageattn
+        elif backend == "sparge":
+            from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
+            topk = float(os.environ.get("XGEN_SPARGE_TOPK", "0.5"))
+            if not 0 < topk <= 1:
+                raise ValueError("XGEN_SPARGE_TOPK must be in (0, 1]")
+            self.cuda_attention = partial(
+                spas_sage2_attn_meansim_topk_cuda, topk=topk, smooth_k=True,
+                pvthreshd=50, return_sparsity=False,
+            )
+
     def enable_sage_attention(self):
         if device_type() == "cuda":
-            from sageattention import sageattn
-            self.cuda_sage_attention = sageattn
-            self.is_sage_attention = True
+            self.configure_cuda_attention("sage")
         elif not CANN_OPS_AVAILABLE:
             logger.error("Not install CANN-OPS")
         else:
@@ -123,6 +137,7 @@ class AttentionManager:
 
     def disable_sage_attention(self):
         self.is_sage_attention = False
+        self.cuda_attention = None
 
     def enable_laser_attention(self):
         if not LA_AVAILABLE:
@@ -305,13 +320,15 @@ class AttentionManager:
             return base_attention_infer(query, key, value)
 
     def attention(self, query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None):
+        if query.is_cuda and self.cuda_attention is not None:
+            if (attn_mask is not None or dropout_p or query.shape[-1] not in (64, 128)
+                    or query.dtype not in (torch.float16, torch.bfloat16)
+                    or min(query.shape[-2], key.shape[-2]) < 128):
+                return base_attention_infer(query, key, value, attn_mask, dropout_p, is_causal, scale)
+            scale_kw = "scale" if isinstance(self.cuda_attention, partial) else "sm_scale"
+            return self.cuda_attention(query, key, value, tensor_layout="HND",
+                                       is_causal=is_causal, **{scale_kw: scale})
         if self.is_sage_attention:
-            if query.is_cuda:
-                if (attn_mask is not None or dropout_p or query.shape[-1] not in (64, 128)
-                        or query.dtype not in (torch.float16, torch.bfloat16)):
-                    return base_attention_infer(query, key, value, attn_mask, dropout_p, is_causal, scale)
-                return self.cuda_sage_attention(query, key, value, tensor_layout="HND",
-                                                is_causal=is_causal, sm_scale=scale)
             return sage_attention_infer(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
                                         is_causal=is_causal, scale=scale)
         elif self.is_laser_attention:

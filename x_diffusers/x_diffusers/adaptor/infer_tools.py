@@ -20,6 +20,7 @@ from .load_pipe import load_pipe, load_v2v_pipe, load_seedvr2_pipe, update_sched
 from x_base import (infer_info, prepare_video_and_mask, attention_manager,
                     read_text, list_cases, split_rectangle, lcm, floor_to_multiple, get_patch_hw,
                     SaveVideoStream, save_audio_to_wav, cleanup_audio)
+from x_base.device import device_type
 from ..framework.vae.wan import vfi
 from ..framework.vae.IFRNet_S_arch import IRFNet_S
 
@@ -871,6 +872,8 @@ class InferenceManager(object):
                 fuse_lora=args.fuse_lora,
                 weights_list=args.lora_scale_weight_list
             )
+            if device_type() == "cuda" and args.atten != self.init_args.atten:
+                attention_manager.configure_cuda_attention(args.atten)
 
         if not consistent:
             self.pipe = pipe_to_device(self.pipe, args)

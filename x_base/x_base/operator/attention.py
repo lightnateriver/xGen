@@ -113,6 +113,8 @@ class AttentionManager:
         self.is_rainfusion_attention = False
 
     def configure_cuda_attention(self, backend):
+        if backend not in ("none", "sage", "sparge"):
+            raise ValueError(f"Unsupported CUDA attention backend: {backend}")
         self.cuda_attention = None
         self.cuda_attention_head_chunk = 0
         if backend == "sage":

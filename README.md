@@ -137,6 +137,7 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 包含编译开销，换形状可能再次编译。Attention 通信和 NVFP4 自定义算子继续 eager 执行。
 移除参数即可让整个 DiT 恢复 eager。
 编译环境需要可用的 C 编译器和与运行时匹配的 Python 开发头文件。
+当前验证中局部编译改变了音视频输出，且同配置的 8 步请求比 eager 慢。
 多卡可用 `--h3_cuda_vae_sp` 试验 CUDA VAE 序列并行，复用 xGen 的 VAE
 分片逻辑和原有音视频保存流程。VAE attention 头数需能整除 SP 卡数。
 
@@ -159,3 +160,17 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 实验性 `XGEN_PHAA_DUAL_COMM=1` 将输出通信放到独立的 CUDA 流和 NCCL 通信器。
 它需要开启 FP8、SP 覆盖全部进程、NCCL 2.26 或更新版本，并在启动前设置
 `NCCL_LAUNCH_ORDER_IMPLICIT=1`。
+
+八张 RTX 5090 上已验证的 768P、50 次 DiT 配置如下。使用前先设置上面的
+模型、权重和输入变量。该配置每卡保留完整的打包 DiT 权重。
+
+```bash
+GPUS=8 ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 XGEN_PHAA_FP8=1 \
+  bash example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh \
+  --h3_nvfp4_resident --h3_cuda_vae_sp --phaa_num 2
+```
+
+同一输入与 seed 的单轮测试中，Sparge 逐层搬运版生成及保存耗时 250.25 秒，
+常驻版为 99.94 秒，加 VAE SP 后为 96.07 秒。常驻版与逐层搬运版的解码后
+音视频哈希一致。加 VAE SP 后音频哈希一致，画面 SSIM 为 0.9948。
+这些耗时从 pipeline 初始化完成后开始计量。

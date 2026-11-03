@@ -914,7 +914,7 @@ class InferenceManager(object):
         self.init_args = deepcopy(args)
 
         try:
-            os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
+            os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
         except OSError as e:
             logger.error(f"Failed to create output directory: {args.save_path}")
             return 0.0

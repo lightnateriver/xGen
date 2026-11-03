@@ -102,7 +102,7 @@ def run_phaa_attention(
     if fp8_transport:
         if query.device.type != "cuda":
             raise ValueError("PHAA FP8 transport requires CUDA")
-        from .fp8_transport import fp8_all_to_all
+        from .fp8_transport import fp8_all_to_all, fp8_all_to_all_many
 
         def exchange(output, tensor, *, group):
             fp8_all_to_all(output, tensor, D, group)
@@ -151,16 +151,20 @@ def run_phaa_attention(
             value[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4).contiguous())
         c_offset += cs
 
+    def gather_chunk(index):
+        outputs = (query_a2a_bufs[index], key_a2a_bufs[index], value_a2a_bufs[index])
+        inputs = (query_chunks[index], key_chunks[index], value_chunks[index])
+        if fp8_transport:
+            fp8_all_to_all_many(outputs, inputs, D, sp_group)
+        else:
+            for output, tensor in zip(outputs, inputs):
+                exchange(output, tensor, group=sp_group)
+        all2all_before_attn_is_finished[index].record(comm_stream)
+
     # --- 1. first chunk all2all on comm_stream ---
     comm_stream.wait_stream(accelerator.current_stream())
     with accelerator.stream(comm_stream):
-        exchange(query_a2a_bufs[0], query_chunks[0],
-                                            group=sp_group)
-        exchange(key_a2a_bufs[0], key_chunks[0],
-                                            group=sp_group)
-        exchange(value_a2a_bufs[0], value_chunks[0],
-                                            group=sp_group)
-        all2all_before_attn_is_finished[0].record(comm_stream)
+        gather_chunk(0)
     # Keep compute-stream send buffers alive until the communication stream
     # completes. async_op=False does not imply device completion on the host.
 
@@ -226,16 +230,7 @@ def run_phaa_attention(
         with accelerator.stream(comm_stream):
             # next chunk all2all
             if step + 1 < fa_split_num:
-                exchange(
-                    query_a2a_bufs[step + 1], query_chunks[step + 1],
-                    group=sp_group)
-                exchange(
-                    key_a2a_bufs[step + 1], key_chunks[step + 1],
-                    group=sp_group)
-                exchange(
-                    value_a2a_bufs[step + 1], value_chunks[step + 1],
-                    group=sp_group)
-                all2all_before_attn_is_finished[step + 1].record(comm_stream)
+                gather_chunk(step + 1)
             # output all2all
             comm_stream.wait_event(fa_is_finished[step])
             exchange(

@@ -183,6 +183,9 @@ def load_minimax_h3_pipe(args):
     dtype = to_dtype(args.dtype)
     task_type = getattr(args, "task_type", "t2va")
     packed_checkpoint = getattr(args, "h3_nvfp4_checkpoint", None)
+    packed_resident = getattr(args, "h3_nvfp4_resident", False)
+    if packed_resident and not packed_checkpoint:
+        raise ValueError("--h3_nvfp4_resident requires --h3_nvfp4_checkpoint")
     if packed_checkpoint and (
         device_type() != "cuda" or task_type != "fl2va" or dtype != torch.bfloat16
         or args.matmul_quant != "none" or any(getattr(args, name, None) for name in (
@@ -300,7 +303,10 @@ def load_minimax_h3_pipe(args):
     # enable_tp() in parallelism_ability will replace nn.Linear with
     # ColumnParallelLinear/RowParallelLinear, and group offloading must
     # be applied AFTER that replacement to wrap the new TP layers.
-    if args.matmul_quant == 'none' and not getattr(args, 'h3_refiner', False):
+    if packed_resident:
+        logger.info("Keeping packed H3 DiT resident on %s", onload_device)
+        pipe.transformer.to(onload_device)
+    elif args.matmul_quant == 'none' and not getattr(args, 'h3_refiner', False):
         pipe.transformer.enable_group_offload(offload_type="block_level", num_blocks_per_group=1, **offload)
     if args.text_encoder_tp <= 1:
         apply_group_offloading(pipe.text_encoder, offload_type="leaf_level", **offload)

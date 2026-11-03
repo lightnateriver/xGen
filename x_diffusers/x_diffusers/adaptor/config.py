@@ -204,6 +204,8 @@ def add_abilities_args(parser: argparse.ArgumentParser):
                             "with --adaln_cache_file (pre-stripped checkpoint + cache for memory optimization).")
     group.add_argument("--h3_nvfp4_checkpoint", type=str, default=None,
                        help="Experimental CUDA FL2VA path to a FastVideo pruned NVFP4 safetensors file.")
+    group.add_argument("--h3_nvfp4_resident", action="store_true",
+                       help="Keep the packed CUDA H3 DiT on device instead of streaming blocks from CPU.")
     group.add_argument("--lora_path_list", nargs='+', default=None,
                        help="List of path to load lora weights.")
     group.add_argument("--lora_scale_weight_list", nargs='+', default=None,

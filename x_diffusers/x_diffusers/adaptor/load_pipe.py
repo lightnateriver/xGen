@@ -541,6 +541,14 @@ def parallelism_ability(pipe, args):
         if args.phaa_num > 0:
             phaa_on_pipe(pipe, is_contain_transformer_2, transformer_3=args.joint, phaa_split_num=args.phaa_num)
 
+    if device_type() == "cuda" and os.environ.get("XGEN_PHAA_FP8") == "1":
+        local_heads = pipe.transformer.config.num_attention_heads // args.sp if is_minimax_h3 else 0
+        if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
+            raise ValueError("XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num")
+        for block in pipe.transformer.transformer_blocks:
+            block.attn._h3_phaa_fp8 = True
+        logger.info("Experimental H3 PHAA E4M3 transport enabled")
+
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).
     # ParallelManager.__init__ creates the TP group and writes it to

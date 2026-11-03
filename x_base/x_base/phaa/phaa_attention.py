@@ -54,6 +54,7 @@ def run_phaa_attention(
     v_ref=None,                   # (B, heads, S_ref, D) cached reference V for prefix attention
     num_ref_global=0,             # number of ref tokens in the global (post-all2all) sequence
     attention_fn=None,            # optional model-local operator; receives local head offset
+    fp8_transport=False,
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -97,6 +98,15 @@ def run_phaa_attention(
 
     # --- prepare events ---
     accelerator = torch.cuda if query.device.type == "cuda" else torch.npu
+    exchange = torch.distributed.all_to_all_single
+    if fp8_transport:
+        if query.device.type != "cuda":
+            raise ValueError("PHAA FP8 transport requires CUDA")
+        from .fp8_transport import fp8_all_to_all
+
+        def exchange(output, tensor, *, group):
+            fp8_all_to_all(output, tensor, D, group)
+
     all2all_before_attn_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     fa_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     has_extra = extra_attn_fn is not None
@@ -144,12 +154,12 @@ def run_phaa_attention(
     # --- 1. first chunk all2all on comm_stream ---
     comm_stream.wait_stream(accelerator.current_stream())
     with accelerator.stream(comm_stream):
-        torch.distributed.all_to_all_single(query_a2a_bufs[0], query_chunks[0],
-                                            group=sp_group, async_op=False)
-        torch.distributed.all_to_all_single(key_a2a_bufs[0], key_chunks[0],
-                                            group=sp_group, async_op=False)
-        torch.distributed.all_to_all_single(value_a2a_bufs[0], value_chunks[0],
-                                            group=sp_group, async_op=False)
+        exchange(query_a2a_bufs[0], query_chunks[0],
+                                            group=sp_group)
+        exchange(key_a2a_bufs[0], key_chunks[0],
+                                            group=sp_group)
+        exchange(value_a2a_bufs[0], value_chunks[0],
+                                            group=sp_group)
         all2all_before_attn_is_finished[0].record(comm_stream)
     # Keep compute-stream send buffers alive until the communication stream
     # completes. async_op=False does not imply device completion on the host.
@@ -216,21 +226,21 @@ def run_phaa_attention(
         with accelerator.stream(comm_stream):
             # next chunk all2all
             if step + 1 < fa_split_num:
-                torch.distributed.all_to_all_single(
+                exchange(
                     query_a2a_bufs[step + 1], query_chunks[step + 1],
-                    group=sp_group, async_op=False)
-                torch.distributed.all_to_all_single(
+                    group=sp_group)
+                exchange(
                     key_a2a_bufs[step + 1], key_chunks[step + 1],
-                    group=sp_group, async_op=False)
-                torch.distributed.all_to_all_single(
+                    group=sp_group)
+                exchange(
                     value_a2a_bufs[step + 1], value_chunks[step + 1],
-                    group=sp_group, async_op=False)
+                    group=sp_group)
                 all2all_before_attn_is_finished[step + 1].record(comm_stream)
             # output all2all
             comm_stream.wait_event(fa_is_finished[step])
-            torch.distributed.all_to_all_single(
+            exchange(
                 output_a2a_bufs[step], hidden_states_buf[step],
-                group=sp_group, async_op=False)
+                group=sp_group)
             # extra output all2all
             if has_extra and hidden_states_extra_buf[step] is not None:
                 comm_stream.wait_event(fa_extra_is_finished[step])

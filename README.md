@@ -139,3 +139,8 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 单卡运行 Sparge 时可设置 `XGEN_SPARGE_HEAD_CHUNK=7`，按组执行 attention 以降低
 内核临时显存。默认值 `0` 一次处理所有本地头。分块增加内核启动次数，
 实际时延取决于序列长度和每卡头数。
+
+实验性多卡通信可用 `XGEN_PHAA_FP8=1` 配合 CUDA、SP 大于 1 和
+`--phaa_num` 开启。它复用 PHAA 的分头和流调度，以 E4M3 和逐头 FP32 scale
+传输 Q、K、V 和 attention 输出。128 维时每头每 token 的载荷从 256 降至
+132 字节。量化会改变结果，端到端的画质和速度需用目标硬件验证。

@@ -245,6 +245,7 @@ class AscendMiniMaxH3AttnProcessor:
             attention_mask=attention_mask,
             pad_key="mmh3_seq",
             attention_fn=getattr(attn, '_h3_attention_backend', None),
+            fp8_transport=getattr(attn, '_h3_phaa_fp8', False),
         )
 
         hidden_states = attn.to_out[0](hidden_states)

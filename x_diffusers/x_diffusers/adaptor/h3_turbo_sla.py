@@ -88,7 +88,7 @@ def _normalize_key(key):
     raise ValueError(f"Unsupported Turbo-SLA tensor: {key}")
 
 
-def install_lora(transformer, state_dict, *, default_alpha=128.0, has_adaln_cache=False):
+def install_lora(transformer, state_dict, *, default_alpha=128.0, has_adaln_cache=False, fuse=False):
     """Validate every pair/shape before mutation; never silently skip a tensor.
 
     Native LightX2V keys already use the Diffusers layout. ComfyUI blocks/qkv
@@ -127,6 +127,11 @@ def install_lora(transformer, state_dict, *, default_alpha=128.0, has_adaln_cach
         if getattr(module, "fused_projections", False):
             raise ValueError("Unfuse QKV projections before installing Turbo-SLA.")
     for name, base, down, up, alpha in replacements:
+        if fuse:
+            with torch.no_grad():
+                merged = torch.addmm(base.weight.float(), up.float(), down.float(), alpha=alpha / down.shape[0])
+                base.weight.copy_(merged)
+            continue
         parent_name, _, child_name = name.rpartition(".")
         parent = transformer.get_submodule(parent_name) if parent_name else transformer
         setattr(parent, child_name, TurboSLALinear(base, down, up, alpha))

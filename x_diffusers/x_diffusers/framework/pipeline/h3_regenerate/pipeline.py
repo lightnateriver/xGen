@@ -40,11 +40,12 @@ class H3RefinerPipeline:
         self.completed = 0
         self.startup_seconds = None
         self.metrics = Telemetry()
-        self.base_steps = validate_base_schedule(args.num_inference_steps)
+        turbo8 = getattr(args, "h3_turbo8", False)
+        self.base_steps = validate_base_schedule(args.num_inference_steps, turbo8=turbo8)
         if args.adaln_cache_file:
             from safetensors import safe_open
             with safe_open(args.adaln_cache_file, framework='pt') as cache:
-                validate_base_schedule(args.num_inference_steps, cache.metadata() or {})
+                validate_base_schedule(args.num_inference_steps, cache.metadata() or {}, turbo8=turbo8)
         weights, prepared = Path(args.h3_refiner_weights), Path(args.h3_refiner_prepared)
         self.base.audio_vae.float()
         self.base_weights = CpuWeights(base.transformer, 'h3.weights', self.metrics)

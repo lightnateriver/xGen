@@ -133,3 +133,36 @@ TASK_QUEUE_ENABLE=1 python tools/check_h3_attention.py \
 
 See [the 50-step qualification results](H3-ATTENTION-VALIDATION.md) for actual
 hardware scope, timings, memory observations and the limits of quality review.
+
+### Experimental LightX2V Turbo 8-step (offline)
+
+This preset uses the [LightX2V FL2VA/T2VA 768P v1.0 Diffusers LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors).
+It is scoped to 5-second landscape T2VA on eight Ascend NPUs, with Laser or Veda in Base DiT. Base runs at 1344×768 in both cases. The optional 2K chain still runs three Refiner evaluations.
+The nine scheduler points include the terminal zero, giving eight Base evaluations with video/audio shifts 6/3. Veda with this LoRA is a separate combination from the predictor authors' reference recipe.
+
+Prepare the assets once in the existing Ascend environment. The command merges the LoRA in FP32, stores BF16 weights and generates the matching AdaLN table before stripping the cached projections. Use a new output directory with disk space for a second Base transformer. The generated transformer and table must be kept together.
+
+```bash
+export PYTHONPATH="$PWD/x_diffusers:$PWD/x_base${PYTHONPATH:+:$PYTHONPATH}"
+python -m x_diffusers.framework.pipeline.h3_regenerate.prepare_base_cache \
+  --source "$BASE_MODEL/transformer" --model-variant T2VA \
+  --turbo8-lora "$TURBO8_LORA" --stripped-output "$TURBO8_TRANSFORMER" \
+  --output "$TURBO8_ADALN"
+```
+
+For 768P, add the following to the existing MiniMax-H3 CLI invocation with SP8, BF16, Laser, 124 native frames and 24 fps. For Veda, also set `--h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR"`.
+
+```bash
+--h3_turbo8 --num_inference_steps 9 \
+--transformer_path "$TURBO8_TRANSFORMER" --adaln_cache_file "$TURBO8_ADALN"
+```
+
+For 2K, use the existing Refiner example.
+
+```bash
+BASE_TRANSFORMER="$TURBO8_TRANSFORMER" BASE_ADALN="$TURBO8_ADALN" \
+  bash example/diffusers/scripts/infer_minimax_h3_refiner.sh \
+  --h3_turbo8 --num_inference_steps 9
+```
+
+The Turbo preset adds no runtime LoRA buffers. Veda still uses its own predictor and scratch space. Initialization includes loading the prepared transformer and any existing quantization. Measure initialization, request latency and peak HBM separately. To switch back, remove the flag and restore the original transformer, AdaLN table and step count together.

@@ -128,7 +128,7 @@ class ContractTests(unittest.TestCase):
             old = vars(namespace['parse_args']())
         now = vars(args())
         self.assertEqual(old, {key:now[key] for key in old})
-        self.assertEqual(set(now)-set(old),{'h3_attention','h3_veda_predictor','h3_refiner','h3_refiner_weights','h3_refiner_prepared',
+        self.assertEqual(set(now)-set(old),{'h3_turbo8','h3_attention','h3_veda_predictor','h3_refiner','h3_refiner_weights','h3_refiner_prepared',
                                          'h3_refiner_seconds','h3_refiner_loading'})
 
     def test_exact_native_padding_and_output_counts(self):
@@ -213,6 +213,14 @@ class LegacyBranchNormalizer(ast.NodeTransformer):
     def visit_Expr(self,node):
         if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id in ('add_arguments','add_h3_attention_arguments'):
             return None
+        if isinstance(node.value, ast.Call) and any(
+                isinstance(arg, ast.Constant) and arg.value == '--h3_turbo8' for arg in node.value.args):
+            return None
+        return self.generic_visit(node)
+
+    def visit_List(self, node):
+        node.elts = [elt for elt in node.elts
+                     if not isinstance(elt, ast.Constant) or elt.value != 'h3_turbo8']
         return self.generic_visit(node)
 
     def visit_Assign(self,node):
@@ -222,7 +230,7 @@ class LegacyBranchNormalizer(ast.NodeTransformer):
 
     def visit_If(self,node):
         test=ast.unparse(node.test)
-        if 'h3_attention' in test:
+        if 'h3_attention' in test or "getattr(args, 'h3_turbo8', False)" in test:
             return [self.visit(n) for n in node.orelse]
         if ('h3_refiner' in test and not isinstance(node.test,ast.BoolOp)) or "'failed', False" in test:
             return [self.visit(n) for n in node.orelse]

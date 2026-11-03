@@ -53,11 +53,20 @@ class ContractTests(unittest.TestCase):
 
     def test_original_args_without_new_fields_still_disabled(self):
         self.assertIsNone(contract.validate(SimpleNamespace()))
-        self.assertEqual(contract.key(SimpleNamespace()),('legacy',None))
+        self.assertEqual(contract.key(SimpleNamespace()),('legacy',None,False))
 
     def test_50_steps_both_output_paths(self):
         contract.validate(args())
         contract.validate(args(h3_refiner=True,h3_refiner_seconds=5,width=2560,height=1440))
+
+    def test_turbo8_veda_requires_explicit_profile_and_eight_evaluations(self):
+        with tempfile.NamedTemporaryFile() as file:
+            value = args(h3_attention='veda', h3_veda_predictor=file.name,
+                         h3_turbo8=True, num_inference_steps=9)
+            contract.validate(value)
+            value.h3_turbo8 = False
+            with self.assertRaises(ValueError):
+                contract.validate(value)
 
     def test_reject_wrong_shapes_models_and_schedule(self):
         for changes in [dict(model='Wan2.2-T2V-A14B'),dict(task_type='ref2va'),dict(task_type='fl2va'),
@@ -105,8 +114,17 @@ class ContractTests(unittest.TestCase):
         service.validate_warmup(dict(h3_attention='spark'),False)
 
     def test_v03_does_not_modify_refiner_loop_or_legacy_codecs(self):
-        for name in ['x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py',
-                     'x_diffusers/x_diffusers/framework/vae/minimax_h3.py',
+        pipeline = 'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py'
+        original = subprocess.check_output(['git','show','origin/v0.2:'+pipeline], cwd=ROOT)
+        for source in (original, (ROOT/pipeline).read_bytes()):
+            cls = next(node for node in ast.parse(source).body
+                       if isinstance(node, ast.ClassDef) and node.name == 'H3RefinerPipeline')
+            loop = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '__call__')
+            if source is original:
+                old_loop = ast.dump(loop)
+            else:
+                self.assertEqual(old_loop, ast.dump(loop))
+        for name in ['x_diffusers/x_diffusers/framework/vae/minimax_h3.py',
                      'x_diffusers/x_diffusers/framework/vae/h3_refiner_output.py',
                      'x_base/x_base/vae_parallelism/save_av_stream.py']:
             old=subprocess.check_output(['git','show','origin/v0.2:'+name],cwd=ROOT)

@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 
 
-def validate_base_schedule(points, metadata=None):
-    if type(points) is not int or points not in (21, 51):
-        raise ValueError("Resident Base requires 21 or 51 schedule points for 20 or 50 DiT evaluations")
+def validate_base_schedule(points, metadata=None, *, turbo8=False):
+    allowed = (9,) if turbo8 else (21, 51)
+    if type(points) is not int or points not in allowed:
+        raise ValueError("Resident Base schedule does not match the selected inference profile")
     evaluations = points - 1
     if metadata is not None and int(metadata.get("num_eval_steps", "-1")) != evaluations:
         raise ValueError("Base AdaLN cache evaluation count differs from the configured schedule")

@@ -62,6 +62,7 @@ class InferenceManager(object):
             "matmul_quant",
             "inf_vram_blocks_num",
             "h3_turbo_sla_lora",
+            "h3_turbo8",
         ]
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.rank = dist.get_rank() if dist.is_initialized() else 0
@@ -72,6 +73,10 @@ class InferenceManager(object):
         if getattr(args, "h3_turbo_sla_lora", None) or getattr(self.init_args, "h3_turbo_sla_lora", None):
             if args.model != self.init_args.model or args.task_type != self.init_args.task_type:
                 return False
+        if getattr(args, "h3_turbo8", False) and any(
+                getattr(args, name) != getattr(self.init_args, name)
+                for name in ("transformer_path", "adaln_cache_file", "pretrained_model_name_or_path")):
+            return False
         if args.fuse_lora and args.lora_path_list != self.init_args.lora_path_list:
             return False
         if args.fuse_lora is False and self.init_args.fuse_lora is True:
@@ -470,6 +475,9 @@ class InferenceManager(object):
             "num_inference_steps": args.num_inference_steps,
             "generator": torch.Generator().manual_seed(args.seed),
         }
+        if getattr(args, "h3_turbo8", False):
+            from .h3_turbo8 import validate
+            validate(args)
         from .h3_turbo_sla import inference_params
         infer_params.update(inference_params(self.pipe, args))
 

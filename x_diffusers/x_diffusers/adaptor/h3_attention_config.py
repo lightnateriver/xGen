@@ -24,8 +24,9 @@ def validate(args):
         raise ValueError('Experimental H3 attention initially supports T2VA only')
     if args.dtype != 'bf16' or args.atten != 'laser' or args.sp != 8:
         raise ValueError('Use BF16, SP8 and atten=laser (legacy components retain Laser)')
-    if args.num_inference_steps != 51 or args.frames != 124:
-        raise ValueError('Initial H3 attention validation requires 50 actual DiT steps / 124 native frames')
+    points = 9 if getattr(args, "h3_turbo8", False) else 51
+    if args.num_inference_steps != points or args.frames != 124:
+        raise ValueError('Initial H3 attention validation requires the configured schedule and 124 native frames')
     expected = (2560, 1440) if getattr(args, 'h3_refiner', False) else (1344, 768)
     if (args.width, args.height) != expected or args.save_fps != 24:
         raise ValueError('Use 5s landscape 768P, or the existing 2K Refiner chain, at 24fps')
@@ -39,4 +40,5 @@ def validate(args):
 
 
 def key(args):
-    return getattr(args, 'h3_attention', 'legacy'), getattr(args, 'h3_veda_predictor', None)
+    return (getattr(args, 'h3_attention', 'legacy'), getattr(args, 'h3_veda_predictor', None),
+            getattr(args, 'h3_turbo8', False))

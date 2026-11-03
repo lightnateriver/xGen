@@ -55,8 +55,9 @@ class BaseAttentionSession:
         if self.failed:
             raise RuntimeError('H3 attention worker failed; restart required')
         if self.calls:
-            raise RuntimeError('Previous H3 request did not complete all 50 steps')
+            raise RuntimeError('Previous H3 request did not complete the configured steps')
         self.request = args
+        self.expected_steps = args.num_inference_steps - 1
         self.metrics.reset()
         self.started = time.perf_counter()
         self.operator_calls = 0
@@ -133,12 +134,12 @@ class BaseAttentionSession:
             if self.weights is not None:
                 self.weights.offload()
             return
-        if self.calls == 50:
+        if self.calls == self.expected_steps:
             parallel = getattr(self.model,'parallel_manager',None)
             rank_in_group = dist.get_rank(parallel.sp_group) if parallel is not None else 0
             group_size = parallel.sp_size if parallel is not None else 1
             expected_heads = set(range(rank_in_group*(56//group_size),(rank_in_group+1)*(56//group_size)))
-            expected_calls = 50*len(self.model.transformer_blocks)*max(1,self.request.phaa_num)
+            expected_calls = self.expected_steps*len(self.model.transformer_blocks)*max(1,self.request.phaa_num)
             if self.routed_heads != expected_heads or self.operator_calls != expected_calls:
                 self.failed = True
                 raise RuntimeError('Unexpected sparse attention head coverage or operator call count')
@@ -147,7 +148,7 @@ class BaseAttentionSession:
                 if self.weights.fingerprint() != self.predictor_identity:
                     self.failed = True
                     raise RuntimeError('Veda predictor CPU master identity changed')
-            record = dict(experimental=True,backend=self.backend,actual_base_dit=50,
+            record = dict(experimental=True,backend=self.backend,actual_base_dit=self.expected_steps,
                           operator_calls=self.operator_calls,global_heads=sorted(self.routed_heads),
                           predictor_loads=self.predictor_loads,initialization_seconds=self.initialization_seconds,
                           predictor_identity=self.predictor_identity,

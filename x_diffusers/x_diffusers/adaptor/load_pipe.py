@@ -257,6 +257,9 @@ def load_minimax_h3_pipe(args):
     # Layers 50-63 weights never enter NPU.
     from .h3_turbo_sla import configure_pipe
     configure_pipe(pipe, args)
+    if getattr(args, "h3_turbo8", False):
+        from .h3_turbo8 import configure
+        configure(pipe)
     _truncate_text_encoder(pipe, num_keep=50)
 
     # Freeze models — no gradients needed for inference
@@ -369,6 +372,10 @@ def to_dtype(name: str):
 
 
 def load_pipe(args):
+    if getattr(args, "h3_turbo8", False):
+        from .h3_turbo8 import validate, validate_assets
+        validate(args)
+        validate_assets(args)
     if getattr(args, 'h3_attention', 'legacy') != 'legacy':
         from .h3_attention_config import validate
         validate(args)

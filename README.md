@@ -115,3 +115,5 @@ bash infer_wan2.2_14b_t2v_720p.sh
 默认 `legacy` 保留原链路；Refiner、VAE、编码及原有调度继续复用。
 参见[接入、参数与回退说明](docs/H3-ATTENTION.md)和[50 步实测结果](docs/H3-ATTENTION-VALIDATION.md)。
 算子移植对齐、视频抽检和性能收益分别记录；新后端不自动成为默认配置。
+
+5 秒 T2VA 的 LightX2V 8 步离线实验使用独立开关 `--h3_turbo8`。权重准备与 768P/2K 示例见[参数说明](docs/H3-ATTENTION.md#experimental-lightx2v-turbo-8-step-offline)。

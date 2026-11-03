@@ -93,6 +93,8 @@ def add_wan_vace_args(parser: argparse.ArgumentParser):
 
 def add_minimax_h3_args(parser: argparse.ArgumentParser):
     group = parser.add_argument_group(title="MiniMax-H3 args")
+    group.add_argument("--h3_turbo8", action="store_true",
+                       help="Experimental LightX2V 768p preset with prepared Base assets")
     group.add_argument("--h3_turbo_sla_lora", type=str, default=None,
                        help="Native LightX2V FL2VA 768p Turbo-SLA safetensors. Requires 4 steps, BF16, "
                             "atten=none and full-KV Ulysses. Uses a portable BF16 sparse reference backend.")

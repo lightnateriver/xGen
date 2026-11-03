@@ -28,7 +28,7 @@ def model_key(args):
               'adaln_cache_file', 'num_inference_steps', 'dtype', 'sp', 'text_encoder_tp',
               'matmul_quant', 'vae_matmul_quant', 'atten', 'phaa_num', 'rope_fused',
               'h3_refiner_weights', 'h3_refiner_prepared', 'h3_refiner_loading',
-              'h3_attention', 'h3_veda_predictor')
+              'h3_attention', 'h3_veda_predictor', 'h3_turbo8')
     return tuple(getattr(args, name, None) for name in fields)
 
 
@@ -39,8 +39,9 @@ def validate_settings(args):
         raise ValueError('H3 Refiner requires MiniMax-H3 t2va/fl2va/ref2va')
     if args.sp != 8 or args.dtype != 'bf16' or args.atten != 'laser':
         raise ValueError('Experimental H3 Refiner requires SP8, BF16 and Laser attention')
-    if args.num_inference_steps not in (21, 51):
-        raise ValueError('Use 21/51 schedule points for 20/50 actual Base DiT evaluations')
+    points = (9,) if getattr(args, "h3_turbo8", False) else (21, 51)
+    if args.num_inference_steps not in points:
+        raise ValueError('Base schedule does not match the selected inference profile')
     if (args.width, args.height) != (2560, 1440) or args.save_fps != 24:
         raise ValueError('Experimental H3 Refiner supports landscape 2560x1440 at 24fps only')
     if not 1 <= args.phaa_num <= 7:

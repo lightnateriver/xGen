@@ -61,6 +61,8 @@ def run_phaa_attention(
     scatter_stream=None,
     scatter_group=None,
     tail_first=False,
+    device_join=False,
+    async_options=None,
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -76,7 +78,14 @@ def run_phaa_attention(
                 [tensor, torch.zeros(pad_size, dtype=tensor.dtype, device=tensor.device)], dim=dim)
         return tensor
 
+    async_exchange = async_options is not None
+    direct_gather = async_exchange and async_options.direct_gather
+    direct_return = async_exchange and async_options.direct_return
+    fused_return_pack = async_exchange and async_options.fused_return_pack
+
     def reshape_for_attention(x):
+        if direct_gather:
+            return x
         # (W_S, S, B, N, D) -> (B, N, W_S*S, D)
         x = x.flatten(0, 1).permute(1, 2, 0, 3)
         if get_pad(pad_key) > 0:
@@ -122,27 +131,45 @@ def run_phaa_attention(
 
     if gather_priority and not fp8_transport:
         raise ValueError("PHAA gather priority requires FP8 transport")
+    if device_join and (not fp8_transport or scatter_stream is not None or extra_attn_fn is not None):
+        raise ValueError("PHAA device join requires single-stream FP8 transport without extra attention")
+    if async_exchange:
+        if not device_join:
+            raise ValueError("PHAA async exchange requires device join")
+        from .fp8_async_transport import finish_fp8_exchange, submit_fp8_exchange
     if (scatter_stream is None) != (scatter_group is None) or (
             scatter_stream is not None and not fp8_transport):
         raise ValueError("Separate PHAA scatter requires FP8, a stream and a process group")
     output_stream = scatter_stream if scatter_stream is not None else comm_stream
     output_group = scatter_group if scatter_group is not None else sp_group
 
-    all2all_before_attn_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
+    if async_exchange:
+        pending_gathers = {}
+        pending_returns = []
+    else:
+        all2all_before_attn_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     fa_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     has_extra = extra_attn_fn is not None
     if has_extra:
         fa_extra_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
 
     # --- prepare per-chunk buffers (variable size) ---
-    query_a2a_bufs = [torch.empty((W_S, Sq, B, cs, D), device=query.device, dtype=query.dtype)
+    def gather_shape(seq, chunk_heads):
+        if direct_gather:
+            return (B, chunk_heads, W_S * seq - get_pad(pad_key), D)
+        return (W_S, seq, B, chunk_heads, D)
+
+    query_a2a_bufs = [torch.empty(gather_shape(Sq, cs), device=query.device, dtype=query.dtype)
                      for cs in chunk_sizes]
-    key_a2a_bufs = [torch.empty((W_S, Skv, B, cs, D), device=key.device, dtype=key.dtype)
+    key_a2a_bufs = [torch.empty(gather_shape(Skv, cs), device=key.device, dtype=key.dtype)
                    for cs in chunk_sizes]
-    value_a2a_bufs = [torch.empty((W_S, Skv, B, cs, D), device=value.device, dtype=value.dtype)
+    value_a2a_bufs = [torch.empty(gather_shape(Skv, cs), device=value.device, dtype=value.dtype)
                      for cs in chunk_sizes]
-    output_a2a_bufs = [torch.empty((W_S, Sq, B, cs * D), device=query.device, dtype=query.dtype)
-                      for cs in chunk_sizes]
+    if direct_return:
+        output = torch.empty((B, Sq, H), device=query.device, dtype=query.dtype)
+    else:
+        output_a2a_bufs = [torch.empty((W_S, Sq, B, cs * D), device=query.device, dtype=query.dtype)
+                          for cs in chunk_sizes]
     hidden_states_buf = [None] * fa_split_num
 
     hidden_states_extra_buf = [None] * fa_split_num
@@ -173,11 +200,20 @@ def run_phaa_attention(
         outputs = (query_a2a_bufs[index], key_a2a_bufs[index], value_a2a_bufs[index])
         inputs = (query_chunks[index], key_chunks[index], value_chunks[index])
         if fp8_transport:
-            fp8_all_to_all_many(outputs, inputs, D, sp_group)
+            if async_exchange:
+                pending_gathers[index] = submit_fp8_exchange(
+                    outputs, inputs, D, sp_group, row_tiling=async_options.row_tiling, direct_gather=direct_gather,
+                )
+            else:
+                fp8_all_to_all_many(outputs, inputs, D, sp_group)
+            if device_join:
+                for tensor in inputs:
+                    tensor.record_stream(comm_stream)
         else:
             for output, tensor in zip(outputs, inputs):
                 exchange(output, tensor, group=sp_group)
-        all2all_before_attn_is_finished[index].record(comm_stream)
+        if not async_exchange:
+            all2all_before_attn_is_finished[index].record(comm_stream)
 
     # --- 1. first chunk all2all on comm_stream ---
     comm_stream.wait_stream(accelerator.current_stream())
@@ -195,7 +231,10 @@ def run_phaa_attention(
         cs = chunk_sizes[step]
 
         # 2.1 compute attention
-        accelerator.current_stream().wait_event(all2all_before_attn_is_finished[step])
+        if async_exchange:
+            finish_fp8_exchange(pending_gathers.pop(step))
+        else:
+            accelerator.current_stream().wait_event(all2all_before_attn_is_finished[step])
         query_ = reshape_for_attention(query_a2a_bufs[step])
         key_ = reshape_for_attention(key_a2a_bufs[step])
         value_ = reshape_for_attention(value_a2a_bufs[step])
@@ -231,7 +270,8 @@ def run_phaa_attention(
             )
             out_full[:, :, num_ref_global:, :] = hidden_states_buf[step]
             hidden_states_buf[step] = out_full
-        hidden_states_buf[step] = reshape_after_attention(hidden_states_buf[step])
+        if not fused_return_pack:
+            hidden_states_buf[step] = reshape_after_attention(hidden_states_buf[step])
         fa_is_finished[step].record()
 
         # 2.2 extra attention (e.g., Wan img attention)
@@ -255,7 +295,16 @@ def run_phaa_attention(
             scatter_context = accelerator.stream(scatter_stream) if scatter_stream is not None else nullcontext()
             with scatter_context:
                 output_stream.wait_event(fa_is_finished[step])
-                exchange(output_a2a_bufs[step], hidden_states_buf[step], group=output_group)
+                if async_exchange:
+                    pending_returns.append(submit_fp8_exchange(
+                        None if direct_return else (output_a2a_bufs[step],),
+                        (hidden_states_buf[step],), D, output_group, row_tiling=async_options.row_tiling,
+                        return_shard_seq=Sq if fused_return_pack else 0,
+                    ))
+                else:
+                    exchange(output_a2a_bufs[step], hidden_states_buf[step], group=output_group)
+                if device_join:
+                    hidden_states_buf[step].record_stream(comm_stream)
                 if has_extra and hidden_states_extra_buf[step] is not None:
                     output_stream.wait_event(fa_extra_is_finished[step])
                     torch.distributed.all_to_all_single(
@@ -264,9 +313,19 @@ def run_phaa_attention(
         # Send/output references stay alive through the final stream join.
 
     # --- 3. finalize ---
-    # Bound the lifetime to one attention call. A host-visible stream join
-    # allows safe reuse without accumulating cross-stream allocator records.
-    comm_stream.synchronize()
+    # Device join orders output reads on the compute stream. The default
+    # host join also keeps send buffers alive without allocator records.
+    if async_exchange:
+        for step, pending in zip(order, pending_returns):
+            if direct_return:
+                layout = (Sq, B, W_S, heads_per_device, chunk_sizes[step], chunk_offsets[step])
+                finish_fp8_exchange(pending, output=output, return_layout=layout)
+            else:
+                finish_fp8_exchange(pending)
+    elif device_join:
+        accelerator.current_stream().wait_stream(comm_stream)
+    else:
+        comm_stream.synchronize()
     if scatter_stream is not None:
         scatter_stream.synchronize()
     query_chunks.clear()
@@ -274,6 +333,9 @@ def run_phaa_attention(
     value_chunks.clear()
     hidden_states_buf.clear()
     hidden_states_extra_buf.clear()
+
+    if direct_return:
+        return output
 
     # Assemble output: per-chunk (W_S, Sq, B, cs*D) → (B, Sq, heads*D)
     output_chunks = [buf.permute(2, 1, 0, 3) for buf in output_a2a_bufs]

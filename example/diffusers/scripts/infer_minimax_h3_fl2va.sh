@@ -39,24 +39,34 @@ if [[ -f "${CACHE_FILE}" && -d "${CUSTOM_TRANSFORMER}" ]]; then
     EXTRA_ARGS+=(--adaln_cache_file "${CACHE_FILE}" --transformer_path "${CUSTOM_TRANSFORMER}")
 fi
 
-for image in "${FIRST_FRAME}" "${LAST_FRAME}"; do
-    if [[ ! -f "${image}" ]]; then
-        echo "Missing keyframe image: ${image}. Set FIRST_FRAME and LAST_FRAME." >&2
+if [[ ! -f "${FIRST_FRAME}" ]]; then
+    echo "Missing keyframe image: ${FIRST_FRAME}. Set FIRST_FRAME." >&2
+    exit 1
+fi
+LAST_FRAME_ARGS=()
+if [[ "${FIRST_FRAME_ONLY:-0}" != 1 ]]; then
+    if [[ ! -f "${LAST_FRAME}" ]]; then
+        echo "Missing keyframe image: ${LAST_FRAME}. Set LAST_FRAME." >&2
         exit 1
     fi
-done
+    LAST_FRAME_ARGS=(--keyframe_last_image "${LAST_FRAME}")
+fi
 mkdir -p "$(dirname -- "${OUTPUT_PATH}")"
 
 if [[ "${ROPE_FUSED:-1}" == 1 ]]; then
     EXTRA_ARGS+=(--rope_fused)
 fi
 
+PROMPT='integrated_multimodal_description: [Shot 1] A small robot walks through a sunlit garden. The camera follows slowly.\noverall_soundscape: Gentle footsteps and birdsong.\nnon_diegetic_music: Soft instrumental music.'
+if [[ -n "${PROMPT_FILE:-}" ]]; then
+    PROMPT="$(cat -- "${PROMPT_FILE}")"
+fi
+
 torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MASTER_PORT "${INFER_ENTRYPOINT:-../infer.py}" \
          --model MiniMax-H3 \
          --pretrained_model_name_or_path "${MODEL_PATH}" \
          --task_type fl2va \
-         --keyframe_image "${FIRST_FRAME}" \
-         --keyframe_last_image "${LAST_FRAME}" \
+         --keyframe_image "${FIRST_FRAME}" "${LAST_FRAME_ARGS[@]}" \
          --save_path "${OUTPUT_PATH}" \
          --num_inference_steps "${NUM_INFERENCE_STEPS:-51}" \
          --width "${WIDTH:-1344}" \
@@ -64,7 +74,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --frames "${FRAMES:-124}" \
          --seed 42 \
          --save_fps 24 \
-         --prompt "integrated_multimodal_description: [Shot 1] A small robot walks through a sunlit garden. The camera follows slowly.\noverall_soundscape: Gentle footsteps and birdsong.\nnon_diegetic_music: Soft instrumental music." \
+         --prompt "${PROMPT}" \
          --matmul_quant "${MATMUL_QUANT:-int8}" \
          --vae_matmul_quant "${VAE_MATMUL_QUANT:-int8}" \
          --atten "${ATTENTION_BACKEND:-laser}" \

@@ -161,6 +161,26 @@ bash example/diffusers/scripts/infer_minimax_h3_ref2va.sh
 
 该命令展示原入口，不表示示例输入已经随仓库提供。原 768P 路径和历史优化配置见对应原脚本；不要用 experimental 2K 后端的参数覆盖旧服务配置。
 
+### v0.3.1 NPU 首帧图生音视频
+
+在已配置 CANN、TorchNPU、FFmpeg 和 Python 包的环境中，使用现有 FL2VA 脚本。下面的相对路径以脚本目录为基准。模型目录需要根级 modular index，Transformer 和 AdaLN 表须来自对应的 Base，使用 51 个调度点。
+
+```bash
+cd example/diffusers/scripts
+XGEN_DEVICE=npu ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 N_NPUS=8 \
+  MASTER_ADDR=127.0.0.1 MASTER_PORT=29507 PHAA_NUM=2 \
+  MODEL_PATH=../../../weights/h3 \
+  TRANSFORMER_PATH=../../../model-cache/transformer-base \
+  ADALN_CACHE_FILE=../../../model-cache/adaln-51step.safetensors \
+  FIRST_FRAME_ONLY=1 FIRST_FRAME=../../../inputs/first-frame.png \
+  PROMPT_FILE=../../../inputs/prompt.txt OUTPUT_PATH=../../../outputs/h3-npu.mp4 \
+  bash infer_minimax_h3_fl2va.sh
+```
+
+`FIRST_FRAME_ONLY=1` 只传首帧，`PROMPT_FILE` 读取 UTF-8 提示词。省略这两个变量时沿用原示例的首尾帧和示例提示词。默认使用 Laser、DiT/VAE INT8 线性、融合 RoPE 和优化 VAE decoder；八卡启动启用 SP8 与文本 TP8。确保 Transformer 和 AdaLN 路径都存在，启动日志应显示加载 50 步的预计算表。选择空闲的本地端口，避免使用依赖容器主机名解析的 rendezvous。
+
+[768P、50 次 DiT 实测](performance/h3-cuda.md#v031-双设备冒烟)
+
 ## 6. v0.2 离线 2K 推理
 
 以下均在仓库根目录运行，沿用原 `example/diffusers/infer.py`。

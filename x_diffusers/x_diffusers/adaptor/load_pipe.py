@@ -185,6 +185,11 @@ def load_minimax_h3_pipe(args):
     packed_checkpoint = getattr(args, "h3_nvfp4_checkpoint", None)
     packed_resident = getattr(args, "h3_nvfp4_resident", False)
     packed_compile = getattr(args, "h3_nvfp4_compile", False)
+    cuda_fusions = ()
+    if device_type() == "cuda":
+        from .h3_cuda import get_dit_fusions
+
+        cuda_fusions = get_dit_fusions(packed_resident, packed_compile)
     if packed_compile and not packed_resident:
         raise ValueError("--h3_nvfp4_compile requires --h3_nvfp4_resident")
     if packed_resident and not packed_checkpoint:
@@ -309,6 +314,10 @@ def load_minimax_h3_pipe(args):
     if packed_resident:
         logger.info("Keeping packed H3 DiT resident on %s", onload_device)
         pipe.transformer.to(onload_device)
+        if cuda_fusions:
+            from .h3_cuda import install_dit_fusions
+
+            install_dit_fusions(pipe.transformer, cuda_fusions)
         if packed_compile:
             from x_base.operator.h3_nvfp4 import H3NVFP4Linear
 
@@ -575,42 +584,10 @@ def parallelism_ability(pipe, args):
         if args.phaa_num > 0:
             phaa_on_pipe(pipe, is_contain_transformer_2, transformer_3=args.joint, phaa_split_num=args.phaa_num)
 
-    if getattr(args, "h3_cuda_vae_sp", False):
-        manager = pipe.transformer.parallel_manager
-        heads = pipe.vae.decoder.transformer_blocks[0].attn.heads
-        if heads % manager.sp_size:
-            raise ValueError("CUDA H3 VAE attention heads must divide evenly across SP ranks")
-        pipe.vae._h3_cuda_vae_parallel = manager
-        logger.info("Experimental CUDA H3 VAE SP enabled, sp_size=%s", manager.sp_size)
+    if is_minimax_h3 and device_type() == "cuda":
+        from .h3_cuda import configure_parallelism
 
-    if device_type() == "cuda" and os.environ.get("XGEN_PHAA_FP8") == "1":
-        local_heads = pipe.transformer.config.num_attention_heads // args.sp if is_minimax_h3 else 0
-        if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
-            raise ValueError("XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num")
-        chunk_order = os.environ.get("XGEN_PHAA_CHUNK_ORDER", "natural")
-        if chunk_order not in ("natural", "tail-first"):
-            raise ValueError("XGEN_PHAA_CHUNK_ORDER must be natural or tail-first")
-        if chunk_order == "tail-first" and args.phaa_num != 4:
-            raise ValueError("PHAA tail-first requires --phaa_num 4")
-        gather_priority = os.environ.get("XGEN_PHAA_GATHER_PRIORITY") == "1"
-        dual_comm = os.environ.get("XGEN_PHAA_DUAL_COMM") == "1"
-        scatter_group = scatter_stream = None
-        if dual_comm:
-            from x_base.phaa.utils import phaa_cuda_scatter_group
-
-            sp_group = pipe.transformer.parallel_manager.sp_group
-            if dist.get_process_group_ranks(sp_group) != list(range(dist.get_world_size())):
-                raise ValueError("PHAA dual communication requires a world-spanning SP group")
-            scatter_group = phaa_cuda_scatter_group(dist.group.WORLD)
-            scatter_stream = torch.cuda.Stream()
-        for block in pipe.transformer.transformer_blocks:
-            block.attn._h3_phaa_fp8 = True
-            block.attn._h3_phaa_gather_priority = gather_priority
-            block.attn._h3_phaa_tail_first = chunk_order == "tail-first"
-            block.attn._h3_phaa_scatter_group = scatter_group
-            block.attn._h3_phaa_scatter_stream = scatter_stream
-        logger.info("Experimental H3 PHAA E4M3 transport enabled, chunks=%s, order=%s, gather_priority=%s, dual_comm=%s, NCCL_MAX_CTAS=%s",
-                    args.phaa_num, chunk_order, gather_priority, dual_comm, os.environ.get("NCCL_MAX_CTAS"))
+        configure_parallelism(pipe, args)
 
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).

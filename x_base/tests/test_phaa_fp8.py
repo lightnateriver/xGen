@@ -71,6 +71,7 @@ def test_fp8_phaa_c4_tail_first_preserves_head_order(monkeypatch):
     if torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("native FP8 conversion required")
     pytest.importorskip("triton")
+    from x_base.phaa.fp8_async_transport import AsyncFP8Options
     monkeypatch.setenv("XGEN_DEVICE", "cuda")
     from x_base.phaa import phaa_attention
 
@@ -84,18 +85,59 @@ def test_fp8_phaa_c4_tail_first_preserves_head_order(monkeypatch):
         offsets.append(head_offset)
         return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
+    collective_stream = torch.cuda.Stream()
+
+    class LocalWork:
+        def __init__(self, done):
+            self.done = done
+
+        def block_current_stream(self):
+            torch.cuda.current_stream().wait_event(self.done)
+
     def local_copy(output, tensor, **kwargs):
-        output.copy_(tensor)
+        if not kwargs.get("async_op"):
+            output.copy_(tensor)
+            return
+        collective_stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(collective_stream):
+            output.copy_(tensor)
+            return LocalWork(collective_stream.record_event())
 
     options = dict(comm_stream=torch.cuda.Stream(), sp_group=None, sp_size=2,
                    heads=14, phaa_split_num=4, head_dim=64, attention_fn=attention,
                    fp8_transport=True, gather_priority=True)
     with patch.object(dist, "get_world_size", return_value=2), \
-         patch.object(dist, "all_to_all_single", side_effect=local_copy):
+         patch.object(dist, "all_to_all_single", side_effect=local_copy) as exchange:
         natural = phaa_attention.run_phaa_attention(*qkv, **options)
         assert offsets == [0, 2, 4, 6]
+        natural_shapes = [call.args[0].shape for call in exchange.call_args_list]
         offsets.clear()
         tail = phaa_attention.run_phaa_attention(*qkv, **options, tail_first=True)
         assert offsets == [6, 0, 2, 4]
+        offsets.clear()
+        exchange.reset_mock()
+        asynchronous = phaa_attention.run_phaa_attention(
+            *qkv, **options, device_join=True, async_options=AsyncFP8Options(),
+        )
+        assert offsets == [0, 2, 4, 6]
+        assert [call.args[0].shape for call in exchange.call_args_list] == natural_shapes
+        assert all(call.kwargs.get("async_op") is True for call in exchange.call_args_list)
+        direct = phaa_attention.run_phaa_attention(
+            *qkv, **options, tail_first=True, device_join=True, async_options=AsyncFP8Options(direct_return=True),
+        )
+        tiled = phaa_attention.run_phaa_attention(
+            *qkv, **options, tail_first=True, device_join=True, async_options=AsyncFP8Options(direct_return=True, row_tiling=True),
+        )
+        packed = phaa_attention.run_phaa_attention(
+            *qkv, **options, tail_first=True, device_join=True, async_options=AsyncFP8Options(direct_return=True, row_tiling=True, fused_return_pack=True),
+        )
+        direct_qkv = phaa_attention.run_phaa_attention(
+            *qkv, **options, tail_first=True, device_join=True, async_options=AsyncFP8Options(direct_return=True, row_tiling=True, direct_gather=True),
+        )
 
     assert torch.equal(natural, tail)
+    assert torch.equal(natural, asynchronous)
+    assert torch.equal(natural, direct)
+    assert torch.equal(natural, tiled)
+    assert torch.equal(natural, packed)
+    assert torch.equal(natural, direct_qkv)

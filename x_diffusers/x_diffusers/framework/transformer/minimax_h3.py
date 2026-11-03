@@ -134,13 +134,28 @@ class AscendMiniMaxH3AttnProcessor:
         key = key.unflatten(-1, (attn.heads, -1))
         value = value.unflatten(-1, (attn.heads, -1))
 
-        query = attn.norm_q(query)
-        key = attn.norm_k(key)
+        normalized = None
+        fused_rope = getattr(attn, "_h3_fused_partial_rope", False)
+        if getattr(attn, "_h3_fused_qk_rms", False):
+            from x_base.operator.h3_qk_rms import try_h3_qk_rms
+
+            normalized = try_h3_qk_rms(
+                query, key, attn.norm_q, attn.norm_k, rotary_emb if fused_rope else None,
+            )
+        if normalized is None:
+            query, key = attn.norm_q(query), attn.norm_k(key)
+        else:
+            query, key = normalized
 
         # RoPE applied before SP branch (original position).
         # all_to_all doesn't change (position, head) mapping, so RoPE stays valid.
-        if rotary_emb is not None:
-            query, key = _rope_minimax_h3(query, key, *rotary_emb)
+        if rotary_emb is not None and not (fused_rope and normalized is not None):
+            rotated = None
+            if fused_rope:
+                from x_base.operator.h3_partial_rope import try_h3_partial_rope
+
+                rotated = try_h3_partial_rope(query, key, *rotary_emb)
+            query, key = rotated if rotated is not None else _rope_minimax_h3(query, key, *rotary_emb)
         parallel_manager = getattr(attn, "parallel_manager", None)
         sp_size = parallel_manager.sp_size if parallel_manager is not None else 1
 
@@ -248,6 +263,8 @@ class AscendMiniMaxH3AttnProcessor:
             fp8_transport=getattr(attn, '_h3_phaa_fp8', False),
             gather_priority=getattr(attn, '_h3_phaa_gather_priority', False),
             tail_first=getattr(attn, '_h3_phaa_tail_first', False),
+            device_join=getattr(attn, '_h3_phaa_device_join', False),
+            async_options=getattr(attn, '_h3_phaa_async_options', None),
             scatter_group=getattr(attn, '_h3_phaa_scatter_group', None),
             scatter_stream=getattr(attn, '_h3_phaa_scatter_stream', None),
         )

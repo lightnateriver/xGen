@@ -1,18 +1,20 @@
 # X_GEN
 
-## v0.2：可选 H3 Refiner
+X_GEN 是面向昇腾 NPU 的视频生成推理引擎。MiniMax-H3 另提供实验性 CUDA 路径。
 
-H3 → latent 超分 → Open-H3-Regenerate-2K 作为 **experimental、默认关闭** 的能力接入原推理 Manager 与视频服务。不加 `--h3_refiner` 且配置不启用它时，沿用 v0.1 的脚本、API、推理、设备调度和缓存路径。
+## 版本与优化
 
-从环境、权重准备到在线/离线推理及匿名性能表，见 [完整部署教程](docs/H3-DEPLOYMENT.md)。参数与限制另见 [H3 Refiner](x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/README.md)。旧优化版性能与当前重构回归分开列示。
+| 分支 | 主要变化 | 启动与性能 |
+| --- | --- | --- |
+| [v0.1](../../tree/v0.1) | 原版 xGen，保留 Diffusers 适配、SP、FSDP、PHAA、量化和原有服务。 | [基础启动示例](#快速开始) |
+| [v0.2](../../tree/v0.2) | 新增默认关闭的 H3 → Open-H3-Regenerate-2K latent 超分，接入原 Manager 和视频服务，支持离线与在线。 | [部署、参数和历史性能](docs/H3-DEPLOYMENT.md) |
+| [v0.3](../../tree/v0.3) | 新增可选 Spark-H3 / Veda Base attention。Veda 支持配置稀疏度，默认后端为 legacy；另提供实验性 LightX2V 8 步离线配方。 | [启动与回退](docs/H3-ATTENTION.md) · [NPU 实测](docs/H3-ATTENTION-VALIDATION.md) |
+| [v0.3-cuda](../../tree/v0.3-cuda) | MiniMax-H3 FL2VA CUDA 支持，包含 Sage/Sparge、NVFP4 DiT 常驻、FP8 PHAA 去程与回程、文本 TP8、VAE SP 和 FastVideo C4 预设。CUDA 2K Refiner 为可选能力。 | [CUDA 部署](docs/H3-CUDA.md) · [历史性能](docs/performance/h3-cuda.md#历史-cuda-实测) |
+| [v0.3.1](../../tree/v0.3.1) | H3 CUDA 专用配置与安装逻辑集中到 adaptor；新增可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。新增优化默认关闭，原同步 FP8 传输实现保留。 | [CUDA 启动](docs/H3-CUDA.md#v031-5-秒实验配方) · [NPU 启动](docs/H3-DEPLOYMENT.md#v031-npu-首帧图生音视频) · [本版实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
 
-## v0.1 版本范围
-
-`v0.1` 发布分支保存接入 H3 Refiner 之前的 XGEN 基线。本分支在其上增加默认关闭的可选能力；以下原有模型适配、算子与并行优化继续保留。
+本版使用同一 FL2VA 输入测试 768P、124 帧、50 次 DiT。8×RTX 5090 生成并保存耗时 **54.10 秒**，8×Ascend 910B1 耗时 **128.27 秒**。两边采用各自的权重与优化配方，均通过完整音视频解码。2K、在线和长稳沿用各版本已记录的验证范围。
 
 发布内容包含源码、测试和使用示例；机器交接及历史实验记录、模型权重、业务素材不随源码发布。示例中的 `./...` 路径需要按实际环境配置，参考图等输入由使用者提供。
-
-X_GEN 是基于昇腾 NPU 的高性能视频生成推理引擎，支持 Wan、HunyuanVideo、CogVideoX 等主流视频生成模型。
 
 ## 支持模型
 
@@ -109,6 +111,7 @@ bash infer_wan2.2_14b_t2v_720p.sh
 `x_base/x_base/infinite_vram/scripts/infer_wan_2.1_14b_t2v_infinite_vram.sh` 在基线中已有引号/编码问题，无法通过 `bash -n`。本分支保留该历史文件作为版本对照；常规启动请使用 `example/diffusers/scripts/` 中对应模型的示例。
 
 部署示例使用相对路径或外部配置。旧版本的绝对占位路径已移植；生产部署请明确配置模型与输出位置。云存储凭据目录由外部 `OBS_CREDENTIAL_DIR` 配置，不能提交凭据。
+
 ## v0.3 可选 H3 attention 后端
 
 新增默认关闭的 experimental Spark-H3 / Veda Base attention，通过 `--h3_attention` 选择。
@@ -260,6 +263,6 @@ FP8 PHAA、四个头分块及 gather-priority。启动时设置 NCCL CTA 上限�
 | `5s` | 124 | 0,1,2,3 | 2 |
 | `15s` | 345 | 3,0,1,2 | 1 |
 
-尾块优先只改变提交和计算顺序，输出按原头位置拼接。两档使用原有 50 次
-DiT 配置。当前 C4 顺序已通过单卡模拟通信验证，TP8 与 CTA 配方的八卡
-端到端耗时和显存仍需实测。
+尾块优先改变提交和计算顺序，输出按原头位置拼接。两档使用 50 次 DiT。
+5 秒预设已完成八卡端到端验证，15 秒预设已核对启动参数。
+见 [v0.3.1 的 5 秒实验配方](docs/H3-CUDA.md#v031-5-秒实验配方)。

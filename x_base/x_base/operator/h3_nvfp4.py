@@ -21,9 +21,19 @@ class H3GateFirstSwiGLU(nn.Module):
     def __init__(self, proj):
         super().__init__()
         self.proj = proj
+        self.fused_swiglu = False
 
     def forward(self, hidden_states):
-        gate, value = self.proj(hidden_states).chunk(2, dim=-1)
+        projected = self.proj(hidden_states)
+        if (
+            self.fused_swiglu and not torch.is_grad_enabled() and projected.is_cuda
+            and projected.dtype == torch.bfloat16 and projected.is_contiguous()
+            and projected.numel() > 0 and projected.shape[-1] % 2 == 0
+        ):
+            from .h3_swiglu import gate_first_swiglu
+
+            return gate_first_swiglu(projected)
+        gate, value = projected.chunk(2, dim=-1)
         return torch.nn.functional.silu(gate) * value
 
 
@@ -48,8 +58,9 @@ class H3NVFP4Linear(nn.Module):
         self.register_buffer("block_scale", block_scale.contiguous())
         self.register_buffer("global_scale", global_scale)
         self.register_buffer("bias", bias)
+        self.fused_amax = False
 
-    def forward(self, x):
+    def forward(self, x, *, activation_amax=None):
         if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError("NVFP4 activations require CUDA FP16 or BF16")
         if x.shape[-1] != self.in_features:
@@ -58,7 +69,16 @@ class H3NVFP4Linear(nn.Module):
         import comfy_kitchen
 
         matrix = x.reshape(-1, self.in_features).contiguous()
-        scale = (matrix.detach().abs().amax().float() / (448.0 * 6.0)).clamp_min(
+        values = matrix.detach()
+        if activation_amax is not None:
+            amax = activation_amax
+        elif self.fused_amax and x.dtype == torch.bfloat16 and values.numel() > 0:
+            from .h3_abs_peak import activation_abs_peak
+
+            amax = activation_abs_peak(values)
+        else:
+            amax = values.abs().amax()
+        scale = (amax.float() / (448.0 * 6.0)).clamp_min(
             torch.finfo(torch.float32).tiny
         )
         packed, block_scale = comfy_kitchen.quantize_nvfp4(matrix, scale, pad_16x=True)
@@ -71,6 +91,23 @@ class H3NVFP4Linear(nn.Module):
         return output[:matrix.shape[0], :self.out_features].reshape(
             *x.shape[:-1], self.out_features
         )
+
+
+def fused_h3_ff_forward(self, hidden_states):
+    if not self._h3_fused_ff_amax or self.training or torch.is_grad_enabled():
+        return self._h3_eager_ff_forward(hidden_states)
+    from .h3_swiglu import gate_first_swiglu
+
+    activation, dropout, down_proj = self.net
+    projected = activation.proj(hidden_states)
+    if (
+        not projected.is_cuda or projected.dtype != torch.bfloat16
+        or not projected.is_contiguous() or projected.numel() == 0 or projected.shape[-1] % 2
+    ):
+        gate, value = projected.chunk(2, dim=-1)
+        return down_proj(dropout(torch.nn.functional.silu(gate) * value))
+    activated, amax = gate_first_swiglu(projected, with_amax=True)
+    return down_proj(dropout(activated), activation_amax=amax)
 
 # Main-block aliases from the FastVideo pruned H3 checkpoint to Diffusers.
 PACKED_PROJECTIONS = {

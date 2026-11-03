@@ -129,7 +129,7 @@ bash infer_wan2.2_14b_t2v_720p.sh
 启动参数后加 `--h3_nvfp4_checkpoint ./weights/minimax_h3_fl2va_pruned_nvfp4.safetensors`。
 保留 `--pretrained_model_name_or_path` 以加载模型配置、文本编码器和 VAE。
 此路径需要支持 NVFP4 的 Comfy-Kitchen CUDA 算子和 BF16 激活。权重以打包格式保存，
-每次投影执行激活量化。当前仅支持 FL2VA Base，暂不组合 Refiner、额外 LoRA、
+每次投影执行激活量化。当前支持 FL2VA Base 和下文的实验性 2K Refiner。暂不组合额外 LoRA、
 AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 checkpoint。
 显存充足时可额外传入 `--h3_nvfp4_resident`，让打包 DiT 常驻每张卡，省去逐层
 搬运。文本编码器仍按原策略 offload。移除该参数即可恢复逐层搬运。
@@ -189,3 +189,49 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=2 \
 
 通过原有 `/generate` 提交 `task_type=fl2va`、`first_frame` 和 `prompt`，
 使用 `/status/<task_id>` 查询结果。测试覆盖同一服务串行处理两条 768P 请求。
+
+### 实验性 CUDA 2K Refiner
+
+使用现有 H3 Refiner adapter 和视频服务。当前 CUDA 路径要求 FL2VA、SP8、
+BF16 配置和 NVFP4 Base 权重，由 Refiner 统一管理阶段驻留。
+先安装可执行的 FFmpeg（含 libx264 和 AAC），可通过 `FFMPEG_PATH` 指定。
+使用部署教程的 Refiner 源包和预处理命令，在 `XGEN_DEVICE=cuda` 环境下
+运行 `h3_regenerate.prepare`。预处理输出单独存放，供后续推理复用。
+
+在线服务在现有 JSON 中加入以下配置。路径示例以启动目录为基准。
+
+```json
+{
+  "model": "MiniMax-H3",
+  "task_type": "fl2va",
+  "resolution": "2k",
+  "pretrained_model_name_or_path": "weights/h3",
+  "h3_nvfp4_checkpoint": "weights/h3-fl2va-nvfp4.safetensors",
+  "h3_refiner": true,
+  "h3_refiner_weights": "weights/refiner",
+  "h3_refiner_prepared": "model-cache/refiner-cuda",
+  "sp": 8,
+  "text_encoder_tp": 1,
+  "phaa_num": 2,
+  "atten": "none",
+  "num_inference_steps": 51,
+  "matmul_quant": "none",
+  "vae_matmul_quant": "none",
+  "vae_lightning": "none",
+  "rope_fused": false
+}
+```
+
+```bash
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_server.py \
+  --init --config config-cuda-2k.json --host 127.0.0.1 --port 29655
+```
+
+通过 `/generate` 提交 `task_type=fl2va`、`resolution=2k`、`duration=5`、
+`first_frame`、`prompt` 和 `seed`，用 `/status/<task_id>` 查询结果。
+离线使用同一套模型参数，给现有推理入口传入 `--h3_refiner`、
+`--width 2560 --height 1440 --frames 124 --save_fps 24` 和首帧。
+
+已验证 8 张 RTX 5090 上的 5 秒 2K 离线推理和两次串行在线请求。
+在线原生 attention 测试的单卡 PyTorch 峰值保留显存约 29.41 GiB。
+更长时长、并发和长期内存趋势仍需实测。

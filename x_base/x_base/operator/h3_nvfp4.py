@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prepacked H3 linear using the Comfy-Kitchen NVFP4 operator contract."""
 
+import json
+
 import torch
 from torch import nn
 
@@ -49,3 +51,45 @@ class H3NVFP4Linear(nn.Module):
         return output[:matrix.shape[0], :self.out_features].reshape(
             *x.shape[:-1], self.out_features
         )
+
+# Main-block aliases from the FastVideo pruned H3 checkpoint to Diffusers.
+PACKED_PROJECTIONS = {
+    "attn.qkv_proj": "attn.to_qkv",
+    "attn.out_proj": "attn.to_out.0",
+    "mlp.fc1": "ff.net.0.proj",
+    "mlp.fc2": "ff.net.2",
+}
+
+
+def read_packed_h3_projections(checkpoint, num_blocks=50):
+    """Read the packed linear submodules without materializing dense weights."""
+    from safetensors import safe_open
+
+    projections = {}
+    with safe_open(checkpoint, framework="pt", device="cpu") as source:
+        keys = set(source.keys())
+        expected = {
+            f"blocks.{layer}.{name}.weight"
+            for layer in range(num_blocks)
+            for name in PACKED_PROJECTIONS
+        }
+        tagged = {k.removesuffix(".comfy_quant") + ".weight" for k in keys if k.endswith(".comfy_quant")}
+        if expected != tagged:
+            raise ValueError(
+                f"Unexpected packed H3 projection set: missing={sorted(expected-tagged)[:4]}, "
+                f"extra={sorted(tagged-expected)[:4]}"
+            )
+        for layer in range(num_blocks):
+            for original, target in PACKED_PROJECTIONS.items():
+                prefix = f"blocks.{layer}.{original}"
+                tag = json.loads(bytes(source.get_tensor(prefix + ".comfy_quant").tolist()))
+                if tag.get("format") != "nvfp4":
+                    raise ValueError(f"{prefix} is not tagged as NVFP4")
+                bias = source.get_tensor(prefix + ".bias") if prefix + ".bias" in keys else None
+                projections[f"transformer_blocks.{layer}.{target}"] = H3NVFP4Linear(
+                    source.get_tensor(prefix + ".weight"),
+                    source.get_tensor(prefix + ".weight_scale"),
+                    source.get_tensor(prefix + ".weight_scale_2"),
+                    bias,
+                )
+    return projections

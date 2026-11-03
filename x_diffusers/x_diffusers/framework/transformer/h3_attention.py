@@ -21,6 +21,7 @@ class BaseAttentionSession:
         self.layout_type, self.head_type = VideoLayout, HeadShard
         self.model, self.backend_key = model, key(args)
         self.backend = args.h3_attention
+        self.sparsity = getattr(args, 'h3_veda_sparsity', 0.9)
         self.metrics = Telemetry()
         self.programs = {}
         self.bundle, self.weights = None, None
@@ -70,8 +71,11 @@ class BaseAttentionSession:
         if self.calls == 0:
             text, audio, video = (values[k] for k in ('text_indices','audio_indices','video_indices'))
             used = values['position_ids'].shape[0]
-            if len(video) != 37*24*42:
-                raise ValueError('Only the five-second 768P Base latent grid is supported')
+            i2va = self.request.task_type == 'fl2va'
+            grid = (72 if i2va else 37, 24, 42)
+            condition_rows = 24 * 42 if i2va else 0
+            if len(video) != grid[0] * grid[1] * grid[2] + condition_rows:
+                raise ValueError('Unexpected 768P Base latent grid or first-frame token count')
             permutation = torch.cat((text, audio, video)).long()
             if len(permutation) != used or not torch.equal(permutation.sort().values,
                                                           torch.arange(used, device=permutation.device)):
@@ -81,8 +85,10 @@ class BaseAttentionSession:
                 self.programs.clear()
                 self.layout_key = shape
             self.permutation = permutation
-            self.layout = self.layout_type((37,24,42),len(text)+len(audio),len(text),
-                                           (len(text),len(audio)),frames=124)
+            # FL2VA puts the first frame before the generated rows in video_indices.
+            # Keep it dense. The upstream 345-frame profile supplies tuning only.
+            segments = (len(text), len(audio), condition_rows) if i2va else (len(text), len(audio))
+            self.layout = self.layout_type(grid, sum(segments), len(text), segments, frames=345 if i2va else 124)
             if self.weights is not None:
                 self.weights.onload()
         self.calls += 1
@@ -110,7 +116,7 @@ class BaseAttentionSession:
                     else:
                         from x_base.operator.h3_attention.veda import VedaAttention
                         program = VedaAttention(self.layout,heads,
-                            predictor_path=self.request.h3_veda_predictor,
+                            predictor_path=self.request.h3_veda_predictor, sparsity=self.sparsity,
                             shared_bundle=self.bundle,device=str(q.device))
                     self.programs[program_key] = program
             self.routed_heads.update(range(start, start+q.shape[1]))
@@ -149,6 +155,7 @@ class BaseAttentionSession:
                     self.failed = True
                     raise RuntimeError('Veda predictor CPU master identity changed')
             record = dict(experimental=True,backend=self.backend,actual_base_dit=self.expected_steps,
+                          sparsity=self.sparsity if self.backend == 'veda' else None,
                           operator_calls=self.operator_calls,global_heads=sorted(self.routed_heads),
                           predictor_loads=self.predictor_loads,initialization_seconds=self.initialization_seconds,
                           predictor_identity=self.predictor_identity,

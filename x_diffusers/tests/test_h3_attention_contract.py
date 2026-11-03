@@ -53,7 +53,7 @@ class ContractTests(unittest.TestCase):
 
     def test_original_args_without_new_fields_still_disabled(self):
         self.assertIsNone(contract.validate(SimpleNamespace()))
-        self.assertEqual(contract.key(SimpleNamespace()),('legacy',None,False))
+        self.assertEqual(contract.key(SimpleNamespace()),('legacy',None,False,0.9))
 
     def test_50_steps_both_output_paths(self):
         contract.validate(args())
@@ -66,6 +66,20 @@ class ContractTests(unittest.TestCase):
             contract.validate(value)
             value.h3_turbo8 = False
             with self.assertRaises(ValueError):
+                contract.validate(value)
+
+    def test_veda_i2va_10s_and_sparsity(self):
+        with tempfile.NamedTemporaryFile() as file:
+            value = args(h3_attention='veda', h3_veda_predictor=file.name, task_type='fl2va',
+                         frames=243, num_inference_steps=21, keyframe_image='first.png',
+                         h3_veda_sparsity=0.7)
+            contract.validate(value)
+            value.h3_veda_sparsity = 0.8
+            with self.assertRaisesRegex(ValueError, 'sparsity'):
+                contract.validate(value)
+            value.h3_veda_sparsity = 0.9
+            value.keyframe_image = ''
+            with self.assertRaisesRegex(ValueError, 'first frame'):
                 contract.validate(value)
 
     def test_reject_wrong_shapes_models_and_schedule(self):

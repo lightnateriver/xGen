@@ -166,3 +166,24 @@ BASE_TRANSFORMER="$TURBO8_TRANSFORMER" BASE_ADALN="$TURBO8_ADALN" \
 ```
 
 The Turbo preset adds no runtime LoRA buffers. Veda still uses its own predictor and scratch space. Initialization includes loading the prepared transformer and any existing quantization. Measure initialization, request latency and peak HBM separately. To switch back, remove the flag and restore the original transformer, AdaLN table and step count together.
+
+### Veda I2VA 10-second profile
+
+Use the existing offline CLI with MiniMax-H3, `--task_type fl2va`, one
+`--keyframe_image`, 1344×768, 243 native frames, 24 fps and SP8. Set
+`--num_inference_steps 21` for 20 Base DiT evaluations and use matching Base
+AdaLN assets if the transformer has been stripped. The validated NPU recipe
+uses INT8 DiT/VAE linear layers, text encoder TP8 and PHAA2. Example additions:
+
+```bash
+--h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR" --h3_veda_sparsity 0.7 \
+--task_type fl2va --keyframe_image "$FIRST_FRAME" --frames 243 \
+--width 1344 --height 768 --save_fps 24 --num_inference_steps 21
+```
+
+`--h3_veda_sparsity` accepts `0.7` and `0.9` and defaults to `0.9` when
+Veda is enabled. These are nominal block sparsities. The first-frame
+conditioning tokens stay in the dense prefix. The 243-frame path uses the
+actual 72×24×42 generation grid with the upstream 345-frame tuning profile.
+For a warm benchmark, send a full request with the same token layout before
+measuring another request. This I2VA profile is experimental and offline.

@@ -60,6 +60,7 @@ def run_phaa_attention(
     gather_priority=False,
     scatter_stream=None,
     scatter_group=None,
+    tail_first=False,
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -100,6 +101,13 @@ def run_phaa_attention(
     base = heads_per_device // fa_split_num
     remainder = heads_per_device % fa_split_num
     chunk_sizes = [base + (1 if i < remainder else 0) for i in range(fa_split_num)]
+
+    chunk_offsets = [sum(chunk_sizes[:index]) for index in range(fa_split_num)]
+    order = list(range(fa_split_num))
+    if tail_first:
+        if not fp8_transport or fa_split_num != 4:
+            raise ValueError("PHAA tail-first requires FP8 transport and four chunks")
+        order = [3, 0, 1, 2]
 
     # --- prepare events ---
     accelerator = torch.cuda if query.device.type == "cuda" else torch.npu
@@ -176,14 +184,14 @@ def run_phaa_attention(
     if scatter_stream is not None:
         scatter_stream.wait_stream(accelerator.current_stream())
     with accelerator.stream(comm_stream):
-        for index in range(fa_split_num if gather_priority else 1):
+        for index in (order if gather_priority else order[:1]):
             gather_chunk(index)
     # Keep compute-stream send buffers alive until the communication stream
     # completes. async_op=False does not imply device completion on the host.
 
     # --- 2. main loop ---
-    head_offset = 0  # cumulative head offset for extra_attn_fn (unequal chunks)
-    for step in range(fa_split_num):
+    for position, step in enumerate(order):
+        head_offset = chunk_offsets[step]
         cs = chunk_sizes[step]
 
         # 2.1 compute attention
@@ -242,8 +250,8 @@ def run_phaa_attention(
         # 2.3 communication on comm_stream
         with accelerator.stream(comm_stream):
             # next chunk all2all
-            if not gather_priority and step + 1 < fa_split_num:
-                gather_chunk(step + 1)
+            if not gather_priority and position + 1 < fa_split_num:
+                gather_chunk(order[position + 1])
             scatter_context = accelerator.stream(scatter_stream) if scatter_stream is not None else nullcontext()
             with scatter_context:
                 output_stream.wait_event(fa_is_finished[step])
@@ -254,7 +262,6 @@ def run_phaa_attention(
                         output_extra_a2a_bufs[step], hidden_states_extra_buf[step],
                         group=output_group, async_op=False)
         # Send/output references stay alive through the final stream join.
-        head_offset += cs
 
     # --- 3. finalize ---
     # Bound the lifetime to one attention call. A host-visible stream join

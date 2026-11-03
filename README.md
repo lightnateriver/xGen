@@ -243,3 +243,21 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_ser
 已验证 8 张 RTX 5090 上的 5 秒 2K 离线推理和两次串行在线请求。
 在线原生 attention 也验证了同一服务从 5 秒切换到 10 秒，两条请求复用模型和 CPU 权重。
 10 秒请求的单卡 PyTorch 峰值保留显存约 30.34 GiB。两条近同时提交的 5 秒请求也已验证排队与串行执行。15 秒、队列满载和长期内存趋势仍需实测。
+
+### CUDA 文本编码器 TP8 与 FastVideo C4 配方
+
+CUDA H3 可在八个分布式 rank 上显式设置 `--text_encoder_tp 8`。它复用 xGen 的
+Qwen3-VL 文本层张量并行和 CPU 分组卸载，默认仍为 TP1。
+
+使用上面的 CUDA FL2VA 脚本时，可设置 `GPUS=8 XGEN_FASTVIDEO_RECIPE=5s`。
+配方开启文本 TP8、打包 DiT 常驻、Sparge（可用 `ATTENTION_BACKEND` 覆盖）、
+FP8 PHAA、四个头分块及 gather-priority。启动时设置 NCCL CTA 上限。
+
+| 配方 | 请求帧数 | PHAA 分块提交顺序 | NCCL_MAX_CTAS |
+| --- | ---: | --- | ---: |
+| `5s` | 124 | 0,1,2,3 | 2 |
+| `15s` | 345 | 3,0,1,2 | 1 |
+
+尾块优先只改变提交和计算顺序，输出按原头位置拼接。两档使用原有 50 次
+DiT 配置。当前 C4 顺序已通过单卡模拟通信验证，TP8 与 CTA 配方的八卡
+端到端耗时和显存仍需实测。

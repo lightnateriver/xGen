@@ -64,3 +64,38 @@ def test_fp8_phaa_uneven_heads_and_padding(monkeypatch, batch_size):
     assert torch.equal(fp8, gather_first)
     assert torch.equal(fp8, dual)
     assert F.cosine_similarity(dense.float().flatten(), fp8.float().flatten(), dim=0) > 0.99
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_fp8_phaa_c4_tail_first_preserves_head_order(monkeypatch):
+    if torch.cuda.get_device_capability() < (8, 9):
+        pytest.skip("native FP8 conversion required")
+    pytest.importorskip("triton")
+    monkeypatch.setenv("XGEN_DEVICE", "cuda")
+    from x_base.phaa import phaa_attention
+
+    monkeypatch.setattr(phaa_attention, "get_pad", lambda _: 1)
+    generator = torch.Generator(device="cuda").manual_seed(42)
+    qkv = [torch.randn((1, 32, 14 * 64), dtype=torch.bfloat16, device="cuda",
+                       generator=generator) for _ in range(3)]
+    offsets = []
+
+    def attention(q, k, v, *, head_offset, attn_mask):
+        offsets.append(head_offset)
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+
+    def local_copy(output, tensor, **kwargs):
+        output.copy_(tensor)
+
+    options = dict(comm_stream=torch.cuda.Stream(), sp_group=None, sp_size=2,
+                   heads=14, phaa_split_num=4, head_dim=64, attention_fn=attention,
+                   fp8_transport=True, gather_priority=True)
+    with patch.object(dist, "get_world_size", return_value=2), \
+         patch.object(dist, "all_to_all_single", side_effect=local_copy):
+        natural = phaa_attention.run_phaa_attention(*qkv, **options)
+        assert offsets == [0, 2, 4, 6]
+        offsets.clear()
+        tail = phaa_attention.run_phaa_attention(*qkv, **options, tail_first=True)
+        assert offsets == [6, 0, 2, 4]
+
+    assert torch.equal(natural, tail)

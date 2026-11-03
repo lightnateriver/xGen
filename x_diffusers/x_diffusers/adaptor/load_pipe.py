@@ -429,10 +429,12 @@ def load_pipe(args):
     ):
         raise ValueError("--h3_cuda_vae_sp requires CUDA MiniMax-H3 and SP > 1")
     if backend == "cuda":
+        if args.text_encoder_tp == 8 and (not dist.is_initialized() or dist.get_world_size() != 8):
+            raise ValueError("CUDA H3 text encoder TP8 requires eight distributed ranks")
         unsupported = (
             args.model != "MiniMax-H3", args.atten not in ("none", "sage", "sparge"), args.matmul_quant != "none",
             args.vae_matmul_quant != "none", args.vae_lightning != "none", args.rope_fused,
-            args.text_encoder_tp > 1, args.inf_vram_blocks_num, args.fsdp,
+            args.text_encoder_tp not in (1, 8), args.inf_vram_blocks_num, args.fsdp,
             getattr(args, "h3_attention", "legacy") != "legacy",
         )
         if any(unsupported):
@@ -585,6 +587,11 @@ def parallelism_ability(pipe, args):
         local_heads = pipe.transformer.config.num_attention_heads // args.sp if is_minimax_h3 else 0
         if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
             raise ValueError("XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num")
+        chunk_order = os.environ.get("XGEN_PHAA_CHUNK_ORDER", "natural")
+        if chunk_order not in ("natural", "tail-first"):
+            raise ValueError("XGEN_PHAA_CHUNK_ORDER must be natural or tail-first")
+        if chunk_order == "tail-first" and args.phaa_num != 4:
+            raise ValueError("PHAA tail-first requires --phaa_num 4")
         gather_priority = os.environ.get("XGEN_PHAA_GATHER_PRIORITY") == "1"
         dual_comm = os.environ.get("XGEN_PHAA_DUAL_COMM") == "1"
         scatter_group = scatter_stream = None
@@ -599,10 +606,11 @@ def parallelism_ability(pipe, args):
         for block in pipe.transformer.transformer_blocks:
             block.attn._h3_phaa_fp8 = True
             block.attn._h3_phaa_gather_priority = gather_priority
+            block.attn._h3_phaa_tail_first = chunk_order == "tail-first"
             block.attn._h3_phaa_scatter_group = scatter_group
             block.attn._h3_phaa_scatter_stream = scatter_stream
-        logger.info("Experimental H3 PHAA E4M3 transport enabled, gather_priority=%s, dual_comm=%s",
-                    gather_priority, dual_comm)
+        logger.info("Experimental H3 PHAA E4M3 transport enabled, chunks=%s, order=%s, gather_priority=%s, dual_comm=%s, NCCL_MAX_CTAS=%s",
+                    args.phaa_num, chunk_order, gather_priority, dual_comm, os.environ.get("NCCL_MAX_CTAS"))
 
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).
@@ -644,9 +652,10 @@ def parallelism_ability(pipe, args):
             # TP 替换后重新 apply group offloading (load_minimax_h3_pipe 中跳过了)
             if not hasattr(pipe.text_encoder, '_tp_offload_applied'):
                 from diffusers.hooks import apply_group_offloading
-                npu_device = torch.device("npu", torch.npu.current_device())
+                backend = device_type()
+                onload_device = torch.device(backend, torch.get_device_module(backend).current_device())
                 apply_group_offloading(pipe.text_encoder, offload_type="leaf_level",
-                                       onload_device=npu_device, offload_device=torch.device("cpu"),
+                                       onload_device=onload_device, offload_device=torch.device("cpu"),
                                        use_stream=True, low_cpu_mem_usage=True)
                 pipe.text_encoder._tp_offload_applied = True
         else:

@@ -52,7 +52,14 @@ def test_fp8_phaa_uneven_heads_and_padding(monkeypatch, batch_size):
             None, None, scatter_group, scatter_group,
         ]
 
+    for call in exchange.call_args_list[-2:]:
+        received, sent = call.args
+        assert received.dtype == sent.dtype == torch.uint8
+        assert received.shape == sent.shape
+        assert sent.shape[-1] == 64 + 4  # E4M3 row and FP32 scale
+
     assert dense.shape == fp8.shape == qkv[0].shape
+    assert dense.dtype == fp8.dtype == qkv[0].dtype
     assert torch.isfinite(fp8).all()
     assert torch.equal(fp8, gather_first)
     assert torch.equal(fp8, dual)

@@ -135,6 +135,7 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 搬运。文本编码器仍按原策略 offload。移除该参数即可恢复逐层搬运。
 常驻模式下可试验 `--h3_nvfp4_compile`，只编译重复的 DiT block。首个请求
 包含编译开销，换形状可能再次编译。移除参数即可恢复 eager 执行。
+编译环境需要可用的 C 编译器和与运行时匹配的 Python 开发头文件。
 
 设置 `MODEL_PATH`、`NVFP4_CHECKPOINT`、`FIRST_FRAME` 和 `PROMPT_FILE` 后，
 运行 [CUDA NVFP4 推理示例](example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh)。

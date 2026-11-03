@@ -136,6 +136,8 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 常驻模式下可试验 `--h3_nvfp4_compile`，只编译重复的 DiT block。首个请求
 包含编译开销，换形状可能再次编译。移除参数即可恢复 eager 执行。
 编译环境需要可用的 C 编译器和与运行时匹配的 Python 开发头文件。
+多卡可用 `--h3_cuda_vae_sp` 试验 CUDA VAE 序列并行，复用 xGen 的 VAE
+分片逻辑和原有音视频保存流程。VAE attention 头数需能整除 SP 卡数。
 
 设置 `MODEL_PATH`、`NVFP4_CHECKPOINT`、`FIRST_FRAME` 和 `PROMPT_FILE` 后，
 运行 [CUDA NVFP4 推理示例](example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh)。

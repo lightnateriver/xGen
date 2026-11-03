@@ -66,6 +66,7 @@ class InferenceManager(object):
             "h3_nvfp4_checkpoint",
             "h3_nvfp4_resident",
             "h3_nvfp4_compile",
+            "h3_cuda_vae_sp",
         ]
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.rank = dist.get_rank() if dist.is_initialized() else 0

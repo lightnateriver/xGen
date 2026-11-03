@@ -410,6 +410,10 @@ def to_dtype(name: str):
 
 
 def load_pipe(args):
+    if getattr(args, "h3_cuda_vae_sp", False) and (
+        device_type() != "cuda" or args.model != "MiniMax-H3" or args.sp < 2
+    ):
+        raise ValueError("--h3_cuda_vae_sp requires CUDA MiniMax-H3 and SP > 1")
     if device_type() == "cuda":
         unsupported = (
             args.model != "MiniMax-H3", args.atten not in ("none", "sage", "sparge"), args.matmul_quant != "none",
@@ -554,6 +558,14 @@ def parallelism_ability(pipe, args):
                        enable_transformer_3=args.joint)
         if args.phaa_num > 0:
             phaa_on_pipe(pipe, is_contain_transformer_2, transformer_3=args.joint, phaa_split_num=args.phaa_num)
+
+    if getattr(args, "h3_cuda_vae_sp", False):
+        manager = pipe.transformer.parallel_manager
+        heads = pipe.vae.decoder.transformer_blocks[0].attn.heads
+        if heads % manager.sp_size:
+            raise ValueError("CUDA H3 VAE attention heads must divide evenly across SP ranks")
+        pipe.vae._h3_cuda_vae_parallel = manager
+        logger.info("Experimental CUDA H3 VAE SP enabled, sp_size=%s", manager.sp_size)
 
     if device_type() == "cuda" and os.environ.get("XGEN_PHAA_FP8") == "1":
         local_heads = pipe.transformer.config.num_attention_heads // args.sp if is_minimax_h3 else 0

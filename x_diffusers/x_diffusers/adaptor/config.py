@@ -208,6 +208,8 @@ def add_abilities_args(parser: argparse.ArgumentParser):
                        help="Keep the packed CUDA H3 DiT on device instead of streaming blocks from CPU.")
     group.add_argument("--h3_nvfp4_compile", action="store_true",
                        help="Experimentally compile repeated resident CUDA H3 DiT blocks.")
+    group.add_argument("--h3_cuda_vae_sp", action="store_true",
+                       help="Experimentally use existing H3 VAE sequence parallel decode on CUDA.")
     group.add_argument("--lora_path_list", nargs='+', default=None,
                        help="List of path to load lora weights.")
     group.add_argument("--lora_scale_weight_list", nargs='+', default=None,

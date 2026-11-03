@@ -652,7 +652,11 @@ def _decode_ascend(self, z: torch.Tensor, return_dict: bool = True):
     )
     is_distributed = torch.distributed.is_initialized()
 
-    if is_lightning_mode and is_distributed:
+    cuda_parallel = getattr(self, "_h3_cuda_vae_parallel", None)
+    if cuda_parallel is not None:
+        decoded = _decode_sp_full(self, z, cuda_parallel)
+        infer_info._route_b_saved = False
+    elif is_lightning_mode and is_distributed:
         decoded = _decode_sp(self, z, _get_vae_sp_manager())
     elif is_lightning_mode:
         decoded = _decode_lightning_single(self, z)

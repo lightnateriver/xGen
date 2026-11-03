@@ -182,6 +182,15 @@ def load_minimax_h3_pipe(args):
 
     dtype = to_dtype(args.dtype)
     task_type = getattr(args, "task_type", "t2va")
+    packed_checkpoint = getattr(args, "h3_nvfp4_checkpoint", None)
+    if packed_checkpoint and (
+        device_type() != "cuda" or task_type != "fl2va" or dtype != torch.bfloat16
+        or args.matmul_quant != "none" or any(getattr(args, name, None) for name in (
+            "transformer_path", "adaln_cache_file", "h3_refiner", "h3_turbo8",
+            "h3_turbo_sla_lora", "lora_path_list", "fsdp",
+        ))
+    ):
+        raise ValueError("H3 NVFP4 requires CUDA BF16 FL2VA without extra quantization, LoRA, AdaLN cache, FSDP or Refiner")
 
     if task_type == "ref2va":
         logger.info("building minimax-h3 ref2va modular pipeline...")
@@ -197,7 +206,17 @@ def load_minimax_h3_pipe(args):
     # pre-stripped checkpoints) only produce warnings, and with low_cpu_mem_usage
     # they stay on meta device (zero memory).
     transformer_path = getattr(args, 'transformer_path', None)
-    if transformer_path:
+    if packed_checkpoint:
+        from .h3_nvfp4 import load_packed_h3
+
+        config = MiniMaxH3Transformer3DModel.load_config(
+            args.pretrained_model_name_or_path, subfolder="transformer"
+        )
+        logger.info("Loading experimental H3 FL2VA NVFP4 transformer")
+        transformer = load_packed_h3(MiniMaxH3Transformer3DModel, config, packed_checkpoint)
+        pipe.update_components(transformer=transformer)
+        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path)
+    elif transformer_path:
         logger.info(f"Loading transformer from: {transformer_path}")
         transformer_key = "transformer_ref" if task_type == "ref2va" else "transformer"
         pipe.load_components(

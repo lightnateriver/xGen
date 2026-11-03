@@ -119,3 +119,15 @@ bash infer_wan2.2_14b_t2v_720p.sh
 5 秒 T2VA 的 LightX2V 8 步离线实验使用独立开关 `--h3_turbo8`。权重准备与 768P/2K 示例见[参数说明](docs/H3-ATTENTION.md#experimental-lightx2v-turbo-8-step-offline)。
 
 10 秒 I2VA 可通过离线 CLI 选择 Veda 0.9 / 0.7。参见[启动命令](docs/H3-ATTENTION.md#veda-i2va-10-second-profile)与[三后端热态对比](docs/H3-ATTENTION-VALIDATION.md#10-second-i2va--20-actual-base-steps)。
+
+## 实验性 CUDA H3 Base
+
+显式设置 `XGEN_DEVICE=cuda` 选择 CUDA，默认仍使用 NPU。CUDA 上可用
+`--atten sage` 或 `--atten sparge` 选择对应算子，需安装对应 CUDA 扩展。
+
+在 RTX 5090 上使用 FastVideo 的 FL2VA pruned NVFP4 权重时，在原 FL2VA
+启动参数后加 `--h3_nvfp4_checkpoint ./weights/minimax_h3_fl2va_pruned_nvfp4.safetensors`。
+保留 `--pretrained_model_name_or_path` 以加载模型配置、文本编码器和 VAE。
+此路径需要支持 NVFP4 的 Comfy-Kitchen CUDA 算子和 BF16 激活。权重以打包格式保存，
+每次投影执行激活量化。当前仅支持 FL2VA Base，暂不组合 Refiner、额外 LoRA、
+AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 checkpoint。

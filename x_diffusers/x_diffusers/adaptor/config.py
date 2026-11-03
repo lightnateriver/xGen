@@ -202,6 +202,8 @@ def add_abilities_args(parser: argparse.ArgumentParser):
                             "from this directory instead of the default pretrained_model_name_or_path/transformer/. "
                             "Can be used alone (full checkpoint, adaln computed on-the-fly) or together "
                             "with --adaln_cache_file (pre-stripped checkpoint + cache for memory optimization).")
+    group.add_argument("--h3_nvfp4_checkpoint", type=str, default=None,
+                       help="Experimental CUDA FL2VA path to a FastVideo pruned NVFP4 safetensors file.")
     group.add_argument("--lora_path_list", nargs='+', default=None,
                        help="List of path to load lora weights.")
     group.add_argument("--lora_scale_weight_list", nargs='+', default=None,

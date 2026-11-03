@@ -7,6 +7,26 @@ import torch
 from torch import nn
 
 
+def interpolate_h3_adaln(timestep, table):
+    """Evaluate the normalized FastVideo H3 timestep curve in FP32."""
+    position = timestep.float().clamp(0, 1) * (table.shape[0] - 1)
+    lower = position.floor().long().clamp_max(table.shape[0] - 2)
+    fraction = (position - lower).unsqueeze(-1)
+    return torch.lerp(table[lower], table[lower + 1], fraction)
+
+
+class H3GateFirstSwiGLU(nn.Module):
+    """Apply the checkpoint's gate-first layout without repacking FP4 rows."""
+
+    def __init__(self, proj):
+        super().__init__()
+        self.proj = proj
+
+    def forward(self, hidden_states):
+        gate, value = self.proj(hidden_states).chunk(2, dim=-1)
+        return torch.nn.functional.silu(gate) * value
+
+
 class H3NVFP4Linear(nn.Module):
     """Keep the checkpoint in packed E2M1 form across offload and forward."""
 

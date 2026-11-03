@@ -319,7 +319,7 @@ def _split_sequence_for_sp(
     attention_mask: Optional[torch.Tensor],
 ) -> tuple:
     """Split tensors across SP group. Returns (sp_group, pad, hidden_states, rotary_emb, adaln_indices, attention_mask)."""
-    if parallel_manager is None:
+    if parallel_manager is None or parallel_manager.sp_size < 2:
         return None, None, hidden_states, rotary_emb, adaln_indices, attention_mask
 
     sp_group = parallel_manager.sp_group
@@ -345,12 +345,16 @@ def _prepare_timestep_adaln_mask(
     token_tags: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """Compute timestep embedding, adaln_indices, and attention mask."""
-    temb = self.time_proj(timestep)
-    _adaln_cache = getattr(self, '_adaln_cache', None)
-    if _adaln_cache is not None and _adaln_cache.has_current:
-        pass  # skip time_embedder, temb not needed when cache is active
+    table = getattr(self, '_h3_packed_adaln_table', None)
+    if table is not None:
+        from x_base.operator.h3_nvfp4 import interpolate_h3_adaln
+
+        temb = interpolate_h3_adaln(timestep, table)
     else:
-        temb = self.time_embedder(temb.to(self.time_embedder.linear_1.weight.dtype))
+        temb = self.time_proj(timestep)
+        _adaln_cache = getattr(self, '_adaln_cache', None)
+        if _adaln_cache is None or not _adaln_cache.has_current:
+            temb = self.time_embedder(temb.to(self.time_embedder.linear_1.weight.dtype))
 
     adaln_indices = timestep_indices * MINIMAX_H3_MODALITY_NUM + token_tags.clamp(min=0)
 
@@ -466,7 +470,7 @@ def _mmh3_forward_with_sp(
         _adaln_cache.maybe_install(timestep)
 
     # --- No SP: delegate to the original forward (undecorated, LoRA already handled) ---
-    if sp_size < 2:
+    if sp_size < 2 and not hasattr(self, '_h3_packed_adaln_table'):
         return _original_mmh3_forward.__wrapped__(
             self,
             hidden_states,
@@ -559,7 +563,10 @@ def _patched_adaln_forward(self, temb):
     linear_dtype = self.linear.weight.dtype
     if linear_dtype == torch.int8:
         linear_dtype = torch.bfloat16
-    temb = self.linear(nn.functional.silu(temb).to(linear_dtype))
+    if getattr(self, '_h3_packed_adaln', False):
+        temb = self.linear(temb).to(torch.bfloat16)
+    else:
+        temb = self.linear(nn.functional.silu(temb).to(linear_dtype))
     temb = temb.view(-1, 6 * self.hidden_size)
     return temb.chunk(6, dim=-1)
 
@@ -583,7 +590,11 @@ def _patched_adaln_out_forward(self, hidden_states, temb, timestep_indices):
         out_dtype = self.linear.weight.dtype
         if out_dtype == torch.int8:
             out_dtype = torch.bfloat16
-        shift, scale = self.linear(nn.functional.silu(temb).to(out_dtype)).chunk(2, dim=-1)
+        if getattr(self, '_h3_packed_adaln', False):
+            modulation = self.linear(temb).to(hidden_states.dtype)
+        else:
+            modulation = self.linear(nn.functional.silu(temb).to(out_dtype))
+        shift, scale = modulation.chunk(2, dim=-1)
     hidden_states = self.norm(hidden_states)
     return hidden_states * (1.0 + scale.index_select(0, timestep_indices)) + shift.index_select(0, timestep_indices)
 

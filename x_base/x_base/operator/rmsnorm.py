@@ -25,7 +25,7 @@ def _npu_rms_norm(input, normalized_shape, weight=None, eps=None):
 def enable_fused_rmsnorm():
     """Patch F.rms_norm to route to torch_npu.npu_rms_norm."""
     global _patched
-    if _patched:
+    if _patched or device_type() != "npu":
         return
     F.rms_norm = _npu_rms_norm
     _patched = True

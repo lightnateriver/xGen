@@ -122,6 +122,8 @@ bash infer_wan2.2_14b_t2v_720p.sh
 
 ## 实验性 CUDA H3 Base
 
+[CUDA 部署与启动教程](docs/H3-CUDA.md) · [CUDA 实测性能](docs/performance/h3-cuda.md)
+
 显式设置 `XGEN_DEVICE=cuda` 选择 CUDA，默认仍使用 NPU。CUDA 上可用
 `--atten sage` 或 `--atten sparge` 选择对应算子，需安装对应 CUDA 扩展。
 

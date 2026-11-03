@@ -6,6 +6,8 @@
 
 ## 1. 先选运行路径和数据口径
 
+本页的原有命令使用 NPU。CUDA 环境、768P/2K 启动和 FastVideo 配方见 [CUDA 部署教程](H3-CUDA.md)，实测结果见 [CUDA 性能记录](performance/h3-cuda.md)。
+
 | 路径 | 做什么 | 当前验证边界 |
 |---|---|---|
 | 原 XGEN / Base-only | 原脚本生成 768P，Refiner 不加载 | 保持原入口和配置行为 |

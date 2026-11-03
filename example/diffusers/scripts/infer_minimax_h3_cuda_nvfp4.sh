@@ -7,6 +7,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 : "${FIRST_FRAME:?Set FIRST_FRAME to an input image}"
 : "${PROMPT_FILE:?Set PROMPT_FILE to a UTF-8 prompt file}"
 
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "Add ffmpeg to PATH before launching FL2VA audio/video inference." >&2
+    exit 1
+fi
+
 export XGEN_DEVICE=cuda
 export TOKENIZERS_PARALLELISM=false
 GPUS="${GPUS:-1}"

@@ -25,6 +25,8 @@ import os
 import torch
 import torch.nn as nn
 
+from x_base.device import device_type
+
 logger = logging.getLogger(__name__)
 
 # Key patterns for AdaLN-related weights stripped in Step 2.
@@ -71,7 +73,7 @@ class AdalnScheduleCache:
         self._const_table = None       # constant timestep table (0.999, 1.0)
         self._const_timesteps = None   # tensor of constant timesteps
         self._conditioning_type = conditioning_type
-        self._device = "npu"
+        self._device = device_type()
 
         if cache_file:
             self._load_file_cache(cache_file)
@@ -424,7 +426,7 @@ def release_adaln_weights(transformer):
         freed += _delete_linear_weights(norm_out.linear)
 
     logger.info(f"release_adaln_weights: freed {freed} weight tensors")
-    torch.npu.empty_cache() if hasattr(torch, 'npu') else torch.cuda.empty_cache()
+    torch.get_device_module(device_type()).empty_cache()
 
 
 def validate_stripped_checkpoint(transformer, checkpoint_dir: str) -> bool:

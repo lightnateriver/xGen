@@ -599,13 +599,14 @@ def _timed_seq_call(self, pipeline, state):
     if os.environ.get("DEBUG_TIME") and self.model_name == "minimax-h3":
         is_dist = dist.is_initialized()
         is_rank0 = not is_dist or dist.get_rank() == 0
+        accelerator = torch.get_device_module(device_type())
         for block_name, block in self.sub_blocks.items():
             if is_dist:
                 dist.barrier()
-            torch.npu.synchronize()
+            accelerator.synchronize()
             t0 = time.time()
             pipeline, state = block(pipeline, state)
-            torch.npu.synchronize()
+            accelerator.synchronize()
             if is_dist:
                 dist.barrier()
             if is_rank0:

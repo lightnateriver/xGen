@@ -44,8 +44,8 @@ def validate_settings(args):
     if cuda and (args.task_type != 'fl2va' or not getattr(args, 'h3_nvfp4_checkpoint', None) or
                  getattr(args, 'h3_nvfp4_resident', False) or getattr(args, 'h3_nvfp4_compile', False)):
         raise ValueError('CUDA H3 Refiner requires a packed FL2VA Base checkpoint with staged residency')
-    if cuda and args.atten != 'none':
-        raise ValueError('Experimental CUDA H3 Refiner requires --atten none (native attention)')
+    if cuda and args.atten not in ('none', 'sage', 'sparge'):
+        raise ValueError('Experimental CUDA H3 Refiner supports --atten none, sage or sparge')
     if not cuda and args.atten != 'laser':
         raise ValueError('Experimental NPU H3 Refiner requires Laser attention')
     points = (9,) if getattr(args, "h3_turbo8", False) else (21, 51)

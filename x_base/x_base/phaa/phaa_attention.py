@@ -147,12 +147,9 @@ def run_phaa_attention(
     c_offset = 0
     for c in range(fa_split_num):
         cs = chunk_sizes[c]
-        query_chunks.append(
-            query[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4).contiguous())
-        key_chunks.append(
-            key[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4).contiguous())
-        value_chunks.append(
-            value[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4).contiguous())
+        for chunks, tensor in ((query_chunks, query), (key_chunks, key), (value_chunks, value)):
+            view = tensor[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4)
+            chunks.append(view if fp8_transport else view.contiguous())
         c_offset += cs
 
     def gather_chunk(index):

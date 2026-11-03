@@ -9,12 +9,22 @@ import triton.language as tl
 
 @triton.jit
 def _encode(q, k, v, payload, scale_ptr, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
-            PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr):
+            PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr,
+            SHAPE: tl.constexpr, STRIDES: tl.constexpr, STRIDED: tl.constexpr):
     row = tl.program_id(0)
     slot = tl.program_id(1)
     src = tl.where(slot == 0, q, tl.where(slot == 1, k, v)) if STREAMS == 3 else q
     col = tl.arange(0, BLOCK)
-    values = tl.load(src + row * WIDTH + col, col < WIDTH, other=0).to(tl.float32)
+    if STRIDED:
+        # PHAA QKV view is [peer, sequence, batch, head, head_dim].
+        head = row % SHAPE[3]
+        batch = row // SHAPE[3] % SHAPE[2]
+        seq = row // (SHAPE[3] * SHAPE[2]) % SHAPE[1]
+        peer = row // PEER_ROWS
+        src_row = peer * STRIDES[0] + seq * STRIDES[1] + batch * STRIDES[2] + head * STRIDES[3]
+    else:
+        src_row = row * WIDTH
+    values = tl.load(src + src_row + col, col < WIDTH, other=0).to(tl.float32)
     scale = tl.maximum(tl.max(tl.abs(values), 0) / 448.0, 1.0e-12)
     wire_row = row + (row // PEER_ROWS * (STREAMS - 1) + slot) * PEER_ROWS
     offset = wire_row * (WIDTH + 4)
@@ -59,10 +69,16 @@ def fp8_all_to_all_many(outputs, tensors, head_dim, group):
     block = triton.next_power_of_2(head_dim)
     send = torch.empty((streams * rows, head_dim + 4), dtype=torch.uint8, device=tensors[0].device)
     recv = torch.empty_like(send)
-    inputs = tuple(tensor.contiguous() for tensor in tensors)
+    strides = tensors[0].stride()
+    if (streams == 3 and len(shape) == 5 and shape[0] == peers and shape[-1] == head_dim
+            and strides[-1] == 1 and all(x.stride() == strides for x in tensors)):
+        inputs = tensors
+    else:
+        inputs = tuple(tensor.contiguous() for tensor in tensors)
+        strides = ()
     _encode[(rows, streams)](*(inputs if streams == 3 else inputs * 3),
                              send.view(torch.float8_e4m3fn), send.view(torch.float32),
-                             head_dim, block, peer_rows, streams)
+                             head_dim, block, peer_rows, streams, tuple(shape), strides, bool(strides))
     dist.all_to_all_single(recv, send, group=group)
     _decode[(rows, streams)](recv, recv.view(torch.float32),
                              *(outputs if streams == 3 else outputs * 3),

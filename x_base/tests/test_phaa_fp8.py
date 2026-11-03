@@ -9,7 +9,8 @@ import torch.nn.functional as F
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_fp8_phaa_uneven_heads_and_padding(monkeypatch):
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_fp8_phaa_uneven_heads_and_padding(monkeypatch, batch_size):
     if torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("native FP8 conversion required")
     pytest.importorskip("triton")
@@ -18,7 +19,7 @@ def test_fp8_phaa_uneven_heads_and_padding(monkeypatch):
 
     monkeypatch.setattr(phaa_attention, "get_pad", lambda _: 1)
     generator = torch.Generator(device="cuda").manual_seed(42)
-    qkv = [torch.randn((1, 32, 14 * 64), dtype=torch.bfloat16, device="cuda",
+    qkv = [torch.randn((batch_size, 32, 14 * 64), dtype=torch.bfloat16, device="cuda",
                        generator=generator) for _ in range(3)]
 
     def attention(q, k, v, **kwargs):

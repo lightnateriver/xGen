@@ -55,6 +55,7 @@ def run_phaa_attention(
     num_ref_global=0,             # number of ref tokens in the global (post-all2all) sequence
     attention_fn=None,            # optional model-local operator; receives local head offset
     fp8_transport=False,
+    gather_priority=False,
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -106,6 +107,9 @@ def run_phaa_attention(
 
         def exchange(output, tensor, *, group):
             fp8_all_to_all(output, tensor, D, group)
+
+    if gather_priority and not fp8_transport:
+        raise ValueError("PHAA gather priority requires FP8 transport")
 
     all2all_before_attn_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
     fa_is_finished = [accelerator.Event() for _ in range(fa_split_num)]
@@ -164,7 +168,8 @@ def run_phaa_attention(
     # --- 1. first chunk all2all on comm_stream ---
     comm_stream.wait_stream(accelerator.current_stream())
     with accelerator.stream(comm_stream):
-        gather_chunk(0)
+        for index in range(fa_split_num if gather_priority else 1):
+            gather_chunk(index)
     # Keep compute-stream send buffers alive until the communication stream
     # completes. async_op=False does not imply device completion on the host.
 
@@ -229,7 +234,7 @@ def run_phaa_attention(
         # 2.3 communication on comm_stream
         with accelerator.stream(comm_stream):
             # next chunk all2all
-            if step + 1 < fa_split_num:
+            if not gather_priority and step + 1 < fa_split_num:
                 gather_chunk(step + 1)
             # output all2all
             comm_stream.wait_event(fa_is_finished[step])

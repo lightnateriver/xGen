@@ -146,3 +146,5 @@ AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 ch
 传输 Q、K、V 和 attention 输出。128 维时每头每 token 的载荷从 256 降至
 132 字节，每个头分块的 Q/K/V 合并为一次 all-to-all。量化会改变结果，
 端到端的画质和速度需用目标硬件验证。
+配合 `XGEN_PHAA_GATHER_PRIORITY=1` 可优先提交全部 Q/K/V 通信。
+默认仍交错提交 Q/K/V 与 attention 输出通信。

@@ -545,9 +545,11 @@ def parallelism_ability(pipe, args):
         local_heads = pipe.transformer.config.num_attention_heads // args.sp if is_minimax_h3 else 0
         if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
             raise ValueError("XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num")
+        gather_priority = os.environ.get("XGEN_PHAA_GATHER_PRIORITY") == "1"
         for block in pipe.transformer.transformer_blocks:
             block.attn._h3_phaa_fp8 = True
-        logger.info("Experimental H3 PHAA E4M3 transport enabled")
+            block.attn._h3_phaa_gather_priority = gather_priority
+        logger.info("Experimental H3 PHAA E4M3 transport enabled, gather_priority=%s", gather_priority)
 
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).

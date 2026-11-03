@@ -36,7 +36,13 @@ def test_fp8_phaa_uneven_heads_and_padding(monkeypatch):
         exchange.reset_mock()
         fp8 = phaa_attention.run_phaa_attention(*qkv, **options, fp8_transport=True)
         assert exchange.call_count == 4
+        exchange.reset_mock()
+        gather_first = phaa_attention.run_phaa_attention(
+            *qkv, **options, fp8_transport=True, gather_priority=True,
+        )
+        assert exchange.call_count == 4
 
     assert dense.shape == fp8.shape == qkv[0].shape
     assert torch.isfinite(fp8).all()
+    assert torch.equal(fp8, gather_first)
     assert F.cosine_similarity(dense.float().flatten(), fp8.float().flatten(), dim=0) > 0.99

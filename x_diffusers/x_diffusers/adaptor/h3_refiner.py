@@ -1,6 +1,7 @@
 """Opt-in adapter for existing offline/online managers. No service or request loop."""
 from copy import deepcopy
 import logging
+from shutil import which
 import time
 
 from .h3_refiner_config import model_key, validate_inputs, validate_settings
@@ -28,6 +29,9 @@ def prepare(manager, args):
         raise ValueError('Initialize the existing XGEN distributed environment with eight ranks first')
     started = time.perf_counter()
     try:
+        from x_base.vae_parallelism.save_av_stream import FFMPEG_PATH
+        if which(FFMPEG_PATH) is None:
+            raise RuntimeError('H3 Refiner requires FFmpeg on PATH or an executable FFMPEG_PATH')
         pipe = load_pipe(args)
         update_lora(pipe, args.model, None, args.lora_path_list,
                     fuse_lora=args.fuse_lora, weights_list=args.lora_scale_weight_list)

@@ -87,7 +87,10 @@ class ContractTests(unittest.TestCase):
         torch_stub=ModuleType('torch');torch_stub.__path__=[]
         distributed=ModuleType('torch.distributed');distributed.is_initialized=lambda:True;distributed.get_world_size=lambda:8
         torch_stub.distributed=distributed
+        av_writer=ModuleType('x_base.vae_parallelism.save_av_stream')
+        av_writer.FFMPEG_PATH='ffmpeg'
         modules={package_name:root,package_name+'.adaptor':adaptor,
+                 av_writer.__name__:av_writer,
                  package_name+'.adaptor.h3_refiner_config':contract,
                  package_name+'.adaptor.load_pipe':loader,
                  package_name+'.framework.pipeline.h3_regenerate.pipeline':pipeline,
@@ -99,7 +102,8 @@ class ContractTests(unittest.TestCase):
                        matmul_quant='int8',vae_matmul_quant='none',vae_lightning='none',
                        inf_vram_blocks_num=0,h3_refiner_weights=folder,h3_refiner_prepared=folder)
             manager=SimpleNamespace(pipe=None)
-            with self.assertRaisesRegex(RuntimeError,'constructor sentinel'):adapter.prepare(manager,value)
+            with patch.object(adapter,'which',return_value='ffmpeg'):
+                with self.assertRaisesRegex(RuntimeError,'constructor sentinel'):adapter.prepare(manager,value)
             self.assertTrue(manager._h3_refiner_failed)
             with self.assertRaisesRegex(RuntimeError,'restart'):adapter.prepare(manager,value)
             self.assertEqual(loader.load_pipe.call_count,1)

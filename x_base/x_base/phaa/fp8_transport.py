@@ -8,24 +8,28 @@ import triton.language as tl
 
 
 @triton.jit
-def _encode(src, payload, scale_ptr, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
-            PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr, SLOT: tl.constexpr):
+def _encode(q, k, v, payload, scale_ptr, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
+            PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr):
     row = tl.program_id(0)
+    slot = tl.program_id(1)
+    src = tl.where(slot == 0, q, tl.where(slot == 1, k, v)) if STREAMS == 3 else q
     col = tl.arange(0, BLOCK)
     values = tl.load(src + row * WIDTH + col, col < WIDTH, other=0).to(tl.float32)
     scale = tl.maximum(tl.max(tl.abs(values), 0) / 448.0, 1.0e-12)
-    wire_row = row + (row // PEER_ROWS * (STREAMS - 1) + SLOT) * PEER_ROWS
+    wire_row = row + (row // PEER_ROWS * (STREAMS - 1) + slot) * PEER_ROWS
     offset = wire_row * (WIDTH + 4)
     tl.store(payload + offset + col, tl.clamp(values / scale, -448.0, 448.0), col < WIDTH)
     tl.store(scale_ptr + (offset + WIDTH) // 4, scale)
 
 
 @triton.jit
-def _decode(payload, scale_ptr, dst, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
-            PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr, SLOT: tl.constexpr):
+def _decode(payload, scale_ptr, q, k, v, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
+            PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr):
     row = tl.program_id(0)
+    slot = tl.program_id(1)
+    dst = tl.where(slot == 0, q, tl.where(slot == 1, k, v)) if STREAMS == 3 else q
     col = tl.arange(0, BLOCK)
-    wire_row = row + (row // PEER_ROWS * (STREAMS - 1) + SLOT) * PEER_ROWS
+    wire_row = row + (row // PEER_ROWS * (STREAMS - 1) + slot) * PEER_ROWS
     offset = wire_row * (WIDTH + 4)
     scale = tl.load(scale_ptr + (offset + WIDTH) // 4)
     bits = tl.load(payload + offset + col, col < WIDTH, other=0)
@@ -39,6 +43,9 @@ def fp8_all_to_all(output, tensor, head_dim, group):
 
 def fp8_all_to_all_many(outputs, tensors, head_dim, group):
     """Exchange equal-shaped tensors and their row scales in one byte collective."""
+    streams = len(tensors)
+    if streams not in (1, 3) or len(outputs) != streams:
+        raise ValueError("PHAA FP8 transport expects one tensor or a QKV triple")
     shape = tensors[0].shape
     if head_dim % 4 or any(x.shape != shape for x in (*outputs, *tensors)):
         raise ValueError("PHAA FP8 transport requires matching shapes and head dim divisible by four")
@@ -49,13 +56,14 @@ def fp8_all_to_all_many(outputs, tensors, head_dim, group):
     if rows % peers or tensors[0].numel() % head_dim:
         raise ValueError("PHAA FP8 rows must divide evenly among peers")
     peer_rows = rows // peers
-    streams = len(tensors)
     block = triton.next_power_of_2(head_dim)
     send = torch.empty((streams * rows, head_dim + 4), dtype=torch.uint8, device=tensors[0].device)
     recv = torch.empty_like(send)
-    for slot, tensor in enumerate(tensors):
-        _encode[(rows,)](tensor.contiguous(), send.view(torch.float8_e4m3fn), send.view(torch.float32),
-                         head_dim, block, peer_rows, streams, slot)
+    inputs = tuple(tensor.contiguous() for tensor in tensors)
+    _encode[(rows, streams)](*(inputs if streams == 3 else inputs * 3),
+                             send.view(torch.float8_e4m3fn), send.view(torch.float32),
+                             head_dim, block, peer_rows, streams)
     dist.all_to_all_single(recv, send, group=group)
-    for slot, output in enumerate(outputs):
-        _decode[(rows,)](recv, recv.view(torch.float32), output, head_dim, block, peer_rows, streams, slot)
+    _decode[(rows, streams)](recv, recv.view(torch.float32),
+                             *(outputs if streams == 3 else outputs * 3),
+                             head_dim, block, peer_rows, streams)

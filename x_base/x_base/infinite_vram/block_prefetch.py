@@ -12,8 +12,9 @@ class BlockPrefetch:
         layout = lambda entries: [(tuple(m.shape), m.dtype) for _, m in entries]
         if any(layout(entries) != layout(self.entries[0]) for entries in self.entries):
             raise ValueError("Two-slot prefetch requires matching transformer block layouts")
-        self.device = torch.npu.current_device()
-        self.stream = torch.npu.Stream(device=self.device)
+        self.accelerator = getattr(torch, holder.backend)
+        self.device = self.accelerator.current_device()
+        self.stream = self.accelerator.Stream(device=self.device)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="refiner-h2d")
         self.host = [[torch.empty_like(m, device="cpu", pin_memory=True)
                       for _, m in self.entries[0]] for _ in range(2)]
@@ -29,7 +30,7 @@ class BlockPrefetch:
 
     @torch.inference_mode()
     def _load(self, index):
-        torch.npu.set_device(self.device)
+        self.accelerator.set_device(self.device)
         slot = index % 2
         if self.done[slot] is not None:
             self.done[slot].synchronize()
@@ -38,18 +39,18 @@ class BlockPrefetch:
         with self.metrics.host_span("refiner.weights.pinned_stage", bytes=size, block=index):
             for target, (_, master) in zip(self.host[slot], entries):
                 target.copy_(master)
-        with torch.npu.stream(self.stream):
+        with self.accelerator.stream(self.stream):
             with self.metrics.span("refiner.weights.prefetch_h2d", sync=False,
                                    stream=self.stream, bytes=size, block=index):
                 for target, source in zip(self.buffers[slot], self.host[slot]):
                     target.copy_(source, non_blocking=True)
-            ready = torch.npu.Event()
+            ready = self.accelerator.Event()
             ready.record(self.stream)
         return ready
 
     def begin_step(self):
         if self.buffers is None:
-            self.buffers = [[torch.empty_like(m, device="npu") for _, m in self.entries[0]]
+            self.buffers = [[torch.empty_like(m, device=self.holder.backend) for _, m in self.entries[0]]
                             for _ in range(2)]
         if self.futures:
             raise RuntimeError("Previous prefetch step was not drained")
@@ -59,7 +60,7 @@ class BlockPrefetch:
         slot = index % 2
         with self.metrics.span("refiner.weights.block_h2d_wait", sync=False, bytes=0, block=index):
             ready = self.futures.pop(index).result()
-            torch.npu.current_stream().wait_event(ready)
+            self.accelerator.current_stream().wait_event(ready)
         for (tensor, _), buffer in zip(self.entries[index], self.buffers[slot]):
             tensor.data = buffer
         if index+1 < len(self.entries):
@@ -68,7 +69,7 @@ class BlockPrefetch:
             with self.metrics.span("refiner.weights.block_compute", sync=False, block=index):
                 return forward(*args, **kwargs)
         finally:
-            done = torch.npu.Event()
+            done = self.accelerator.Event()
             done.record()
             self.done[slot] = done
             # Device storage stays owned by the slot until its done event completes.

@@ -3,6 +3,8 @@ from contextlib import contextmanager
 import time
 import torch
 
+from ..device import device_type
+
 
 class Telemetry:
     def __init__(self):
@@ -16,20 +18,21 @@ class Telemetry:
         if not self.active:
             yield
             return
+        accelerator = getattr(torch, device_type())
         if sync:
-            torch.npu.synchronize()
+            accelerator.synchronize()
         start = time.perf_counter()
-        begin, end = torch.npu.Event(enable_timing=True), torch.npu.Event(enable_timing=True)
+        begin, end = accelerator.Event(enable_timing=True), accelerator.Event(enable_timing=True)
         begin.record(stream)
         try:
             yield
         finally:
             end.record(stream)
             if sync:
-                torch.npu.synchronize()
+                accelerator.synchronize()
             row = dict(name=name, host_seconds=time.perf_counter()-start,
                        start_seconds=start-self.origin,
-                       allocated_after=torch.npu.memory_allocated(), **attributes)
+                       allocated_after=accelerator.memory_allocated(), **attributes)
             self.rows.append(row)
             self.events.append((row, begin, end))
 
@@ -44,7 +47,7 @@ class Telemetry:
                     start_seconds=start-self.origin, **attributes))
 
     def resolve(self):
-        torch.npu.synchronize()
+        getattr(torch, device_type()).synchronize()
         for row, begin, end in self.events:
             row["device_envelope_seconds"] = begin.elapsed_time(end) / 1000.
         return self.rows

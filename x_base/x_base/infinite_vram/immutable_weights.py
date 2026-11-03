@@ -2,11 +2,14 @@
 import functools
 import torch
 
+from ..device import device_type
+
 
 class CpuWeights:
     """Materialized immutable CPU masters, reused without disk or D2H copy-back."""
     def __init__(self, model, name, metrics, masters=None):
         self.model, self.name, self.metrics = model, name, metrics
+        self.backend = device_type()
         self.entries = []
         for tensor in list(model.parameters()) + list(model.buffers()):
             if tensor.device.type == "meta":
@@ -27,16 +30,16 @@ class CpuWeights:
 
     def onload(self, entries=None, label=None):
         selected = self.entries if entries is None else entries
-        moved = [(t, m) for t, m in selected if t.device.type != "npu"]
+        moved = [(t, m) for t, m in selected if t.device.type != self.backend]
         size = sum(m.numel()*m.element_size() for _, m in moved)
         with self.metrics.span(label or self.name+".h2d_wait", bytes=size):
             for tensor, master in moved:
-                tensor.data = master.to("npu", non_blocking=False)
+                tensor.data = master.to(self.backend, non_blocking=False)
 
     def offload(self, entries=None, label=None):
         selected = self.entries if entries is None else entries
         with self.metrics.span(label or self.name+".release", bytes=0):
-            torch.npu.synchronize()
+            getattr(torch, self.backend).synchronize()
             for tensor, master in selected:
                 tensor.data = master
 

@@ -131,3 +131,8 @@ bash infer_wan2.2_14b_t2v_720p.sh
 此路径需要支持 NVFP4 的 Comfy-Kitchen CUDA 算子和 BF16 激活。权重以打包格式保存，
 每次投影执行激活量化。当前仅支持 FL2VA Base，暂不组合 Refiner、额外 LoRA、
 AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 checkpoint。
+
+设置 `MODEL_PATH`、`NVFP4_CHECKPOINT`、`FIRST_FRAME` 和 `PROMPT_FILE` 后，
+运行 [CUDA NVFP4 推理示例](example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh)。
+模型目录需有 Diffusers 的 `modular_model_index.json` 及对应组件，支持通过
+`CUDA_VISIBLE_DEVICES` 选择卡、`GPUS` 设置 SP 卡数、`ATTENTION_BACKEND` 选择 attention。

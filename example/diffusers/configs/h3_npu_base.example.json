@@ -1,0 +1,19 @@
+{
+  "model": "MiniMax-H3",
+  "pretrained_model_name_or_path": "weights/base",
+  "task_type": "t2va",
+  "resolution": "768p",
+  "dtype": "bf16",
+  "sp": 8,
+  "text_encoder_tp": 8,
+  "phaa_num": 2,
+  "num_inference_steps": 51,
+  "fsdp": null,
+  "atten": "laser",
+  "matmul_quant": "int8",
+  "vae_matmul_quant": "int8",
+  "vae_lightning": "decoder",
+  "rope_fused": true,
+  "transformer_path": "model-cache/base-t2va",
+  "adaln_cache_file": "model-cache/t2va-51step.safetensors"
+}

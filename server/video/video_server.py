@@ -36,6 +36,7 @@ from maas_artifacts import StorageError, publish_obs, publish_video, validate_me
 
 from x_diffusers import init_env, parse_args
 from x_base.device import device_type
+from x_diffusers.adaptor.h3_refiner_config import H3_BASE_MAX_DURATION_S, base_temporal_padding
 from x_diffusers.adaptor.load_pipe import load_pipe, load_v2v_pipe, update_pipe, pipe_to_device, load_seedvr2_pipe, update_lora
 from x_diffusers.adaptor.infer_tools import InferenceManager, GUIDANCE_SCALE_MAP
 from x_diffusers.framework.vae.wan import vfi
@@ -794,7 +795,8 @@ class VideoInferenceManager:
         try:
             if getattr(args, 'h3_attention', 'legacy') != 'legacy':
                 self.pipe.transformer._h3_attention_session.begin(args)
-            result = self.pipe(output=output_keys, **infer_params)
+            with base_temporal_padding(self.pipe, infer_params["num_frames"]):
+                result = self.pipe(output=output_keys, **infer_params)
         finally:
             self._mmh3_cleanup(transformer, denoiser_patched, orig_denoiser_call)
 
@@ -1684,8 +1686,10 @@ class VideoGenerationService:
 
         duration_raw = data.get('duration')
         if isinstance(duration_raw, float) and duration_raw != int(duration_raw):
-            errors.append(f"duration must be an integer (5-10), got {duration_raw}")
-        duration, err = self._validate_and_convert_param(duration_raw, 'duration', int, 5, 5, 10)
+            errors.append(f"duration must be an integer (5-{H3_BASE_MAX_DURATION_S}), got {duration_raw}")
+        duration, err = self._validate_and_convert_param(
+            duration_raw, 'duration', int, 5, 5, H3_BASE_MAX_DURATION_S
+        )
         if err:
             errors.append(err)
         frames = duration * 24 if duration else 120
@@ -2134,6 +2138,7 @@ class VideoGenerationService:
             if self.default_config.get('h3_refiner', False):
                 from x_diffusers.adaptor.h3_refiner_service import parameter_spec
                 return jsonify(parameter_spec(self.default_config))
+            h3_base = 'minimax-h3' in self.default_config.get('model', '').lower()
             return jsonify({
                 "parameters": {
                     "prompt": {
@@ -2238,8 +2243,15 @@ class VideoGenerationService:
                         "type": "integer",
                         "required": False,
                         "default": 5,
-                        "description": "Video duration in seconds (5 or 10). duration=10 enables two-stage generation.",
-                        "constraints": {"allowed_values": [5, 10]}
+                        "description": (
+                            f"Video duration in seconds (5 to {H3_BASE_MAX_DURATION_S})."
+                            if h3_base else
+                            "Video duration in seconds (5 or 10). duration=10 enables two-stage generation."
+                        ),
+                        "constraints": (
+                            {"min": 5, "max": H3_BASE_MAX_DURATION_S}
+                            if h3_base else {"allowed_values": [5, 10]}
+                        )
                     }
                 },
                 "example": {
@@ -2964,6 +2976,10 @@ class VideoGenerationService:
             audio = None
             sampling_rate = None
 
+        trim_padding = getattr(args, "frames", None) == H3_BASE_MAX_DURATION_S * 24
+        if trim_padding and audio is not None and sampling_rate is not None:
+            audio = audio[..., :H3_BASE_MAX_DURATION_S * sampling_rate]
+
         # Save audio to temporary WAV
         audio_path = None
         if audio is not None and sampling_rate is not None:
@@ -2976,10 +2992,13 @@ class VideoGenerationService:
         else:
             from x_base.vae_parallelism.audio_utils import cleanup_audio
 
+        frames = []
         try:
             if videos is None:
                 return
             frames = list(self._flatten_frames(videos))
+            if trim_padding:
+                frames = frames[:args.frames]
             if not frames:
                 logger.warning("No video frames to save")
                 return
@@ -2988,7 +3007,7 @@ class VideoGenerationService:
             if self.maas_fl2va_input:
                 raise
             logger.warning(f"ffmpeg save failed ({e}), falling back to export_to_video")
-            self._save_mmh3_video_fallback(videos, save_path)
+            self._save_mmh3_video_fallback(frames if trim_padding else videos, save_path)
         finally:
             if audio_path:
                 cleanup_audio(audio_path)

@@ -50,7 +50,7 @@ torchrun --standalone --nproc_per_node "$GPUS" "$SCRIPT_DIR/../infer.py" \
     --model MiniMax-H3 --task_type fl2va \
     --pretrained_model_name_or_path "$MODEL_PATH" \
     --h3_nvfp4_checkpoint "$NVFP4_CHECKPOINT" \
-    --keyframe_image "$FIRST_FRAME" --prompt "$(cat -- "$PROMPT_FILE")" \
+    --keyframe_image "$FIRST_FRAME" --prompt="$(cat -- "$PROMPT_FILE")" \
     --save_path "$OUTPUT_PATH" --num_inference_steps "${NUM_INFERENCE_STEPS:-51}" \
     --width 1344 --height 768 --frames "$frames" --save_fps 24 --seed 42 \
     --matmul_quant none --vae_matmul_quant none --vae_lightning none \

@@ -250,13 +250,15 @@ finally:
 
 ## 8. 原 HTTP 服务的可选 2K 后端
 
+768P 和 2K 的启动选择、提交和下载示例见 [在线服务指南](H3-ONLINE.md)。
+
 复制示例配置到自己维护的本地配置目录，按需修改相对路径：
 
 ```bash
 mkdir -p logs
 export PYTHONPATH="$(pwd)/x_diffusers:$(pwd)/x_base${PYTHONPATH:+:$PYTHONPATH}"
 torchrun --nproc_per_node=8 --max_restarts=0 --master_port=29558 \
-  server/video/video_server.py --init --model minimax-h3 \
+  server/video/video_server.py --init \
   --config example/diffusers/configs/h3_refiner.example.json \
   --host localhost --port 5001 > logs/h3-refiner.log 2>&1
 ```

@@ -18,4 +18,4 @@ exec torchrun --nproc_per_node=8 --max_restarts=0 --master_port="${MASTER_PORT:-
   --h3_refiner --h3_refiner_weights "$REFINER_WEIGHTS" --h3_refiner_prepared "$REFINER_PREPARED" \
   --h3_refiner_seconds "${SECONDS_TO_GENERATE:-5}" \
   --save_path "${OUTPUT_VIDEO:-./h3-refiner-2k.mp4}" \
-  --prompt "${PROMPT:-A small robot walks through a sunlit garden.}" "$@"
+  --prompt="${PROMPT:-A small robot walks through a sunlit garden.}" "$@"

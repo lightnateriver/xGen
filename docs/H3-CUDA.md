@@ -87,37 +87,13 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
 
 ## 在线与可选 2K
 
-原 HTTP 服务通过 `/generate`、`/status/<task_id>` 和 `/download/<task_id>` 提供在线推理。下节为 opt-in MaaS Base FL2VA；2K 使用本页后续的原服务启动配置。
+原 HTTP 服务通过 `/generate`、`/status/<task_id>` 和 `/download/<task_id>` 提供在线推理。BF16 Base 的启动和请求示例见 [在线服务指南](H3-ONLINE.md#cuda-base)。
 
 ### MaaS 在线服务
 
 在仓库根目录运行。准备支持 CUDA H3 的运行环境、FFmpeg 和 FFprobe，以及匹配的 FL2VA 模型组件和打包 NVFP4 权重。下面以早期八卡 HTTP 实测的 NVFP4/Sparge 配方为例。MaaS 模式固定 5 秒、768P、16:9 和 50 次实际 DiT。
 
-将以下 JSON 保存为 `./h3-maas.json`。路径相对于启动目录。
-
-```json
-{
-  "model": "MiniMax-H3",
-  "task_type": "fl2va",
-  "resolution": "768p",
-  "pretrained_model_name_or_path": "weights/h3",
-  "h3_nvfp4_checkpoint": "weights/nvfp4/minimax_h3_fl2va_pruned_nvfp4.safetensors",
-  "h3_nvfp4_resident": true,
-  "h3_cuda_vae_sp": true,
-  "sp": 8,
-  "text_encoder_tp": 8,
-  "phaa_num": 4,
-  "num_inference_steps": 51,
-  "fsdp": null,
-  "atten": "sparge",
-  "matmul_quant": "none",
-  "vae_matmul_quant": "none",
-  "vae_lightning": "none",
-  "rope_fused": false,
-  "transformer_path": null,
-  "adaln_cache_file": null
-}
-```
+使用 [MaaS 示例配置](../example/diffusers/configs/h3_maas.example.json)。如果权重放在其他目录，复制配置并修改路径。下面的环境变量开启实测使用的通信、DiT 和 VAE 优化。基础启动方式见 [在线服务指南](H3-ONLINE.md#cuda-maas)。
 
 ```bash
 export XGEN_DEVICE=cuda CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -128,7 +104,8 @@ export XGEN_PHAA_ASYNC_EXCHANGE=1 XGEN_PHAA_DIRECT_RETURN=1 XGEN_PHAA_FP8_ROW_TI
 export XGEN_H3_FUSED_INDEXED_AFFINE=1 XGEN_H3_FUSED_PARTIAL_ROPE=1 XGEN_H3_FUSED_QK_RMS=1
 export XGEN_H3_FUSED_FF_AMAX=1 XGEN_H3_CUDA_VAE_TILES=1
 torchrun --standalone --nproc_per_node=8 --max_restarts=0 server/video/video_server.py \
-  --init --maas-fl2va-input --config h3-maas.json --host 127.0.0.1 --port 5001 \
+  --init --maas-fl2va-input --config example/diffusers/configs/h3_maas.example.json \
+  --host 127.0.0.1 --port 5001 \
   --maas-queue-capacity 10 --maas-queue-timeout-s 600
 ```
 

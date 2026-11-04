@@ -802,6 +802,39 @@ from diffusers.modular_pipelines.minimax_h3.decoders import (
 )
 
 _original_decode_step_call = MiniMaxH3DecodeStep.__call__
+_original_video_decode_step_call = MiniMaxH3VideoDecodeStep.__call__
+
+
+@torch.no_grad()
+def _decode_long_cuda_video(self, pipeline, state):
+    if not getattr(pipeline, "_h3_base_long_video", False):
+        return _original_video_decode_step_call(self, pipeline, state)
+    device = pipeline._execution_device
+    block_state = self.get_block_state(state)
+    if device.type != "cuda" or block_state.output_type != "pil":
+        return _original_video_decode_step_call(self, pipeline, state)
+
+    vae = pipeline.vae
+    latent_mean = torch.tensor(vae.config.latents_mean, device=device).view(1, -1, 1, 1, 1)
+    latent_std = torch.tensor(vae.config.latents_std, device=device).view(1, -1, 1, 1, 1)
+    latents = block_state.latents * latent_std + latent_mean
+    with torch.autocast("cuda", dtype=torch.float16):
+        video = vae.decode(latents, return_dict=False)[0]
+
+    pixel_mean = torch.tensor(pipeline.pixel_mean, device=device).view(1, -1, 1, 1, 1)
+    pixel_std = torch.tensor(pipeline.pixel_std, device=device).view(1, -1, 1, 1, 1)
+    videos = [[] for _ in range(video.shape[0])]
+    # Keep the VAE and pixel math unchanged, but limit FP32 temporaries to eight frames.
+    for frames in video.split(8, dim=2):
+        rgb = (frames.float() * pixel_std + pixel_mean).clamp(0, 1)
+        for output, images in zip(videos, pipeline.video_processor.postprocess_video(rgb.cpu(), output_type="pil")):
+            output.extend(images)
+    block_state.videos = videos
+    self.set_block_state(state, block_state)
+    return pipeline, state
+
+
+MiniMaxH3VideoDecodeStep.__call__ = _decode_long_cuda_video
 
 
 @torch.no_grad()

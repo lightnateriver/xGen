@@ -537,7 +537,9 @@ class InferenceManager(object):
         # ModularPipeline returns a dict when ``output=`` is specified.
         if getattr(args, 'h3_attention', 'legacy') != 'legacy':
             self.pipe.transformer._h3_attention_session.begin(args)
-        result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
+        from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
+        with base_temporal_padding(self.pipe, infer_params["num_frames"]):
+            result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
 
         videos = result.get("videos")
         audio = result.get("audio")

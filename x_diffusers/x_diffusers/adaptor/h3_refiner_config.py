@@ -4,6 +4,24 @@ from pathlib import Path
 import os
 
 
+H3_BASE_MAX_DURATION_S = 15
+
+
+@contextmanager
+def base_temporal_padding(pipe, frames):
+    """Allow the native final chunk for a 15-second Base request."""
+    spec = profile(H3_BASE_MAX_DURATION_S)
+    if frames not in (spec['output_frames'], spec['generation_frames']):
+        yield
+        return
+    pipe._h3_base_long_video = True
+    try:
+        with native_padding(pipe, spec):
+            yield
+    finally:
+        del pipe._h3_base_long_video
+
+
 def add_arguments(parser):
     group = parser.add_argument_group('Experimental H3 Refiner (disabled by default)')
     group.add_argument('--h3_refiner', action='store_true', help='EXPERIMENTAL: H3 latent -> Regenerate 2K; restart to disable')
@@ -108,7 +126,7 @@ def native_padding(pipe, spec):
     """Permit native temporal padding on this instance, never patch a global class."""
     original = type(pipe)
     if spec['generation_frames'] / pipe.fps > pipe.max_duration:
-        padded = type('H3RefinerPaddedWorkflow', (original,), {
+        padded = type('H3TemporallyPaddedWorkflow', (original,), {
             'max_duration': property(lambda self: spec['generation_frames'] / self.fps)})
         pipe.__class__ = padded
     try:

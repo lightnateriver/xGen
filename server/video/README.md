@@ -1,5 +1,7 @@
 # 视频生成服务
 
+MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](../../docs/H3-ONLINE.md)。
+
 基于 Wan2.2-T2V/I2V-14B 模型的视频生成服务，支持文生视频(t2v)和图生视频(i2v)。
 
 ## CUDA H3 的 MaaS 输入校验

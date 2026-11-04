@@ -18,6 +18,7 @@ from PIL import Image
 from maas_fl2va import FIXED_FIELDS, MAX_BODY_BYTES, MAX_IMAGE_BYTES, validate_startup
 import video_server
 from video_server import VideoGenerationService
+from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
 
 
 def image_bytes(width=64, height=64, image_format="PNG"):
@@ -59,7 +60,7 @@ class MaaSInputTests(unittest.TestCase):
 
     def test_numeric_and_enum_rejections_on_both_routes(self):
         invalid = {
-            "duration": (None, True, "5", 5.0, 5.9, 4, 6, 10, 11),
+            "duration": (None, True, "5", 5.0, 5.9, 4, 6, 10, 11, 15),
             "seed": (None, True, 1.9, "42", -1, 2**31),
             "num_inference_steps": (None, True, "51", 51.0, 0, 50, 52),
             "resolution": (None, "1080p", "2k", 768, []),
@@ -172,6 +173,75 @@ class MaaSInputTests(unittest.TestCase):
         response = legacy.app.test_client().post("/generate", json=dict(self.good, seed="42"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(legacy.task_queue.get_nowait()["data"]["seed"], 42)
+
+
+class H3BaseDurationTests(unittest.TestCase):
+    def setUp(self):
+        config = Path(__file__).resolve().parents[2] / "example/diffusers/configs/h3_npu_base.example.json"
+        self.service = VideoGenerationService(str(config))
+        self.service.is_initialized = True
+        self.client = self.service.app.test_client()
+
+    def test_base_duration_spec(self):
+        spec = self.client.get("/params").json["parameters"]["duration"]
+        self.assertEqual(spec["constraints"], {"min": 5, "max": 15})
+        wan_spec = VideoGenerationService().app.test_client().get("/params").json["parameters"]["duration"]
+        self.assertEqual(wan_spec["constraints"], {"allowed_values": [5, 10]})
+
+    def test_both_base_endpoints_accept_fifteen_seconds(self):
+        payload = {"prompt": "test", "task_type": "t2va", "duration": 15}
+        for endpoint, request, status in (
+            ("/generate", payload, "accepted"),
+            ("/v1/tasks", {"id": "base-15s", "input": payload}, "pending"),
+        ):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(endpoint, json=request)
+                self.assertEqual(response.status_code, 200, response.json)
+                self.assertEqual(response.json["status"], status)
+                task = self.service.task_queue.get_nowait()["data"]
+                self.assertEqual(task["duration"], 15)
+                self.assertEqual(task["frames"], 360)
+
+    def test_base_duration_outside_range_or_fractional_is_rejected(self):
+        for duration in (4, 15.5, 16):
+            with self.subTest(duration=duration):
+                response = self.client.post("/generate", json={"prompt": "test", "duration": duration})
+                self.assertEqual(response.status_code, 400)
+        response = self.client.post("/v1/tasks", json={"id": "base-16s", "input": {"prompt": "test", "duration": 16}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "failed")
+        self.assertTrue(self.service.task_queue.empty())
+
+    def test_padding_is_local_to_the_fifteen_second_request(self):
+        class BasePipeline:
+            fps = 24
+            max_duration = 15
+
+        pipe = BasePipeline()
+        other = BasePipeline()
+        with base_temporal_padding(pipe, 240):
+            self.assertEqual(pipe.max_duration, 15)
+        with self.assertRaises(RuntimeError):
+            with base_temporal_padding(pipe, 360):
+                self.assertEqual(pipe.max_duration * pipe.fps, 362)
+                self.assertTrue(pipe._h3_base_long_video)
+                self.assertEqual(other.max_duration, 15)
+                raise RuntimeError("inference error")
+        self.assertIs(type(pipe), BasePipeline)
+        self.assertFalse(hasattr(pipe, "_h3_base_long_video"))
+
+    def test_base_save_trims_padded_video_and_audio(self):
+        frames = list(range(362))
+        audio = video_server.np.zeros((1, 3620))
+        helpers = SimpleNamespace(save_audio_to_wav=Mock(return_value="result.wav"), cleanup_audio=Mock())
+        with patch.dict("sys.modules", {"x_base.vae_parallelism.audio_utils": helpers}):
+            with patch.object(self.service, "_save_mmh3_video_ffmpeg") as save_video:
+                args = SimpleNamespace(frames=360, enable_audio=True)
+                self.service._save_minimax_h3_output(
+                    {"videos": [frames], "audio": audio, "sampling_rate": 240}, "result.mp4", args
+                )
+        save_video.assert_called_once_with(frames[:360], "result.wav", "result.mp4", args)
+        self.assertEqual(helpers.save_audio_to_wav.call_args.args[0].shape[-1], 3600)
 
 
 class MaaSHealthTests(unittest.TestCase):

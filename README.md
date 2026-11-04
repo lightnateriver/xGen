@@ -4,7 +4,7 @@ xGen 是面向昇腾 NPU 和 NVIDIA CUDA 的音视频生成推理引擎。它复
 
 MiniMax-H3 支持文本生成音视频（T2VA）、首帧图生音视频（I2VA，代码中为 `fl2va`）和多参考图生成音视频（R2VA，代码中为 `ref2va`）。昇腾路径支持 768P Base 和 Open-H3-Regenerate-2K 超分。CUDA 已实测 FL2VA Base 及可选 FL2VA Refiner。MaaS 在原在线服务上增加严格输入、异步任务队列、就绪探针和成片校验，由启动开关启用。
 
-[版本](#版本) · [快速开始](#快速开始) · [昇腾启动](#昇腾-npu-启动) · [B2/B3 性能](#b2b3-性能) · [CUDA 启动](#nvidia-cuda-启动) · [GPU 性能](#gpu-性能) · [MaaS 在线](#maas-在线服务)
+[版本](#版本) · [快速开始](#快速开始) · [H3 权重下载](#h3-权重下载) · [昇腾启动](#昇腾-npu-启动) · [B2/B3 性能](#b2b3-性能) · [CUDA 启动](#nvidia-cuda-启动) · [GPU 性能](#gpu-性能) · [MaaS 在线](#maas-在线服务)
 
 ## 版本
 
@@ -30,6 +30,20 @@ mkdir -p outputs
 ```
 
 采集脚本显示设备、驱动、软件依赖、CPU 亲和性、NUMA 和白名单环境变量。确认 PyTorch 可见卡数与启动的 SP 一致。权重、首帧、参考图和提示词由部署方准备。命令中的相对路径均以仓库根目录为基准。
+
+## H3 权重下载
+
+按工作流下载资产。H3 Base 仓库包含文本编码器、视频 VAE、音频 VAE 和调度组件。T2VA 和首帧 I2VA 使用 FL2VA/Base Transformer，R2VA 使用 Ref2VA Transformer。保留 xGen 所需的目录布局。
+
+| 资产 | Hugging Face | ModelScope | 用途 |
+|---|---|---|---|
+| MiniMax-H3 Base BF16 | [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) | [MiniMax/MiniMax-H3](https://modelscope.cn/models/MiniMax/MiniMax-H3) | 768P Base。按任务使用 `transformer/` 或 `transformer_ref/`，并保留根目录的 `modular_model_index.json` |
+| Open-H3-Regenerate-2K | [权重仓库](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K) | [权重仓库](https://modelscope.cn/models/Efficient-Large-Model/Open-H3-Regenerate-2K) | 2K 链路所需的 latent upscaler 和 Refiner 资产，按部署教程补齐 Sharp AdaLN 表并预处理 |
+| FL2VA Pruned NVFP4 | [实测版本的单文件](https://huggingface.co/lilcheaty/MiniMax-H3-NVFP4/blob/8c5abfed61e1b6a170240792b65253fba1a65b7b/minimax_h3_fl2va_pruned_nvfp4.safetensors) | — | CUDA 高性能 FL2VA、MaaS 示例及 CUDA 2K 的 Base DiT。另需匹配的 H3 模型组件 |
+| LightX2V Turbo 8 步 LoRA | [768P Diffusers BF16 文件](https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors) | [LightX2V Turbo](https://modelscope.cn/models/lightx2v/Minimax-h3-Turbo) | 可选的 8 步 FL2VA/T2VA 配方 |
+| Veda FP8 预测器 | [实测版本的单文件](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview/blob/76f202874608115408d73280be9531c4ab888242/minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors) | [Veda 预测器仓库](https://modelscope.cn/models/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview) | 仅启用 Veda 时需要 |
+
+下载和预处理步骤见 [Base 和 Refiner 资产准备](docs/H3-DEPLOYMENT.md#4-模型与目录准备)、[CUDA 组件与 NVFP4 下载](docs/H3-CUDA.md#环境和模型) 和 [Veda / Turbo 配方](docs/H3-ATTENTION.md)。AdaLN 表和预处理后的 Refiner 由部署方按配方生成。
 
 ## 昇腾 NPU 启动
 
@@ -169,7 +183,7 @@ BF16 走分层 offload，需足够的主机内存。已有 FL2VA 实测使用完
 适用于 FL2VA。使用匹配的打包 NVFP4 checkpoint、Sparge、FP8 PHAA C4、异步交换、回程直写、DiT 融合和空间 VAE。依赖 CUDA 版 Comfy-Kitchen、Sparge 扩展和相应 Triton。使用干净的启动环境，避免继承其他实验开关。
 
 ```bash
-export MODEL_PATH=weights/h3 NVFP4_CHECKPOINT=weights/h3-fl2va-nvfp4.safetensors
+export MODEL_PATH=weights/h3 NVFP4_CHECKPOINT=weights/nvfp4/minimax_h3_fl2va_pruned_nvfp4.safetensors
 export FIRST_FRAME=inputs/first-frame.png PROMPT_FILE=inputs/prompt.txt
 GPUS=8 OUTPUT_PATH=outputs/cuda-fl2va-5s-fast.mp4 \
   XGEN_FASTVIDEO_RECIPE=5s ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 \
@@ -210,8 +224,6 @@ GPUS=8 OUTPUT_PATH=outputs/cuda-fl2va-5s-fast.mp4 \
 - [提交、查询、下载、错误码和超时口径](server/video/MAAS-FL2VA-API.md)
 - [原在线服务与历史入口](server/video/README.md)
 
-## 参考与发布范围
-
-昇腾章节按硬件与环境、权重准备、分场景启动和实测数据组织，参考 [Ascend-SACT MiniMax-H3-NPU](https://ai.gitcode.com/Ascend-SACT/MiniMax-H3-NPU)。性能表使用各条目所注明的 xGen 或 vLLM-Omni 实测来源。
+## 发布范围
 
 仓库包含源码、示例、测试和脱敏性能数据。权重、内部机器配置、原始诊断报告、测试素材和成片由部署方自行管理。其他模型和界面入口见 [原版安装与模型说明](../../tree/v0.3.1#环境安装)、[Diffusers 示例](example/diffusers)、[ComfyUI 适配](x_comfyui) 和 [工具说明](tools/README.md)。

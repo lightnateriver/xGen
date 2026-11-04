@@ -2,7 +2,7 @@
 
 本文面向 `v0.2`。H3 Refiner 是 **experimental、默认关闭** 的可选超分后端；不开启时沿用原 XGEN 推理入口和设备策略。本文中的模型、素材和输出路径均相对于仓库根目录，实际数据不随仓库发布。
 
-教程组织参考 [Ascend-SACT/MiniMax-H3-NPU](https://ai.gitcode.com/Ascend-SACT/MiniMax-H3-NPU)。该参考采用 vLLM-Omni；这里使用 XGEN 的原 Manager、HTTP 服务、VAE 与编码器，不能套用参考中的补丁、LoRA 注册表或 Light VAE 性能。
+本文使用 xGen 的 Manager、HTTP 服务、VAE 和编码器。
 
 ## 1. 先选运行路径和数据口径
 
@@ -95,6 +95,8 @@ xGen/
 
 ### 4.1 Base
 
+[Hugging Face](https://huggingface.co/MiniMaxAI/MiniMax-H3) · [ModelScope](https://modelscope.cn/models/MiniMax/MiniMax-H3)
+
 ```bash
 hf download MiniMaxAI/MiniMax-H3 \
   --revision 6818f6c32d12b210915e44ad56a4228c2608f160 \
@@ -107,6 +109,8 @@ hf download MiniMaxAI/MiniMax-H3 \
 XGEN 使用包含根级组件与 modular index 的布局，不要仅下载 `FL2VA/` 子目录后直接套用根级路径。T2VA/首帧 I2VA 使用对应 Base 工作流；R2VA 使用 Ref2VA transformer 和独立匹配的 AdaLN 资产。
 
 ### 4.2 Refiner
+
+[Hugging Face](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K) · [ModelScope](https://modelscope.cn/models/Efficient-Large-Model/Open-H3-Regenerate-2K)
 
 源包中需要组合 LoRA、Sharp curve 分支和 `adaln_t_table.bin`。仅执行普通 HF 全仓下载可能缺少最后一项。可使用上游固定版本的准备脚本；这里只下载并执行模型准备工具，不导入它的 CUDA 推理引擎：
 
@@ -383,9 +387,7 @@ ffmpeg -v error -i outputs/t2va-5s-2k.mp4 -f null -
 - **能直接对已有任意 768P MP4 超分吗？** 当前公开可选链路从 H3 原始 latent 接入；旧独立视频超分实验入口未作为本版正式 API 发布，不应虚构相同命令。
 - **能否把 10/15 秒、五图都视为 v0.2 已验收？** 不能。代码有参数支持和 CPU 边界测试，但新架构完整 NPU 矩阵、在线实际请求及长稳验收仍需补齐。
 
-## 12. 参考与发布范围
-
-- [参考教程](https://ai.gitcode.com/Ascend-SACT/MiniMax-H3-NPU)：参考章节组织，非本项目部署命令或性能来源。
+## 12. 模型来源与发布范围
 - [MiniMax-H3 官方模型](https://huggingface.co/MiniMaxAI/MiniMax-H3)：基础模型和许可。
 - [Open-H3-Regenerate-2K 模型](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K)：Refiner 源资产和许可。
 - [上游固定版本下载工具](https://github.com/NVlabs/Sana/blob/781e8341fb3b29d3aea5d50265772e9619340b66/models/Open-H3-Regenerate-2K/download.py)：资产准备与校验。

@@ -11,12 +11,19 @@
 ```bash
 export PYTHONPATH="./x_base:./x_diffusers${PYTHONPATH:+:$PYTHONPATH}"
 export MODEL_PATH=./weights/h3
-export NVFP4_CHECKPOINT=./weights/h3-fl2va-nvfp4.safetensors
+export NVFP4_CHECKPOINT=./weights/nvfp4/minimax_h3_fl2va_pruned_nvfp4.safetensors
 export FIRST_FRAME=./inputs/first-frame.png
 export PROMPT_FILE=./inputs/prompt.txt
 ```
 
 `MODEL_PATH` 指向含 `modular_model_index.json` 的 FL2VA 组件目录。NVFP4 checkpoint 需与该目录的 Transformer 配置匹配。CUDA 打包权重已验证的工作流为 FL2VA。
+
+FL2VA 组件来自 [Hugging Face](https://huggingface.co/MiniMaxAI/MiniMax-H3) 或 [ModelScope](https://modelscope.cn/models/MiniMax/MiniMax-H3)。保留 `transformer/config.json`、文本编码器、音视频 VAE 和调度组件。下载实测的 NVFP4 权重：
+
+```bash
+hf download lilcheaty/MiniMax-H3-NVFP4 minimax_h3_fl2va_pruned_nvfp4.safetensors \
+  --revision 8c5abfed61e1b6a170240792b65253fba1a65b7b --local-dir ./weights/nvfp4
+```
 
 ## 768P 离线
 
@@ -94,7 +101,7 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
   "task_type": "fl2va",
   "resolution": "768p",
   "pretrained_model_name_or_path": "weights/h3",
-  "h3_nvfp4_checkpoint": "weights/h3-fl2va-nvfp4.safetensors",
+  "h3_nvfp4_checkpoint": "weights/nvfp4/minimax_h3_fl2va_pruned_nvfp4.safetensors",
   "h3_nvfp4_resident": true,
   "h3_cuda_vae_sp": true,
   "sp": 8,
@@ -171,7 +178,7 @@ BF16 配置和 NVFP4 Base 权重，由 Refiner 统一管理阶段驻留。
   "task_type": "fl2va",
   "resolution": "2k",
   "pretrained_model_name_or_path": "weights/h3",
-  "h3_nvfp4_checkpoint": "weights/h3-fl2va-nvfp4.safetensors",
+  "h3_nvfp4_checkpoint": "weights/nvfp4/minimax_h3_fl2va_pruned_nvfp4.safetensors",
   "h3_refiner": true,
   "h3_refiner_weights": "weights/refiner",
   "h3_refiner_prepared": "model-cache/refiner-cuda",

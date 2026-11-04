@@ -4,6 +4,8 @@
 
 ## 环境和模型
 
+在运行 xGen 的环境中，可执行 `XGEN_DEVICE=cuda python tools/collect_env.py` 检查 GPU、驱动和 CUDA 依赖。脚本也支持 [自动识别设备](../tools/README.md#cuda-和-npu-环境采集)。
+
 准备支持 RTX 5090 的 PyTorch CUDA、Triton、兼容 MiniMax-H3 的 Diffusers 和 Transformers。NVFP4 需要 Comfy-Kitchen CUDA 扩展，Sage 和 Sparge 分别需要对应 CUDA 扩展。Triton 首次编译需要与运行时 Python 版本匹配的开发头文件和可写的缓存目录。安装支持 H.264 和 AAC 的 FFmpeg。部署示例使用本地模型组件和权重。
 
 ```bash
@@ -78,6 +80,125 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
 
 ## 在线与可选 2K
 
-[README 的 CUDA 在线启动示例](../README.md#实验性-cuda-2k-refiner)给出了 JSON 和 torchrun 命令。使用 `/generate` 和 `/status/<task_id>` 提交及查询任务。2K CUDA 需要 SP8、NVFP4 FL2VA Base 权重及预处理的 Refiner 资产。按 [H3 部署教程的模型准备章节](H3-DEPLOYMENT.md#43-一次性预处理)准备 Refiner，在 CUDA 环境执行 `h3_regenerate.prepare`，将结果输出到独立目录。普通 768P 请求可直接使用 Base 配置。
+原 HTTP 服务通过 `/generate`、`/status/<task_id>` 和 `/download/<task_id>` 提供在线推理。下节为 opt-in MaaS Base FL2VA；2K 使用本页后续的原服务启动配置。
+
+### MaaS 在线服务
+
+在仓库根目录运行。准备支持 CUDA H3 的运行环境、FFmpeg 和 FFprobe，以及匹配的 FL2VA 模型组件和打包 NVFP4 权重。下面以早期八卡 HTTP 实测的 NVFP4/Sparge 配方为例。MaaS 模式固定 5 秒、768P、16:9 和 50 次实际 DiT。
+
+将以下 JSON 保存为 `./h3-maas.json`。路径相对于启动目录。
+
+```json
+{
+  "model": "MiniMax-H3",
+  "task_type": "fl2va",
+  "resolution": "768p",
+  "pretrained_model_name_or_path": "weights/h3",
+  "h3_nvfp4_checkpoint": "weights/h3-fl2va-nvfp4.safetensors",
+  "h3_nvfp4_resident": true,
+  "h3_cuda_vae_sp": true,
+  "sp": 8,
+  "text_encoder_tp": 8,
+  "phaa_num": 4,
+  "num_inference_steps": 51,
+  "fsdp": null,
+  "atten": "sparge",
+  "matmul_quant": "none",
+  "vae_matmul_quant": "none",
+  "vae_lightning": "none",
+  "rope_fused": false,
+  "transformer_path": null,
+  "adaln_cache_file": null
+}
+```
+
+```bash
+export XGEN_DEVICE=cuda CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export PYTHONPATH="./x_base:./x_diffusers${PYTHONPATH:+:$PYTHONPATH}"
+export TOKENIZERS_PARALLELISM=false NCCL_MAX_CTAS=2 XGEN_SPARGE_TOPK=0.5
+export XGEN_PHAA_FP8=1 XGEN_PHAA_GATHER_PRIORITY=1 XGEN_PHAA_DEVICE_JOIN=1
+export XGEN_PHAA_ASYNC_EXCHANGE=1 XGEN_PHAA_DIRECT_RETURN=1 XGEN_PHAA_FP8_ROW_TILING=1
+export XGEN_H3_FUSED_INDEXED_AFFINE=1 XGEN_H3_FUSED_PARTIAL_ROPE=1 XGEN_H3_FUSED_QK_RMS=1
+export XGEN_H3_FUSED_FF_AMAX=1 XGEN_H3_CUDA_VAE_TILES=1
+torchrun --standalone --nproc_per_node=8 --max_restarts=0 server/video/video_server.py \
+  --init --maas-fl2va-input --config h3-maas.json --host 127.0.0.1 --port 5001 \
+  --maas-queue-capacity 10 --maas-queue-timeout-s 600
+```
+
+在另一个终端准备一条预热请求。示例使用自备 PNG，提示词保存在 UTF-8 文本文件。
+
+```bash
+BASE_URL=http://127.0.0.1:5001
+python - <<'PY' > maas-warmup.json
+import base64
+import json
+from pathlib import Path
+
+image = base64.b64encode(Path("inputs/first-frame.png").read_bytes()).decode("ascii")
+prompt = Path("inputs/prompt.txt").read_text(encoding="utf-8").strip()
+print(json.dumps({"id": "warmup-001", "input": {
+    "prompt": prompt, "first_frame": "data:image/png;base64," + image,
+    "seed": 42, "enable_audio": True,
+}}))
+PY
+curl --fail-with-body -sS -H 'Content-Type: application/json' \
+  --data-binary @maas-warmup.json "$BASE_URL/v1/tasks"
+curl -sS "$BASE_URL/v1/tasks/warmup-001"
+```
+
+重复查询任务直到 `status=succeeded`。随后检查 `/ready`，等它返回 HTTP 200 再接入业务流量。正式请求用新的 ID，提交和查询方式相同。成功后可用下列命令下载。
+
+```bash
+curl --fail-with-body -sS "$BASE_URL/ready"
+curl --fail-with-body -sS -o warmup.mp4 "$BASE_URL/download/warmup-001"
+```
+
+关掉 `--maas-fl2va-input` 即回到原服务 API。探针、错误码、客户端计时和网关部署边界见 [MaaS API](../server/video/MAAS-FL2VA-API.md)。
+
+### 实验性 CUDA 2K Refiner
+
+使用现有 H3 Refiner adapter 和视频服务。当前 CUDA 路径要求 FL2VA、SP8、
+BF16 配置和 NVFP4 Base 权重，由 Refiner 统一管理阶段驻留。
+先安装可执行的 FFmpeg（含 libx264 和 AAC），可通过 `FFMPEG_PATH` 指定。
+使用部署教程的 Refiner 源包和预处理命令，在 `XGEN_DEVICE=cuda` 环境下
+运行 `h3_regenerate.prepare`。预处理输出单独存放，供后续推理复用。
+
+在线服务在现有 JSON 中加入以下配置。路径示例以启动目录为基准。
+
+```json
+{
+  "model": "MiniMax-H3",
+  "task_type": "fl2va",
+  "resolution": "2k",
+  "pretrained_model_name_or_path": "weights/h3",
+  "h3_nvfp4_checkpoint": "weights/h3-fl2va-nvfp4.safetensors",
+  "h3_refiner": true,
+  "h3_refiner_weights": "weights/refiner",
+  "h3_refiner_prepared": "model-cache/refiner-cuda",
+  "sp": 8,
+  "text_encoder_tp": 1,
+  "phaa_num": 2,
+  "atten": "none",
+  "num_inference_steps": 51,
+  "matmul_quant": "none",
+  "vae_matmul_quant": "none",
+  "vae_lightning": "none",
+  "rope_fused": false
+}
+```
+
+```bash
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_server.py \
+  --init --config config-cuda-2k.json --host 127.0.0.1 --port 29655
+```
+
+通过 `/generate` 提交 `task_type=fl2va`、`resolution=2k`、`duration=5`、
+`first_frame`、`prompt` 和 `seed`，用 `/status/<task_id>` 查询结果。
+离线使用同一套模型参数，给现有推理入口传入 `--h3_refiner`、
+`--width 2560 --height 1440 --frames 124 --save_fps 24` 和首帧。
+
+已验证 8 张 RTX 5090 上的 5 秒 2K 离线推理和两次串行在线请求。
+在线原生 attention 也验证了同一服务从 5 秒切换到 10 秒，两条请求复用模型和 CPU 权重。
+10 秒请求的单卡 PyTorch 峰值保留显存约 30.34 GiB。两条近同时提交的 5 秒请求也已验证排队与串行执行。15 秒、队列满载和长期内存趋势仍需实测。
 
 [实测性能和验证范围](performance/h3-cuda.md)

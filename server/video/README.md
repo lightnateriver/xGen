@@ -2,6 +2,37 @@
 
 基于 Wan2.2-T2V/I2V-14B 模型的视频生成服务，支持文生视频(t2v)和图生视频(i2v)。
 
+## CUDA H3 的 MaaS 输入校验
+
+平台对接所需的请求、响应、错误码、计时和探针语义见 [MaaS FL2VA 接口文档](MAAS-FL2VA-API.md)。
+
+在已有的 H3 CUDA FL2VA 服务启动命令上添加 `--maas-fl2va-input`。模型配置使用 `MiniMax-H3`、`task_type=fl2va` 和 `num_inference_steps=51`，并按 [CUDA 部署教程](../../docs/H3-CUDA.md) 准备权重。这个模式固定使用 H3 Base、768P 横屏、5 秒、24 fps、50 次实际 DiT。省略开关时使用原有接口校验。启用后 `/params` 返回这套规格，`/config` 保持只读。
+
+`POST /v1/tasks` 接受 JSON 对象 `{"id":"job-1","input":{...}}`，可选 `created_at` 使用 Unix 毫秒。`POST /generate` 直接接收 `input` 对象的内容。`prompt` 和 `first_frame` 必填，`seed` 默认为 42，`enable_audio` 默认为 `true`。固定字段可以省略，显式传入时必须匹配 `/params`。
+
+- `prompt` 最多 2000 个 Unicode 码点，允许中文和换行。`seed` 为 0 至 2147483647 的 JSON 整数，`enable_audio` 为 JSON 布尔值。
+- `first_frame` 使用单帧 JPEG 或 PNG 的 Base64 data URI。解码前文件最多 4 MiB，图像最多 8388608 像素，每边 32 至 4096 像素，长边与短边的比值最多 4。调用方可先从平台素材库取图并调整到限额内，再传给 xGen。
+- 非法 JSON、字段类型、组合或坏图返回 `400`，超过请求体或素材资源上限返回 `413`，非 JSON 内容类型返回 `415`。错误响应包含 `error`、`field` 和 `message`。
+
+启用该模式时，用 `--init` 启动并保持 SP 与实际 rank 数一致。`/health` 保留原有存活字段，增加 `state`、`ready`、`reason`、`phase`、`model_loaded` 和 `workers`。`/ready` 返回同一份就绪状态，只有 `ready=true` 时返回 `200`，其余返回 `503`。省略 `--maas-fl2va-input` 时，沿用原 `/health` 响应。
+
+首次启动后，从内网直接提交一条符合规格的预热请求。首条视频保存成功，且各 rank 通过现有心跳确认后，`/ready` 才通过。正常生成中保持就绪。摘流、已捕获的 worker 错误、或单阶段达到时限会使就绪失败。加载、生成与保存的就绪时限分别为 600、1200、180 秒。空闲、派发与确认阶段仅记录状态。探针只读状态，超时不会由探针直接终止进程。
+
+启用该模式时，`POST /v1/tasks` 对当前进程中仍保留的任务 ID 去重。同 ID、同规格返回现有任务，同 ID、不同规格返回 `409 task_conflict`。等待队列默认最多 10 条，已派发的任务另计。队列满返回 `503 queue_full`。任务自受理起等待满 600 秒后过期，过期只影响待派发任务。可用 `--maas-queue-capacity` 和 `--maas-queue-timeout-s` 调整这两个默认值。`DELETE /v1/tasks/<id>` 和 `POST /cancel/<id>` 可取消待派发任务，已派发时返回 `409`。取消时释放槽位，受理、查询、派发和定期清理时先移除已过期的队列项。
+
+待派发任务的查询结果包含 `queue_elapsed_s`（自受理以来已等待的秒数）和 `queue_ahead`（排在前面的有效等待任务数，执行中的任务另计）。派发、取消或过期后，查询结果保留在 `timings_s.queue` 中的实际排队耗时。
+
+配置 `FFPROBE_PATH` 或在 `PATH` 提供 `ffprobe`。服务将编码结果写入同目录的 `.pending-*.mp4`，核对 1344×768、24 fps、124 帧元数据及实际视频包数，并检查所需音轨包含数据包后，原子替换到最终路径。配置 `OBS_LOCAL_PATH` 时，还要确认对象可访问并用签名链接读到数据后，任务才成功。消费输出目录时只读最终的 `video_*.mp4`。
+
+任务查询增加 `error_code`、`failure_stage` 和 `timings_s`。耗时使用秒，分别记录 `queue`、`inference`、`encode`、`delivery` 和 `total`。尚未完成的阶段可能缺失。常见终态原因包括 `queue_expired`、`cancelled_by_user`、`encode_failed`、`storage_failed`、`worker_lost` 和 `service_shutdown`。终态任务记录在实例内存中约保留 2 小时。
+
+在已安装服务依赖的 CUDA Python 环境运行 CPU 路由测试：
+
+```bash
+CUDA_VISIBLE_DEVICES='' XGEN_DEVICE=cuda python server/video/test_maas_fl2va.py
+python server/video/test_maas_artifacts.py
+```
+
 ## 功能特性
 
 - 异步 HTTP API 接口

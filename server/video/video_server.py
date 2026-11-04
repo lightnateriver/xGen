@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import hashlib
 import logging
 import threading
 import queue
@@ -29,6 +30,9 @@ except ImportError:
 
 import sys
 from file_util import file_util
+from maas_fl2va import InvalidInput, parameter_spec as maas_parameter_spec, read_submission, validate_startup as validate_maas_startup
+from maas_health import MaaSHealth
+from maas_artifacts import StorageError, publish_obs, publish_video, validate_media_tools
 
 from x_diffusers import init_env, parse_args
 from x_base.device import device_type
@@ -352,6 +356,44 @@ class AsyncTask:
             "status": self.get_platform_status(),
             "output": self.output or "",
         }
+
+
+MAAS_QUEUE_CAPACITY = 10
+MAAS_QUEUE_TIMEOUT_S = 600
+
+
+class MaaSTask(AsyncTask):
+    def __init__(self, task_id, input_key, created_at_ms=None):
+        super().__init__(task_id, 'video_generation', None, created_at_ms)
+        self.input_key = input_key
+        self.queued_at = time.monotonic()
+        self.error_code = None
+        self.failure_stage = None
+        self.timings_s = {}
+
+    def finish(self, status, *, code=None, stage=None, result=None):
+        if self.status not in ('pending', 'running'):
+            return False
+        self.error_code = self.error = code
+        self.failure_stage = stage
+        self.completed_at = datetime.now()
+        self.timings_s['total'] = round(time.monotonic() - self.queued_at, 3)
+        if result is not None:
+            self.result = result
+            self.output = json.dumps(result)
+            self.progress = 100.0
+            self.infer_time = result['infer_time']
+        self.status = status
+        return True
+
+    def _details(self):
+        return dict(error_code=self.error_code, failure_stage=self.failure_stage, timings_s=dict(self.timings_s))
+
+    def to_dict(self):
+        return {**super().to_dict(), **self._details()}
+
+    def to_platform_dict(self):
+        return {**super().to_platform_dict(), **self._details()}
 
 
 class VideoInferenceManager:
@@ -993,8 +1035,11 @@ class VideoInferenceManager:
 
 
 class VideoGenerationService:
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, *, maas_fl2va_input=False,
+                 maas_queue_capacity=MAAS_QUEUE_CAPACITY, maas_queue_timeout_s=MAAS_QUEUE_TIMEOUT_S):
         self.app = Flask(__name__)
+        self.maas_fl2va_input = maas_fl2va_input
+        self.maas_health = MaaSHealth() if maas_fl2va_input else None
         if CORS_AVAILABLE:
             CORS(self.app)
 
@@ -1005,11 +1050,16 @@ class VideoGenerationService:
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-        self.task_queue = queue.Queue(maxsize=100)
+        self.task_queue = None if maas_fl2va_input else queue.Queue(maxsize=100)
         self.result_queue = queue.Queue()
         
         self.tasks: Dict[str, AsyncTask] = {}
         self.tasks_lock = threading.Lock()
+        if maas_fl2va_input:
+            self.maas_pending = {}
+            self.maas_queue_changed = threading.Condition(self.tasks_lock)
+            self.maas_queue_capacity = maas_queue_capacity
+            self.maas_queue_timeout_s = maas_queue_timeout_s
 
         self.max_tasks = 1000
         self.task_timeout = timedelta(hours=1)
@@ -1043,8 +1093,12 @@ class VideoGenerationService:
     def _cleanup_on_exit(self):
         logger.info(f"[Rank {self.rank}] Service exiting, cleaning up...")
         with self.tasks_lock:
+            if self.maas_fl2va_input:
+                self.maas_pending.clear()
             for task in self.tasks.values():
-                if task.status in ["pending", "running"]:
+                if self.maas_fl2va_input:
+                    task.finish('failed', code='service_shutdown', stage='shutdown')
+                elif task.status in ["pending", "running"]:
                     task.status = "cancelled"
                     task.error = "Service shutdown"
 
@@ -1052,6 +1106,8 @@ class VideoGenerationService:
         now = datetime.now()
         cutoff = now - timedelta(hours=self.keep_completed_hours)
         with self.tasks_lock:
+            if self.maas_fl2va_input:
+                self._expire_maas_pending(time.monotonic())
             to_remove = []
             for task_id, task in self.tasks.items():
                 if task.status in ["completed", "failed", "cancelled"]:
@@ -1759,14 +1815,25 @@ class VideoGenerationService:
 
         return True, {"data": validated_data, "warnings": warnings}
 
+    def _maas_readiness(self):
+        return self.maas_health.describe(
+            self.is_initialized, self.shutdown, self.default_config.get('sp', self.world_size), self.world_size,
+        )
+
     def _setup_health_routes(self):
+        if self.maas_fl2va_input:
+            @self.app.get('/ready')
+            def readiness_check():
+                snapshot = self._maas_readiness()
+                return jsonify(snapshot), 200 if snapshot['ready'] else 503
+
         @self.app.route('/health', methods=['GET'])
         def health_check():
             current_model = None
             if self.inference_manager and hasattr(self.inference_manager, 'current_model'):
                 current_model = self.inference_manager.current_model
 
-            return jsonify({
+            result = {
                 "status": "healthy",
                 "initialized": self.is_initialized,
                 "current_model": current_model,
@@ -1774,7 +1841,11 @@ class VideoGenerationService:
                 "world_size": self.world_size,
                 "supported_models": list(MODEL_REGISTRY.keys()),
                 "timestamp": datetime.now().isoformat()
-            })
+            }
+            if self.maas_fl2va_input:
+                result.update(self._maas_readiness(), model=self.default_config.get('model'),
+                              profile="maas-fl2va-768p-5s")
+            return jsonify(result)
 
         @self.app.route('/models', methods=['GET'])
         def list_models():
@@ -1791,6 +1862,8 @@ class VideoGenerationService:
 
         @self.app.route('/init', methods=['POST'])
         def init_service():
+            if self.maas_fl2va_input:
+                return jsonify({"error": "Start the MaaS FL2VA service with --init"}), 405
             try:
                 data = request.get_json() or {}
 
@@ -1804,6 +1877,83 @@ class VideoGenerationService:
                 logger.error(f"[Rank {self.rank}] Failed to initialize service: {str(e)}", exc_info=True)
                 return jsonify({"status": "error", "message": str(e)}), 500
 
+    def _expire_maas_pending(self, now):
+        # Called with tasks_lock held. Queue deadlines follow FIFO order.
+        while self.maas_pending:
+            task_id = next(iter(self.maas_pending))
+            task = self.tasks[task_id]
+            elapsed = now - task.queued_at
+            if elapsed < self.maas_queue_timeout_s:
+                break
+            del self.maas_pending[task_id]
+            task.timings_s['queue'] = round(elapsed, 3)
+            task.finish('failed', code='queue_expired', stage='queue')
+
+    def _maas_task_snapshot(self, task, now, *, platform=True):
+        result = task.to_platform_dict() if platform else task.to_dict()
+        if task.status == 'pending':
+            result['queue_elapsed_s'] = round(now - task.queued_at, 3)
+            result['queue_ahead'] = list(self.maas_pending).index(task.task_id)
+        return result
+
+    def _submit_maas_task(self, task_id, data, created_at_ms=None):
+        key = hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8')).digest()
+        with self.maas_queue_changed:
+            self._expire_maas_pending(time.monotonic())
+            previous = self.tasks.get(task_id)
+            if previous:
+                if previous.input_key != key:
+                    return jsonify({'id': task_id, 'error': 'task_conflict'}), 409
+                return jsonify(self._maas_task_snapshot(previous, time.monotonic())), 200
+            if self.shutdown or self._maas_readiness()['state'] == 'degraded':
+                return jsonify({'error': 'worker_unavailable'}), 503
+            if len(self.tasks) >= self.max_tasks:
+                return jsonify({'error': 'too_many_tasks'}), 429
+            if len(self.maas_pending) >= self.maas_queue_capacity:
+                return jsonify({'id': task_id, 'error': 'queue_full'}), 503
+            task = MaaSTask(task_id, key, created_at_ms)
+            save_path = f"/tmp/generated_videos/video_{uuid.uuid4().hex}.mp4"
+            self.tasks[task_id] = task
+            self.maas_pending[task_id] = {'task_id': task_id, 'data': data, 'save_path': save_path}
+            self.maas_queue_changed.notify()
+            return jsonify(self._maas_task_snapshot(task, task.queued_at)), 200
+
+    def _cancel_maas_task(self, task_id):
+        with self.tasks_lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return jsonify({'error': 'task_not_found'}), 404
+            now = time.monotonic()
+            self._expire_maas_pending(now)
+            if task.status == 'pending':
+                del self.maas_pending[task_id]
+                task.timings_s['queue'] = round(now - task.queued_at, 3)
+                task.finish('cancelled', code='cancelled_by_user', stage='queue')
+            if task.status != 'cancelled':
+                return jsonify({'id': task_id, 'error': 'task_not_cancellable', 'status': task.get_platform_status()}), 409
+            return jsonify(task.to_platform_dict()), 200
+
+    def _claim_maas_task(self):
+        with self.maas_queue_changed:
+            self.maas_queue_changed.wait_for(lambda: self.maas_pending or self.shutdown, timeout=1.0)
+            now = time.monotonic()
+            self._expire_maas_pending(now)
+            if not self.maas_pending or self.shutdown:
+                raise queue.Empty
+            task_id = next(iter(self.maas_pending))
+            task_info = self.maas_pending.pop(task_id)
+            task = self.tasks[task_id]
+            task.status = 'running'
+            task.started_at = datetime.now()
+            task.timings_s['queue'] = round(now - task.queued_at, 3)
+            return task_info, task
+
+    def _fail_maas_jobs(self, phase):
+        with self.tasks_lock:
+            self.maas_pending.clear()
+            for task in self.tasks.values():
+                task.finish('failed', code='worker_lost', stage=phase if task.status == 'running' else 'queue')
+
     def _setup_task_routes(self):
         @self.app.route('/generate', methods=['POST'])
         def submit_task():
@@ -1814,6 +1964,9 @@ class VideoGenerationService:
                 if self.shutdown:
                     return jsonify({"status": "error", "message": "Service is shutting down"}), 503
 
+                if self.maas_health and self._maas_readiness()["state"] == "degraded":
+                    return jsonify({"error": "worker_unavailable"}), 503
+
                 self._cleanup_completed_tasks()
                 
                 with self.tasks_lock:
@@ -1823,17 +1976,24 @@ class VideoGenerationService:
                             "message": f"Too many tasks (max: {self.max_tasks}). Please wait for tasks to complete."
                         }), 429
 
-                data = request.get_json()
-                if not data:
-                    return jsonify({"status": "error", "message": "No JSON data provided"}), 400
+                if self.maas_fl2va_input:
+                    task_id = str(uuid.uuid4())
+                    response, status = self._submit_maas_task(task_id, read_submission(request))
+                    if status == 200:
+                        return jsonify({"status": "accepted", "task_id": task_id}), 200
+                    return response, status
+                else:
+                    data = request.get_json()
+                    if not data:
+                        return jsonify({"status": "error", "message": "No JSON data provided"}), 400
 
-                is_valid, result = self._validate_generate_params(data)
-                if not is_valid:
-                    return jsonify({
-                        "status": "error",
-                        "message": "Parameter validation failed",
-                        "details": result
-                    }), 400
+                    is_valid, result = self._validate_generate_params(data)
+                    if not is_valid:
+                        return jsonify({
+                            "status": "error",
+                            "message": "Parameter validation failed",
+                            "details": result
+                        }), 400
 
                 validated_data = result["data"]
                 warnings = result.get("warnings", [])
@@ -1877,6 +2037,8 @@ class VideoGenerationService:
                     response["warnings"] = warnings
                 return jsonify(response)
 
+            except InvalidInput as e:
+                return jsonify({"error": "invalid_input", "field": e.field, "message": str(e)}), e.status
             except Exception as e:
                 logger.error(f"[Rank {self.rank}] Failed to submit task: {str(e)}", exc_info=True)
                 return jsonify({"status": "error", "message": str(e)}), 500
@@ -1885,6 +2047,10 @@ class VideoGenerationService:
         def get_task_status(task_id):
             with self.tasks_lock:
                 task = self.tasks.get(task_id)
+                if task is not None and self.maas_fl2va_input:
+                    now = time.monotonic()
+                    self._expire_maas_pending(now)
+                    return jsonify(self._maas_task_snapshot(task, now, platform=False))
 
             if not task:
                 return jsonify({"status": "error", "message": f"Task {task_id} not found"}), 404
@@ -1938,6 +2104,8 @@ class VideoGenerationService:
 
         @self.app.route('/cancel/<task_id>', methods=['POST'])
         def cancel_task(task_id):
+            if self.maas_fl2va_input:
+                return self._cancel_maas_task(task_id)
             with self.tasks_lock:
                 task = self.tasks.get(task_id)
 
@@ -1958,6 +2126,8 @@ class VideoGenerationService:
     def _setup_config_routes(self):
         @self.app.route('/params', methods=['GET'])
         def get_param_spec():
+            if self.maas_fl2va_input:
+                return jsonify(maas_parameter_spec())
             if self.default_config.get('h3_attention', 'legacy') != 'legacy':
                 from x_diffusers.adaptor.h3_attention_service import parameter_spec as sparse_parameter_spec
                 return jsonify(sparse_parameter_spec(self.default_config))
@@ -2099,6 +2269,8 @@ class VideoGenerationService:
             if request.method == 'GET':
                 return jsonify(self.default_config)
             else:
+                if self.maas_fl2va_input:
+                    return jsonify({"error": "MaaS FL2VA profile is fixed at startup"}), 405
                 data = request.get_json()
                 self.default_config.update(data)
                 return jsonify({"status": "success", "config": self.default_config})
@@ -2106,6 +2278,8 @@ class VideoGenerationService:
         @self.app.route('/metrics', methods=['GET'])
         def get_metrics():
             with self.tasks_lock:
+                if self.maas_fl2va_input:
+                    self._expire_maas_pending(time.monotonic())
                 completed = [t for t in self.tasks.values() if t.status == "completed" and t.infer_time]
                 if completed:
                     infer_times = [t.infer_time for t in completed]
@@ -2258,56 +2432,66 @@ class VideoGenerationService:
                 if self.shutdown:
                     return jsonify({"error": "Service is shutting down"}), 503
                 
-                data = request.get_data()
-                if not data:
-                    return jsonify({"error": "No JSON data provided"}), 400
-                data = json.loads(data)
-                task_id = data.get('id')
-                if not task_id:
-                    return jsonify({"error": "Missing required field: id"}), 400
-                
-                external_input = data.get('input')
-                created_at_ms = data.get('created_at')
-                
-                try:
-                    parsed_params = self._parse_external_input(external_input)
-                except ValueError as e:
-                    logger.error(f"[Rank 0] Failed to parse input for task {task_id}: {e}")
-                    return jsonify({
-                        "id": task_id,
-                        "status": "failed",
-                        "output": "",
-                        "error": str(e)
-                    }), 400
-                
+                if self.maas_health and self._maas_readiness()["state"] == "degraded":
+                    return jsonify({"error": "worker_unavailable"}), 503
+
+                if self.maas_fl2va_input:
+                    task_id, created_at_ms, validated_data = read_submission(request, internal=True)
+                    return self._submit_maas_task(task_id, validated_data, created_at_ms)
+                else:
+                    data = request.get_data()
+                    if not data:
+                        return jsonify({"error": "No JSON data provided"}), 400
+                    data = json.loads(data)
+                    task_id = data.get('id')
+                    if not task_id:
+                        return jsonify({"error": "Missing required field: id"}), 400
+
+                    external_input = data.get('input')
+                    created_at_ms = data.get('created_at')
+
+                    try:
+                        parsed_params = self._parse_external_input(external_input)
+                    except ValueError as e:
+                        logger.error(f"[Rank 0] Failed to parse input for task {task_id}: {e}")
+                        return jsonify({
+                            "id": task_id,
+                            "status": "failed",
+                            "output": "",
+                            "error": str(e)
+                        }), 400
+
+
                 with self.tasks_lock:
                     if task_id in self.tasks:
                         existing = self.tasks[task_id]
                         return jsonify(existing.to_platform_dict()), 200
                 
-                is_valid, result = self._validate_generate_params(parsed_params)
-                if not is_valid:
-                    error_msg = "; ".join(result.get("errors", []))
-                    logger.error(f"[Rank 0] Validation failed for task {task_id}: {error_msg}")
-                    validated_data = None
-                    task = AsyncTask(
-                        task_id=task_id,
-                        task_type="video_generation",
-                        params=validated_data,
-                        created_at_ms=created_at_ms
-                    )
-                    task.output = error_msg
-                    task.status = "failed"
-                    self.tasks[task_id] = task
-                    return jsonify({
-                        "id": task_id,
-                        "status": "failed",
-                        "output": error_msg,
-                        "error": error_msg
-                    }), 200
-                
-                validated_data = result["data"]
-                
+                if not self.maas_fl2va_input:
+                    is_valid, result = self._validate_generate_params(parsed_params)
+                    if not is_valid:
+                        error_msg = "; ".join(result.get("errors", []))
+                        logger.error(f"[Rank 0] Validation failed for task {task_id}: {error_msg}")
+                        validated_data = None
+                        task = AsyncTask(
+                            task_id=task_id,
+                            task_type="video_generation",
+                            params=validated_data,
+                            created_at_ms=created_at_ms
+                        )
+                        task.output = error_msg
+                        task.status = "failed"
+                        self.tasks[task_id] = task
+                        return jsonify({
+                            "id": task_id,
+                            "status": "failed",
+                            "output": error_msg,
+                            "error": error_msg
+                        }), 200
+
+                    validated_data = result["data"]
+
+
                 task = AsyncTask(
                     task_id=task_id,
                     task_type="video_generation",
@@ -2342,6 +2526,8 @@ class VideoGenerationService:
                 logger.info(f"[Rank 0] Internal task {task_id} created and queued")
                 return jsonify(task.to_platform_dict()), 200
                 
+            except InvalidInput as e:
+                return jsonify({"error": "invalid_input", "field": e.field, "message": str(e)}), e.status
             except Exception as e:
                 logger.error(f"[Rank 0] Failed to create internal task: {str(e)}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
@@ -2351,7 +2537,12 @@ class VideoGenerationService:
         def internal_list_tasks():
             try:
                 with self.tasks_lock:
-                    tasks_list = [task.to_platform_dict() for task in self.tasks.values()]
+                    if self.maas_fl2va_input:
+                        now = time.monotonic()
+                        self._expire_maas_pending(now)
+                        tasks_list = [self._maas_task_snapshot(task, now) for task in self.tasks.values()]
+                    else:
+                        tasks_list = [task.to_platform_dict() for task in self.tasks.values()]
                 return jsonify({"tasks": tasks_list}), 200
             except Exception as e:
                 logger.error(f"[Rank 0] Failed to list tasks: {str(e)}", exc_info=True)
@@ -2362,6 +2553,10 @@ class VideoGenerationService:
             try:
                 with self.tasks_lock:
                     task = self.tasks.get(task_id)
+                    if task is not None and self.maas_fl2va_input:
+                        now = time.monotonic()
+                        self._expire_maas_pending(now)
+                        return jsonify(self._maas_task_snapshot(task, now)), 200
                 
                 if not task:
                     return jsonify({"error": f"Task {task_id} not found"}), 404
@@ -2374,6 +2569,8 @@ class VideoGenerationService:
 
         @self.app.route('/v1/tasks/<task_id>', methods=['DELETE'])
         def internal_delete_task(task_id):
+            if self.maas_fl2va_input:
+                return self._cancel_maas_task(task_id)
             try:
                 with self.tasks_lock:
                     task = self.tasks.get(task_id)
@@ -2488,7 +2685,9 @@ class VideoGenerationService:
         for key, value in config.items():
             if key in excluded_keys or value is None or value == '':
                 continue
-            if isinstance(value, bool):
+            if key == 'prompt' and getattr(self, 'maas_fl2va_input', False):
+                arg_list.append(f'--prompt={value}')
+            elif isinstance(value, bool):
                 if value:
                     arg_list.append(f'--{key}')
             elif isinstance(value, list):
@@ -2786,6 +2985,8 @@ class VideoGenerationService:
                 return
             self._save_mmh3_video_ffmpeg(frames, audio_path, save_path, args)
         except Exception as e:
+            if self.maas_fl2va_input:
+                raise
             logger.warning(f"ffmpeg save failed ({e}), falling back to export_to_video")
             self._save_mmh3_video_fallback(videos, save_path)
         finally:
@@ -2854,15 +3055,47 @@ class VideoGenerationService:
         else:
             torch.cuda.empty_cache()
 
-    def _process_task(self, task_id: str, data: Dict[str, Any], save_path: str):
+    def _publish_maas_task(self, task, output, save_path, args, infer_time):
+        with self.tasks_lock:
+            task.timings_s['inference'] = round(infer_time, 3)
+        started = time.monotonic()
+        publish_video(save_path, lambda path: self._save_video(output, path, args),
+                      require_audio=args.enable_audio)
+        encoded = time.monotonic()
+        with self.tasks_lock:
+            task.timings_s['encode'] = round(encoded - started, 3)
+        result = {'video_path': save_path, 'infer_time': round(infer_time, 2)}
+        base_url = self.default_config.get('external_base_url')
+        if base_url:
+            result['download_url'] = f"{base_url.rstrip('/')}/download/{task.task_id}"
+        if obs_directory := os.environ.get('OBS_LOCAL_PATH'):
+            try:
+                result['download_url'] = publish_obs(save_path, obs_directory)
+            except StorageError:
+                try:
+                    Path(save_path).unlink(missing_ok=True)
+                except OSError:
+                    logger.exception("Could not clean unpublished output for %s", task.task_id)
+                raise
+        with self.tasks_lock:
+            task.timings_s['delivery'] = round(time.monotonic() - encoded, 3)
+            task.finish('completed', result=result)
+            timings = dict(task.timings_s)
+        logger.info("MaaS task %s completed timings_s=%s", task.task_id, timings)
+
+    def _process_task(self, task_id: str, data: Dict[str, Any], save_path: str, *, maas_task=None):
         try:
-            if not self._prepare_task(task_id):
+            if maas_task is None and not self._prepare_task(task_id):
                 return
 
             args = self._build_args(data, save_path)
             self._set_guidance_scale(args)
 
+            if self.maas_health and not self.maas_health.model_loaded:
+                self.maas_health = self.maas_health.advance('loading')
             self.inference_manager.initialize_pipe(args)
+            if self.maas_health:
+                self.maas_health = self.maas_health.advance('generating', model_loaded=True)
             
             infer_info.update_info(args)
             infer_info.save_path = save_path
@@ -2870,21 +3103,42 @@ class VideoGenerationService:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
             torch.cuda.synchronize()
-            start_time = time.time()
+            clock = time.monotonic if maas_task is not None else time.time
+            start_time = clock()
 
             output = self.inference_manager.infer_single(args, task_id=task_id, task_manager=self)
 
             torch.cuda.synchronize()
-            infer_time = time.time() - start_time
+            infer_time = clock() - start_time
 
+            if self.maas_health:
+                self.maas_health = self.maas_health.advance('saving')
+            if maas_task is not None:
+                self._publish_maas_task(maas_task, output, save_path, args, infer_time)
+                return True
             self._save_video(output, save_path, args)
             self._complete_task(task_id, save_path, infer_time)
 
             logger.info(f"[Rank 0] Task {task_id} completed in {infer_time:.2f}s")
 
-        except InterruptedError as e:
-            self._handle_task_interruption(task_id, str(e))
         except Exception as e:
+            if maas_task is not None:
+                phase = self.maas_health.phase
+                if phase == 'saving':
+                    failure_stage = 'storage' if isinstance(e, StorageError) else 'encode'
+                    code = f'{failure_stage}_failed'
+                else:
+                    failure_stage, code = phase, 'worker_lost'
+                with self.tasks_lock:
+                    maas_task.finish('failed', code=code, stage=failure_stage)
+                logger.exception("MaaS task %s failed (%s)", task_id, code)
+                if phase != 'saving':
+                    self.maas_health = self.maas_health.advance(phase, failed=True)
+                    self._fail_maas_jobs(phase)
+                return False
+            if isinstance(e, InterruptedError):
+                self._handle_task_interruption(task_id, str(e))
+                return
             self._handle_task_failure(task_id, str(e))
             if self.default_config.get('h3_refiner', False):
                 if (getattr(self.inference_manager, '_h3_refiner_failed', False) or
@@ -2933,39 +3187,66 @@ class VideoGenerationService:
 
             except Exception as e:
                 logger.error(f"[Rank {self.rank}] Worker loop error: {str(e)}", exc_info=True)
+                if self.maas_health:
+                    raise
                 if self.default_config.get('h3_refiner', False):
                     if (getattr(self.inference_manager, '_h3_refiner_failed', False) or
                             getattr(getattr(self.inference_manager, 'sr_pipe', None), 'failed', False)):
                         raise
                 time.sleep(1)
+            finally:
+                if self.maas_fl2va_input:
+                    _cleanup_temp_files()
 
     def _task_processor_thread(self):
         heartbeat_interval = 30
-        last_heartbeat_time = time.time()
+        last_heartbeat_time = 0 if self.maas_health else time.time()
+        if self.maas_health:
+            self.maas_health = self.maas_health.advance('idle')
         
         while not self.shutdown:
             try:
+                maas_task = None
                 try:
-                    task_info = self.task_queue.get(timeout=1.0)
+                    if self.maas_health:
+                        task_info, maas_task = self._claim_maas_task()
+                    else:
+                        task_info = self.task_queue.get(timeout=1.0)
                 except queue.Empty:
                     current_time = time.time()
                     if self.world_size > 1 and (current_time - last_heartbeat_time) >= heartbeat_interval:
                         broadcast_int(CMD_HEARTBEAT, src=0)
                         last_heartbeat_time = current_time
+                        if self.maas_health:
+                            self.maas_health = self.maas_health.advance('idle', group_confirmed=True)
                     continue
 
+                if self.maas_health:
+                    self.maas_health = self.maas_health.advance('dispatching')
                 if self.world_size > 1:
                     broadcast_int(CMD_EXECUTE, src=0)
                     broadcast_dict({'data': task_info['data'], 'save_path': task_info['save_path']}, src=0)
                     dist.barrier()
                     logger.info(f"[Rank 0] All workers ready, starting task execution")
 
-                self._process_task(
+                if self.maas_health:
+                    self.maas_health = self.maas_health.advance('dispatching', group_confirmed=True)
+                completed = self._process_task(
                     task_info['task_id'],
                     task_info['data'],
-                    task_info['save_path']
+                    task_info['save_path'], maas_task=maas_task,
                 )
 
+                if self.maas_health:
+                    if self.maas_health.failed:
+                        return
+                    if completed and not self.maas_health.warmed:
+                        self.maas_health = self.maas_health.advance('confirming_workers')
+                        if self.world_size > 1:
+                            broadcast_int(CMD_HEARTBEAT, src=0)
+                        self.maas_health = self.maas_health.advance('idle', warmed=True)
+                    else:
+                        self.maas_health = self.maas_health.advance('idle')
                 last_heartbeat_time = time.time()
 
                 gc.collect()
@@ -2976,6 +3257,10 @@ class VideoGenerationService:
 
             except Exception as e:
                 logger.error(f"[Rank 0] Task processor error: {str(e)}", exc_info=True)
+                if self.maas_health:
+                    self.maas_health = self.maas_health.advance(self.maas_health.phase, failed=True)
+                    self._fail_maas_jobs(self.maas_health.phase)
+                    return
                 time.sleep(1)
 
     def _cleanup_thread(self):
@@ -3201,6 +3486,12 @@ def main():
     parser.add_argument('--port', type=int, default=5001, help='Service port')
     parser.add_argument('--config', type=str, default=None, help='Config file path')
     parser.add_argument('--init', action='store_true', help='Initialize service on startup')
+    parser.add_argument('--maas-fl2va-input', action='store_true',
+                        help='Enforce the fixed CUDA H3 768P FL2VA MaaS request contract')
+    parser.add_argument('--maas-queue-capacity', type=int, default=MAAS_QUEUE_CAPACITY,
+                        help='Maximum number of waiting MaaS requests (default: %(default)s)')
+    parser.add_argument('--maas-queue-timeout-s', type=int, default=MAAS_QUEUE_TIMEOUT_S,
+                        help='MaaS request wait limit in seconds (default: %(default)s)')
     parser.add_argument('--warmup', action='store_true', help='Run warmup inference on startup')
     parser.add_argument('--warmup-steps', type=int, default=1, help='Warmup inference steps')
 
@@ -3270,6 +3561,8 @@ def main():
                        help="Use different turbo mode inference.")
 
     args = parser.parse_args()
+    if args.maas_fl2va_input and (args.maas_queue_capacity < 1 or args.maas_queue_timeout_s < 1):
+        parser.error('MaaS queue capacity and timeout must be positive')
     
     _apply_ten_second_config_args(args)
 
@@ -3279,7 +3572,9 @@ def main():
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    service = VideoGenerationService(config_path=args.config)
+    service = VideoGenerationService(config_path=args.config, maas_fl2va_input=args.maas_fl2va_input,
+                                     maas_queue_capacity=args.maas_queue_capacity,
+                                     maas_queue_timeout_s=args.maas_queue_timeout_s)
     
     _apply_service_config(service, args, rank)
     if args.h3_attention != 'legacy' or service.default_config.get('h3_attention', 'legacy') != 'legacy':
@@ -3291,6 +3586,11 @@ def main():
     if args.h3_refiner:
         from x_diffusers.adaptor.h3_refiner_service import apply_startup_settings
         apply_startup_settings(service.default_config, args, sys.argv[1:])
+    if args.maas_fl2va_input:
+        if not args.init or service.default_config.get('sp') != world_size:
+            parser.error('--maas-fl2va-input requires --init and SP equal to the distributed world size')
+        validate_maas_startup(service.default_config, device_type(), args.warmup)
+        validate_media_tools()
     if service.default_config.get('h3_refiner', False):
         if args.warmup:
             raise ValueError('H3 Refiner does not use the legacy reduced-step warmup; submit a normal request')

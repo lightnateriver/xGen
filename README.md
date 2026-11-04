@@ -1,268 +1,217 @@
-# X_GEN
+# xGen
 
-X_GEN 是面向昇腾 NPU 的视频生成推理引擎。MiniMax-H3 另提供实验性 CUDA 路径。
+xGen 是面向昇腾 NPU 和 NVIDIA CUDA 的音视频生成推理引擎。它复用 Diffusers 模型组件，提供离线命令行和在线 HTTP 服务，并为 MiniMax-H3 提供多卡序列并行、PHAA 通信、文本编码器 TP、模型分层加载和 VAE 并行。
 
-## 版本与优化
+MiniMax-H3 支持文本生成音视频（T2VA）、首帧图生音视频（I2VA，代码中为 `fl2va`）和多参考图生成音视频（R2VA，代码中为 `ref2va`）。昇腾路径支持 768P Base 和 Open-H3-Regenerate-2K 超分。CUDA 已实测 FL2VA Base 及可选 FL2VA Refiner。MaaS 在原在线服务上增加严格输入、异步任务队列、就绪探针和成片校验，由启动开关启用。
 
-| 分支 | 主要变化 | 启动与性能 |
-| --- | --- | --- |
-| [v0.1](../../tree/v0.1) | 原版 xGen，保留 Diffusers 适配、SP、FSDP、PHAA、量化和原有服务。 | [基础启动示例](#快速开始) |
-| [v0.2](../../tree/v0.2) | 新增默认关闭的 H3 → Open-H3-Regenerate-2K latent 超分，接入原 Manager 和视频服务，支持离线与在线。 | [部署、参数和历史性能](docs/H3-DEPLOYMENT.md) |
-| [v0.3](../../tree/v0.3) | 新增可选 Spark-H3 / Veda Base attention。Veda 支持配置稀疏度，默认后端为 legacy；另提供实验性 LightX2V 8 步离线配方。 | [启动与回退](docs/H3-ATTENTION.md) · [NPU 实测](docs/H3-ATTENTION-VALIDATION.md) |
-| [v0.3-cuda](../../tree/v0.3-cuda) | MiniMax-H3 FL2VA CUDA 支持，包含 Sage/Sparge、NVFP4 DiT 常驻、FP8 PHAA 去程与回程、文本 TP8、VAE SP 和 FastVideo C4 预设。CUDA 2K Refiner 为可选能力。 | [CUDA 部署](docs/H3-CUDA.md) · [历史性能](docs/performance/h3-cuda.md#历史-cuda-实测) |
-| [v0.3.1](../../tree/v0.3.1) | H3 CUDA 专用配置与安装逻辑集中到 adaptor；新增可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。新增优化默认关闭，原同步 FP8 传输实现保留。 | [CUDA 启动](docs/H3-CUDA.md#v031-5-秒实验配方) · [NPU 启动](docs/H3-DEPLOYMENT.md#v031-npu-首帧图生音视频) · [本版实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
+[版本](#版本) · [快速开始](#快速开始) · [昇腾启动](#昇腾-npu-启动) · [B2/B3 性能](#b2b3-性能) · [CUDA 启动](#nvidia-cuda-启动) · [GPU 性能](#gpu-性能) · [MaaS 在线](#maas-在线服务)
 
-本版使用同一 FL2VA 输入测试 768P、124 帧、50 次 DiT。8×RTX 5090 生成并保存耗时 **54.10 秒**，8×Ascend 910B1 耗时 **128.27 秒**。两边采用各自的权重与优化配方，均通过完整音视频解码。2K、在线和长稳沿用各版本已记录的验证范围。
+## 版本
 
-发布内容包含源码、测试和使用示例；机器交接及历史实验记录、模型权重、业务素材不随源码发布。示例中的 `./...` 路径需要按实际环境配置，参考图等输入由使用者提供。
-
-## 支持模型
-
-| 模型 | 任务类型 | 说明 |
-|------|----------|------|
-| Wan2.1-T2V-1.3B | 文生视频 | 1.3B 轻量版 |
-| Wan2.1-T2V-14B | 文生视频 | 14B 标准版 |
-| Wan2.1-I2V-14B | 图生视频 | 图像引导生成 |
-| Wan2.1-VACE-1.3B | 多任务 | 视频编辑多任务 |
-| Wan2.1-VACE-14B | 多任务 | 视频编辑多任务 |
-| Wan2.2-T2V-A14B | 文生视频 | Wan2.2 加速版 |
-| Wan2.2-I2V-A14B | 图生视频 | Wan2.2 加速版 |
-| HunyuanVideo-T2V-13B | 文生视频 | 腾讯混元 |
-| CogVideoX-5B | 文生视频 | 智谱 CogVideoX |
-
-## 项目结构
-
-```
-x_gen/
-├── x_base/              # 基础库 - 加速特性实现
-├── x_diffusers/         # Diffusers 适配层 - 推理框架
-├── example/             # 使用示例与脚本
-├── comfyui/             # ComfyUI 集成
-├── tools/               # 模型转换、超分等工具
-├── x_vllm_omni/         # vLLM 集成（开发中）
-└── build.sh             # 构建脚本
-```
-
-## 环境安装
-
-### 1. Docker 环境
-
-使用昇腾云 PyTorch 2.5.1 版本 Docker 镜像创建容器。
-
-### 2. 安装依赖
-
-```shell
-# 安装昇腾加速包
-(cd x_base && pip install -e .)
-# 安装 x_diffusers（默认 torch 2.10.0）
-(cd x_diffusers && pip install -e .)
-
-# 如需指定 torch 2.9.0 版本
-# cd x_diffusers && X_DIFFUSERS_TORCH_VERSION=29 pip install -e .
-```
-
-### 3. 构建 Whl 包（可选）
-
-```shell
-bash build.sh
-```
-
-## 权重下载
-
-| 模型 | 下载地址 |
-|------|----------|
-| Wan2.1-T2V-14B | https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers |
-| Wan2.1-I2V-14B | https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P-Diffusers |
-| Wan2.1-T2V-1.3B | https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers |
-| Wan2.1-VACE-1.3B | https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B-diffusers |
-| Wan2.1-VACE-14B | https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers |
-| Wan2.2-T2V-A14B | https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B-Diffusers |
-| Wan2.2-I2V-A14B | https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers |
-| HunyuanVideo | https://huggingface.co/tencent/HunyuanVideo |
-| IFRNet_S_Vimeo90K | https://github.com/Fannovel16/ComfyUI-Frame-Interpolation/releases/tag/models |
-
-### 使用 huggingface-cli
-
-```shell
-pip install "huggingface_hub[cli]"
-huggingface-cli download Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-    --local-dir ./weights/Wan-AI/Wan2.2-T2V-A14B-Diffusers
-```
+| 分支 | 核心变化 | 文档 |
+|---|---|---|
+| [v3.2-maas](../../tree/v3.2-maas) | CUDA H3 FL2VA 增加默认关闭的 MaaS 接口。支持输入校验、可配置排队和超时、去重、取消、就绪探针、成片原子发布及分阶段计时。新增双后端环境采集。 | [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-CUDA.md#maas-在线服务) · [环境采集](tools/README.md#cuda-和-npu-环境采集) |
+| [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
+| [v0.3-cuda](../../tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](docs/H3-CUDA.md) |
+| [v0.3](../../tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](docs/H3-ATTENTION.md) · [实测](docs/H3-ATTENTION-VALIDATION.md) |
+| [v0.2](../../tree/v0.2) | 增加默认关闭的 H3 → Open-H3-Regenerate-2K 链路，复用原 Manager 和 HTTP 服务。 | [NPU 部署](docs/H3-DEPLOYMENT.md) |
+| [v0.1](../../tree/v0.1) | 原始 xGen，包含 Diffusers 适配、SP、FSDP、PHAA、量化和视频服务。 | [基础示例](example/diffusers) |
 
 ## 快速开始
 
-```shell
-cd example/diffusers/scripts
-bash infer_wan2.2_14b_t2v_720p.sh
-```
-
-## 详细文档
-
-| 模块 | 说明 | 文档 |
-|------|------|------|
-| x_base | 加速特性（SP、FSDP、PHAA、量化等） | [x_base/README.md](x_base/README.md) |
-| x_diffusers | API 使用、Pipeline 配置 | [x_diffusers/README.md](x_diffusers/README.md) |
-| example | 示例脚本说明 | [example/README.md](example/README.md) |
-| comfyui | ComfyUI 集成 | [comfyui/README.md](comfyui/README.md) |
-| tools | 模型转换、超分工具 | [tools/README.md](tools/README.md) |
-
-## 基线已知问题
-
-`x_base/x_base/infinite_vram/scripts/infer_wan_2.1_14b_t2v_infinite_vram.sh` 在基线中已有引号/编码问题，无法通过 `bash -n`。本分支保留该历史文件作为版本对照；常规启动请使用 `example/diffusers/scripts/` 中对应模型的示例。
-
-部署示例使用相对路径或外部配置。旧版本的绝对占位路径已移植；生产部署请明确配置模型与输出位置。云存储凭据目录由外部 `OBS_CREDENTIAL_DIR` 配置，不能提交凭据。
-
-## v0.3 可选 H3 attention 后端
-
-新增默认关闭的 experimental Spark-H3 / Veda Base attention，通过 `--h3_attention` 选择。
-默认 `legacy` 保留原链路；Refiner、VAE、编码及原有调度继续复用。
-参见[接入、参数与回退说明](docs/H3-ATTENTION.md)和[50 步实测结果](docs/H3-ATTENTION-VALIDATION.md)。
-算子移植对齐、视频抽检和性能收益分别记录；新后端不自动成为默认配置。
-
-5 秒 T2VA 的 LightX2V 8 步离线实验使用独立开关 `--h3_turbo8`。权重准备与 768P/2K 示例见[参数说明](docs/H3-ATTENTION.md#experimental-lightx2v-turbo-8-step-offline)。
-
-10 秒 I2VA 可通过离线 CLI 选择 Veda 0.9 / 0.7。参见[启动命令](docs/H3-ATTENTION.md#veda-i2va-10-second-profile)与[三后端热态对比](docs/H3-ATTENTION-VALIDATION.md#10-second-i2va--20-actual-base-steps)。
-
-## 实验性 CUDA H3 Base
-
-[CUDA 部署与启动教程](docs/H3-CUDA.md) · [CUDA 实测性能](docs/performance/h3-cuda.md)
-
-显式设置 `XGEN_DEVICE=cuda` 选择 CUDA，默认仍使用 NPU。CUDA 上可用
-`--atten sage` 或 `--atten sparge` 选择对应算子，需安装对应 CUDA 扩展。
-
-在 RTX 5090 上使用 FastVideo 的 FL2VA pruned NVFP4 权重时，在原 FL2VA
-启动参数后加 `--h3_nvfp4_checkpoint ./weights/minimax_h3_fl2va_pruned_nvfp4.safetensors`。
-保留 `--pretrained_model_name_or_path` 以加载模型配置、文本编码器和 VAE。
-此路径需要支持 NVFP4 的 Comfy-Kitchen CUDA 算子和 BF16 激活。权重以打包格式保存，
-每次投影执行激活量化。当前支持 FL2VA Base 和下文的实验性 2K Refiner。暂不组合额外 LoRA、
-AdaLN 缓存、FSDP 或其他权重量化。移除该参数即可使用常规 checkpoint。
-显存充足时可额外传入 `--h3_nvfp4_resident`，让打包 DiT 常驻每张卡，省去逐层
-搬运。文本编码器仍按原策略 offload。移除该参数即可恢复逐层搬运。
-常驻模式下可试验 `--h3_nvfp4_compile`，只编译重复的 DiT block。首个请求
-包含编译开销，换形状可能再次编译。Attention 通信和 NVFP4 自定义算子继续 eager 执行。
-移除参数即可让整个 DiT 恢复 eager。
-编译环境需要可用的 C 编译器和与运行时匹配的 Python 开发头文件。
-当前验证中局部编译改变了音视频输出，且同配置的 8 步请求比 eager 慢。
-多卡可用 `--h3_cuda_vae_sp` 试验 CUDA VAE 序列并行，复用 xGen 的 VAE
-分片逻辑和原有音视频保存流程。VAE attention 头数需能整除 SP 卡数。
-
-设置 `MODEL_PATH`、`NVFP4_CHECKPOINT`、`FIRST_FRAME` 和 `PROMPT_FILE` 后，
-运行 [CUDA NVFP4 推理示例](example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh)。
-模型目录需有 Diffusers 的 `modular_model_index.json` 及对应组件，支持通过
-`CUDA_VISIBLE_DEVICES` 选择卡、`GPUS` 设置 SP 卡数、`ATTENTION_BACKEND` 选择 attention。
-启动前将 `ffmpeg` 加入 `PATH`，用于封装视频和音轨。
-单卡运行 Sparge 时可设置 `XGEN_SPARGE_HEAD_CHUNK=7`，按组执行 attention 以降低
-内核临时显存。默认值 `0` 一次处理所有本地头。分块增加内核启动次数，
-实际时延取决于序列长度和每卡头数。
-
-实验性多卡通信可用 `XGEN_PHAA_FP8=1` 配合 CUDA、SP 大于 1 和
-`--phaa_num` 开启。它复用 PHAA 的分头和流调度，以 E4M3 和逐头 FP32 scale
-传输 Q、K、V 和 attention 输出。128 维时每头每 token 的载荷从 256 降至
-132 字节，每个头分块的 Q/K/V 合并为一次 all-to-all。量化会改变结果，
-接收端将数据还原到原张量 dtype。对 BF16 attention 输出，这一路径就是 BF16 → FP8
-回程传输 → BF16。该开关同时控制去程和回程。
-
-RTX 5090 上的 SageAttention CUDA 分派使用 INT8 Q/K 和 FP8 P×V。计算精度由
-`ATTENTION_BACKEND=sage` 选择，通信精度由 `XGEN_PHAA_FP8` 选择。
-使用上面的 FL2VA 示例时，设置 `GPUS=8 ATTENTION_BACKEND=sage XGEN_PHAA_FP8=1`，
-并附加 `--phaa_num 2 --h3_nvfp4_resident`，即可使用已验证的 50 次 DiT 组合。
-该配置在 8 张 RTX 5090 上生成并保存约 5 秒的 768P 音视频耗时 102.77 秒，
-已通过完整音视频解码。端到端的画质和速度需用目标输入复核。
-配合 `XGEN_PHAA_GATHER_PRIORITY=1` 可优先提交全部 Q/K/V 通信。
-默认仍交错提交 Q/K/V 与 attention 输出通信。
-实验性 `XGEN_PHAA_DUAL_COMM=1` 将输出通信放到独立的 CUDA 流和 NCCL 通信器。
-它需要开启 FP8、SP 覆盖全部进程、NCCL 2.26 或更新版本，并在启动前设置
-`NCCL_LAUNCH_ORDER_IMPLICIT=1`。
-
-八张 RTX 5090 上已验证的 768P、50 次 DiT 配置如下。使用前先设置上面的
-模型、权重和输入变量。该配置每卡保留完整的打包 DiT 权重。
+在匹配目标硬件的 Linux 运行环境中，从仓库根目录执行。安装命令适用于已准备好 PyTorch、硬件运行时及其他依赖的环境。
 
 ```bash
-GPUS=8 ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 XGEN_PHAA_FP8=1 \
-  bash example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh \
-  --h3_nvfp4_resident --h3_cuda_vae_sp --phaa_num 2
+python -m pip install -e ./x_base --no-deps
+python -m pip install -e ./x_diffusers --no-deps
+python -m pip check
+python tools/collect_env.py
+mkdir -p outputs
 ```
 
-同一输入与 seed 的单轮测试中，Sparge 逐层搬运版生成及保存耗时 250.25 秒，
-常驻版为 99.94 秒，加 VAE SP 后为 96.07 秒。常驻版与逐层搬运版的解码后
-音视频哈希一致。加 VAE SP 后音频哈希一致，画面 SSIM 为 0.9948。
-这些耗时从 pipeline 初始化完成后开始计量。
+采集脚本显示设备、驱动、软件依赖、CPU 亲和性、NUMA 和白名单环境变量。确认 PyTorch 可见卡数与启动的 SP 一致。权重、首帧、参考图和提示词由部署方准备。命令中的相对路径均以仓库根目录为基准。
 
-CUDA 在线推理复用原有视频服务。以双卡 FL2VA 为例，在服务 JSON 中设置
-`model=MiniMax-H3`、`sp=2`、`text_encoder_tp=1`、`phaa_num=2`、
-`atten=sage`、`vae_lightning=none`、`matmul_quant=none`、
-`vae_matmul_quant=none` 和 `rope_fused=false`。设置模型目录和
-`h3_nvfp4_checkpoint`，将 `transformer_path` 和 `adaln_cache_file` 设为
-`null`，以覆盖服务的 NPU 模型默认值。
+## 昇腾 NPU 启动
+
+推荐先跑 Laser + INT8 的 50 次 DiT 路径。8×Ascend 910B、SP8、文本 TP8、PHAA2、融合 RoPE 和匹配的 AdaLN 预计算是已记录的 NPU 性能配方。按 [权重下载与预处理](docs/H3-DEPLOYMENT.md#4-模型与目录准备) 准备 Base、Ref2VA 和可选 Refiner 资产。T2VA 和 I2VA 共用 Base Transformer/AdaLN，R2VA 使用独立的 Ref2VA 资产。
+
+### 768P Base
+
+下面按 1344×768、24 fps、51 个调度点启动。修改 `DURATION` 可选 5、10、15 秒档。传给模型的帧数包含时序对齐所需的帧，导出帧数以实际 MP4 为准。每行命令可单独运行。
 
 ```bash
-XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=2 \
-  server/video/video_server.py --init --config ./h3-cuda.json --host 127.0.0.1
-```
+export XGEN_DEVICE=npu ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export OMP_NUM_THREADS=8 HCCL_BUFFSIZE=512
+export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True INF_NAN_MODE_FORCE_DISABLE=1
+DURATION=5
+case "$DURATION" in
+  5) FRAMES=124 ;;
+  10) FRAMES=243 ;;
+  15) FRAMES=362 ;;
+  *) echo "DURATION must be 5, 10 or 15" >&2; exit 2 ;;
+esac
+PROMPT="$(cat inputs/prompt.txt)"
 
-通过原有 `/generate` 提交 `task_type=fl2va`、`first_frame` 和 `prompt`，
-使用 `/status/<task_id>` 查询结果。测试覆盖同一服务串行处理两条 768P 请求。
-
-### 实验性 CUDA 2K Refiner
-
-使用现有 H3 Refiner adapter 和视频服务。当前 CUDA 路径要求 FL2VA、SP8、
-BF16 配置和 NVFP4 Base 权重，由 Refiner 统一管理阶段驻留。
-先安装可执行的 FFmpeg（含 libx264 和 AAC），可通过 `FFMPEG_PATH` 指定。
-使用部署教程的 Refiner 源包和预处理命令，在 `XGEN_DEVICE=cuda` 环境下
-运行 `h3_regenerate.prepare`。预处理输出单独存放，供后续推理复用。
-
-在线服务在现有 JSON 中加入以下配置。路径示例以启动目录为基准。
-
-```json
-{
-  "model": "MiniMax-H3",
-  "task_type": "fl2va",
-  "resolution": "2k",
-  "pretrained_model_name_or_path": "weights/h3",
-  "h3_nvfp4_checkpoint": "weights/h3-fl2va-nvfp4.safetensors",
-  "h3_refiner": true,
-  "h3_refiner_weights": "weights/refiner",
-  "h3_refiner_prepared": "model-cache/refiner-cuda",
-  "sp": 8,
-  "text_encoder_tp": 1,
-  "phaa_num": 2,
-  "atten": "none",
-  "num_inference_steps": 51,
-  "matmul_quant": "none",
-  "vae_matmul_quant": "none",
-  "vae_lightning": "none",
-  "rope_fused": false
+npu_768p() {
+  local task="$1" transformer="$2" adaln="$3"
+  shift 3
+  torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29530}" \
+    example/diffusers/infer.py \
+    --model MiniMax-H3 --task_type "$task" --pretrained_model_name_or_path weights/base \
+    --transformer_path "$transformer" --adaln_cache_file "$adaln" \
+    --dtype bf16 --matmul_quant int8 --vae_matmul_quant int8 --atten laser --rope_fused \
+    --vae_lightning decoder --sp 8 --text_encoder_tp 8 --phaa_num 2 \
+    --num_inference_steps 51 --width 1344 --height 768 --frames "$FRAMES" --save_fps 24 --seed 42 \
+    --prompt="$PROMPT" --save_path "outputs/npu-$task-${DURATION}s-768p.mp4" "$@"
 }
+
+npu_768p t2va model-cache/base-t2va model-cache/t2va-51step.safetensors
+npu_768p fl2va model-cache/base-t2va model-cache/t2va-51step.safetensors --keyframe_image inputs/first-frame.png
+npu_768p ref2va model-cache/base-ref2va model-cache/ref2va-51step.safetensors \
+  --reference_paths inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
 ```
+
+当前分支的 NPU FL2VA 双设备回归覆盖 5 秒 768P。其他形状的性能数据来自后文历史矩阵。若设备部署配置不同，先用一条请求验证素材处理、显存和导出。
+
+Spark-H3、Veda 和 LightX2V 8 步有独立权重或精度验证边界，按 [可选 attention 与 Turbo 配方](docs/H3-ATTENTION.md) 单独启用。下方 B2/B3 表统一采用 Laser 和 50 次实际 Base DiT。
+
+### 2K Refiner
+
+使用同样的 Base 优化，以 768P latent 接 BF16 Refiner，Refiner 实际运行 3 步。下面的发布版脚本采用分层预取，输出 2560×1440、24 fps，5、10、15 秒分别裁剪到 120、240、360 帧。保留上面的 NPU 环境和 `PROMPT`。
 
 ```bash
-XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_server.py \
-  --init --config config-cuda-2k.json --host 127.0.0.1 --port 29655
+export BASE_MODEL=weights/base REFINER_WEIGHTS=weights/refiner REFINER_PREPARED=model-cache/refiner
+export SECONDS_TO_GENERATE="$DURATION" PROMPT
+
+npu_2k() {
+  local task="$1" transformer="$2" adaln="$3"
+  shift 3
+  BASE_TRANSFORMER="$transformer" BASE_ADALN="$adaln" \
+    OUTPUT_VIDEO="outputs/npu-$task-${SECONDS_TO_GENERATE}s-2k.mp4" \
+    bash example/diffusers/scripts/infer_minimax_h3_refiner.sh --task_type "$task" "$@"
+}
+
+npu_2k t2va model-cache/base-t2va model-cache/t2va-51step.safetensors
+npu_2k fl2va model-cache/base-t2va model-cache/t2va-51step.safetensors --keyframe_image inputs/first-frame.png
+npu_2k ref2va model-cache/base-ref2va model-cache/ref2va-51step.safetensors \
+  --reference_paths inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
 ```
 
-通过 `/generate` 提交 `task_type=fl2va`、`resolution=2k`、`duration=5`、
-`first_frame`、`prompt` 和 `seed`，用 `/status/<task_id>` 查询结果。
-离线使用同一套模型参数，给现有推理入口传入 `--h3_refiner`、
-`--width 2560 --height 1440 --frames 124 --save_fps 24` 和首帧。
+原 HTTP 服务可按工作流启动 2K。完整配置见 [NPU 在线 2K](docs/H3-DEPLOYMENT.md#8-原-http-服务的可选-2k-后端)。历史矩阵还使用了异步 RGB8/D2H 和编码流水线，发布脚本的导出与计时口径见 [NPU 性能说明](docs/H3-DEPLOYMENT.md#10-性能数据先看版本与测量边界)。
 
-已验证 8 张 RTX 5090 上的 5 秒 2K 离线推理和两次串行在线请求。
-在线原生 attention 也验证了同一服务从 5 秒切换到 10 秒，两条请求复用模型和 CPU 权重。
-10 秒请求的单卡 PyTorch 峰值保留显存约 30.34 GiB。两条近同时提交的 5 秒请求也已验证排队与串行执行。15 秒、队列满载和长期内存趋势仍需实测。
+## B2/B3 性能
 
-### CUDA 文本编码器 TP8 与 FastVideo C4 配方
+B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两组均是 8 卡、SP8、单卡 64 GiB，Base 50 次实际 DiT，2K 另加 3 次 Refiner DiT。I2VA 输入为 1280×720 首帧，R2VA 为五张 2560×1440 参考图。
 
-CUDA H3 可在八个分布式 rank 上显式设置 `--text_encoder_tp 8`。它复用 xGen 的
-Qwen3-VL 文本层张量并行和 CPU 分组卸载，默认仍为 TP1。
+单位为秒。常驻 E2E 包含生成和导出，初始化单列。每格一个样本，在线为客户端计时，离线为直接调用循环计时。两组执行顺序、首次形状触达和埋点存在差异。
 
-使用上面的 CUDA FL2VA 脚本时，可设置 `GPUS=8 XGEN_FASTVIDEO_RECIPE=5s`。
-配方开启文本 TP8、打包 DiT 常驻、Sparge（可用 `ATTENTION_BACKEND` 覆盖）、
-FP8 PHAA、四个头分块及 gather-priority。启动时设置 NCCL CTA 上限。
+| 输入 | 时长 | 输出 | 在线 B2 | 在线 B3 | 离线 B2 | 离线 B3 |
+|---|---:|---|---:|---:|---:|---:|
+| T2VA | 5s | 768P | 110.66 | 125.75 | 248.32（冷） | 124.25 |
+| T2VA | 5s | 2K | 181.55 | 192.49 | 175.09（补） | 197.27 |
+| T2VA | 10s | 768P | 297.73 | 331.32 | 297.39（补） | 338.30 |
+| T2VA | 10s | 2K | 483.43 | 573.19 | 484.88（补） | 568.97 |
+| T2VA | 15s | 768P | 574.34 | 673.40 | 576.75（补） | 664.85 |
+| T2VA | 15s | 2K | 969.52 | 1156.55 | — | 1151.69 |
+| I2VA | 5s | 768P | 130.59 | 137.32 | 126.28 | 133.73 |
+| I2VA | 5s | 2K | 179.64 | 203.06 | 184.00 | 207.74 |
+| I2VA | 10s | 768P | 318.74 | 351.44 | 303.25 | 356.70 |
+| I2VA | 10s | 2K | 502.48 | 589.34 | 503.57 | 593.25 |
+| I2VA | 15s | 768P | 598.86 | 696.48 | 597.41 | 705.86 |
+| I2VA | 15s | 2K | 989.27 | 1174.78 | 994.97 | 1175.62 |
+| R2VA | 5s | 768P | 659.01 | 774.92 | 658.45 | 771.23 |
+| R2VA | 5s | 2K | 716.95 | 844.59 | 719.03 | 837.17 |
+| R2VA | 10s | 768P | 1030.40 | 1205.10 | 1037.66 | 1206.30 |
+| R2VA | 10s | 2K | 1220.84 | 1441.97 | 1224.21 | 1444.09 |
+| R2VA | 15s | 768P | 1509.57 | 1772.10 | 1502.16 | 1777.49 |
+| R2VA | 15s | 2K | 1898.22 | 2267.94 | 1904.32 | 2256.44 |
 
-| 配方 | 请求帧数 | PHAA 分块提交顺序 | NCCL_MAX_CTAS |
-| --- | ---: | --- | ---: |
-| `5s` | 124 | 0,1,2,3 | 2 |
-| `15s` | 345 | 3,0,1,2 | 1 |
+**冷**表示含进程启动、初始化和退出。**补**表示来自独立的常驻补测组。**—**表示该项已生成并补验收，完整 E2E 未保留。72 条均通过技术检查和完整音视频解码，人工画面与听音复核仍待记录。 [逐项数据](docs/performance/historical-pairs.csv) · [阶段拆分](docs/performance/historical-stages.csv)
 
-尾块优先改变提交和计算顺序，输出按原头位置拼接。两档使用 50 次 DiT。
-5 秒预设已完成八卡端到端验证，15 秒预设已核对启动参数。
-见 [v0.3.1 的 5 秒实验配方](docs/H3-CUDA.md#v031-5-秒实验配方)。
+## NVIDIA CUDA 启动
+
+使用匹配 CUDA 的 PyTorch、Diffusers、FFmpeg 和八张可见 GPU。以下先给 BF16 稠密参考配方，再给已测的高性能 FL2VA 配方。 [依赖与完整开关](docs/H3-CUDA.md)
+
+### 画质参考配方
+
+CUDA 上曾标记「精度 OK」的 **T2VA** 是 vLLM-Omni 的 SP8、FP8 线性层、BF16 稠密 attention 和 BF16 All-to-All 单例结果，详见下方 GPU 表。xGen 本身的 BF16 稠密 FL2VA 有完整音视频出片记录，可用于目标输入的画质基线。**xGen T2VA 和 R2VA 的以下 CUDA 命令是候选启动方式，待端到端和人工精度复核。**
+
+```bash
+export XGEN_DEVICE=cuda CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export TOKENIZERS_PARALLELISM=false
+unset XGEN_PHAA_FP8 XGEN_PHAA_DUAL_COMM XGEN_PHAA_GATHER_PRIORITY
+unset XGEN_PHAA_DEVICE_JOIN XGEN_PHAA_ASYNC_EXCHANGE XGEN_PHAA_DIRECT_RETURN
+unset XGEN_PHAA_FP8_ROW_TILING XGEN_PHAA_FUSED_RETURN_PACK XGEN_PHAA_DIRECT_GATHER XGEN_PHAA_CHUNK_ORDER
+unset XGEN_H3_CUDA_VAE_TILES XGEN_H3_FUSED_INDEXED_AFFINE XGEN_H3_FUSED_PARTIAL_ROPE
+unset XGEN_H3_FUSED_QK_RMS XGEN_H3_FUSED_FF_AMAX XGEN_H3_FUSED_SWIGLU XGEN_H3_NVFP4_FUSED_AMAX
+PROMPT="$(cat inputs/prompt.txt)"
+
+gpu_bf16() {
+  local task="$1"
+  shift
+  torchrun --standalone --nproc_per_node=8 example/diffusers/infer.py \
+    --model MiniMax-H3 --task_type "$task" --pretrained_model_name_or_path weights/base \
+    --dtype bf16 --atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none \
+    --sp 8 --text_encoder_tp 8 --phaa_num 4 --h3_cuda_vae_sp \
+    --width 1344 --height 768 --frames 124 --num_inference_steps 51 --save_fps 24 --seed 42 \
+    --prompt="$PROMPT" --save_path "outputs/cuda-$task-5s-bf16.mp4" "$@"
+}
+
+gpu_bf16 t2va
+gpu_bf16 fl2va --keyframe_image inputs/first-frame.png
+gpu_bf16 ref2va --reference_paths inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
+```
+
+BF16 走分层 offload，需足够的主机内存。已有 FL2VA 实测使用完整 BF16 Transformer 和对应组件，若组件与 Transformer 分开存放，在该命令追加 `--transformer_path` 指向匹配的完整权重目录。R2VA 需要包含 Ref2VA workflow 和 Transformer 的模型布局。
+
+### 高性能配方，跨用例精度待复核
+
+适用于 FL2VA。使用匹配的打包 NVFP4 checkpoint、Sparge、FP8 PHAA C4、异步交换、回程直写、DiT 融合和空间 VAE。依赖 CUDA 版 Comfy-Kitchen、Sparge 扩展和相应 Triton。使用干净的启动环境，避免继承其他实验开关。
+
+```bash
+export MODEL_PATH=weights/h3 NVFP4_CHECKPOINT=weights/h3-fl2va-nvfp4.safetensors
+export FIRST_FRAME=inputs/first-frame.png PROMPT_FILE=inputs/prompt.txt
+GPUS=8 OUTPUT_PATH=outputs/cuda-fl2va-5s-fast.mp4 \
+  XGEN_FASTVIDEO_RECIPE=5s ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 \
+  XGEN_PHAA_DEVICE_JOIN=1 XGEN_PHAA_ASYNC_EXCHANGE=1 \
+  XGEN_PHAA_DIRECT_RETURN=1 XGEN_PHAA_FP8_ROW_TILING=1 \
+  XGEN_H3_FUSED_INDEXED_AFFINE=1 XGEN_H3_FUSED_PARTIAL_ROPE=1 XGEN_H3_FUSED_QK_RMS=1 \
+  XGEN_H3_CUDA_VAE_TILES=1 XGEN_H3_FUSED_FF_AMAX=1 \
+  bash example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh --h3_cuda_vae_sp
+```
+
+5 秒配方通过完整解码，并与同配方重构前的参考成片保持解码后哈希一致。跨输入画质仍需复核。`15s` 预设已有参数核对。CUDA 打包 NVFP4 和 2K Refiner 当前要求 FL2VA，T2VA 和 R2VA 采用上面的 BF16 候选入口。 [CUDA 2K 启动](docs/H3-CUDA.md#实验性-cuda-2k-refiner)
+
+## GPU 性能
+
+除注明外，均为 8×RTX 5090、SP8、50 次实际 Base DiT。下表按用例和计时边界区分，保留各自精度证据。
+
+| 路径 | 请求 | 耗时 | 计时和验证口径 |
+|---|---|---:|---|
+| vLLM-Omni FP8 线性＋BF16 稠密 attention | T2VA，5s/768P | 139.74 s | 两次热态 HTTP E2E 均值，含 MP4 下载。单例「精度 OK」参考 |
+| xGen BF16 稠密 attention | I2VA，5s/768P | 574.61 s | 整进程 wall，含加载。完整音视频解码通过 |
+| xGen NVFP4 常驻＋Sage＋FP8 PHAA | I2VA，5s/768P | 102.77 s | 生成并保存，完整音视频解码通过 |
+| xGen NVFP4 常驻＋Sparge＋FP8 PHAA＋VAE SP | I2VA，5s/768P | 96.07 s | 生成并保存，完整音视频解码通过 |
+| xGen v0.3.1 C4＋异步 PHAA＋DiT 融合＋VAE tile | I2VA，5s/768P | 54.10 s | 生成并保存，含加载为 84.11 s。与重构前同输入参考成片的解码哈希一致 |
+| xGen 历史 C4 热测 | I2VA，5s/768P | 51.29 s | 两次生成并保存均值，重构前同步 FP8 配方 |
+| xGen NVFP4 Base＋原生 attention＋Refiner | I2VA，5s/2K | 316.17 s | rank 0 请求周期，Base 50＋Refiner 3 次 DiT |
+| xGen NVFP4 Base＋Sparge/FP8 PHAA＋Refiner | I2VA，5s/2K | 172.03 s | rank 0 请求周期，Base 50＋Refiner 3 次 DiT |
+| xGen 原生 attention＋Refiner | I2VA，10s/2K | 606.24 s | 历史服务推理计时，同实例从 5 秒切换到 10 秒 |
+| xGen MaaS 早期八卡 HTTP 测试 | I2VA，5s/768P | 51.655 s | 一条热态成功请求，从受理到发布。推理 50.232 s |
+| xGen CUDA R2VA | 五图，768P | — | 待完整推理、音视频复核和计时 |
+
+[详细 GPU 性能与对照口径](docs/performance/h3-cuda.md)
+
+## MaaS 在线服务
+
+使用 CUDA H3 Base 的 5 秒 768P FL2VA 入口。启用 `--init --maas-fl2va-input` 后，默认每实例 10 条等待任务，等待满 600 秒过期。使用 `--maas-queue-capacity` 和 `--maas-queue-timeout-s` 可调整两项默认值。任务执行沿用原八卡派发，`/ready` 在真实首单预热和 worker 确认后通过。
+
+- [配置与八卡启动命令](docs/H3-CUDA.md#maas-在线服务)
+- [提交、查询、下载、错误码和超时口径](server/video/MAAS-FL2VA-API.md)
+- [原在线服务与历史入口](server/video/README.md)
+
+## 参考与发布范围
+
+昇腾章节按硬件与环境、权重准备、分场景启动和实测数据组织，参考 [Ascend-SACT MiniMax-H3-NPU](https://ai.gitcode.com/Ascend-SACT/MiniMax-H3-NPU)。性能表使用各条目所注明的 xGen 或 vLLM-Omni 实测来源。
+
+仓库包含源码、示例、测试和脱敏性能数据。权重、内部机器配置、原始诊断报告、测试素材和成片由部署方自行管理。其他模型和界面入口见 [原版安装与模型说明](../../tree/v0.3.1#环境安装)、[Diffusers 示例](example/diffusers)、[ComfyUI 适配](x_comfyui) 和 [工具说明](tools/README.md)。

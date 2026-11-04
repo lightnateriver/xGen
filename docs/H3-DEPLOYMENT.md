@@ -38,19 +38,12 @@
 容器内先检查：
 
 ```bash
-npu-smi info
-python --version
+python tools/collect_env.py
 ffmpeg -version
 ffprobe -version
-python - <<'PY'
-import importlib.metadata as md
-import torch, torch_npu
-for name in ('torch', 'torch-npu', 'diffusers', 'transformers', 'mindiesd'):
-    print(name, md.version(name))
-print('npu_available', torch.npu.is_available())
-print('npu_count', torch.npu.device_count())
-PY
 ```
+
+环境采集脚本的输出与退出码见 [工具说明](../tools/README.md#cuda-和-npu-环境采集)。
 
 核对八卡当前计算 PID 与任务归属；单看利用率 0 或存在设备节点不能证明卡可用。此检查不是模型正确性验收。
 

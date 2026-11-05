@@ -529,6 +529,14 @@ def _apply_matmul_quant(pipe, args):
 def _apply_adaln_cache(pipe, args):
     from x_base.adaln_cache import install_adaln_cache
 
+    if args.task_type == "ref2va" and getattr(args, "reference_paths", None):
+        from .h3_references import reference_conditioning
+
+        conditioning_type = reference_conditioning(args)
+        logger.info("Determined conditioning_type=%s for adaln cache", conditioning_type)
+        install_adaln_cache(pipe, args.adaln_cache_file, conditioning_type=conditioning_type)
+        return
+
     # Determine conditioning type from args to pre-merge constant
     # timesteps (0.999=video, 1.0=audio) at cache load time.
     _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".aac", ".ogg"}

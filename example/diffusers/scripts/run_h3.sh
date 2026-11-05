@@ -41,7 +41,6 @@ case "$task" in
     if [[ $# -eq 0 ]]; then
       set -- inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
     fi
-    [[ $# -eq 5 ]] || usage
     input_args=(--reference_paths "$@")
     ;;
   *) usage ;;
@@ -114,8 +113,8 @@ width=1344 height=768
 if [[ $resolution == 2k ]]; then
   width=2560 height=1440
 fi
-exec torchrun "${launch[@]}" --nproc_per_node=8 --max_restarts=0 example/diffusers/infer.py \
+exec torchrun "${launch[@]}" --nproc_per_node=8 --max_restarts=0 "${XGEN_H3_BENCH_WORKER:-example/diffusers/infer.py}" \
   --model MiniMax-H3 --pretrained_model_name_or_path "$base_model" --task_type "$task" \
   --dtype bf16 --sp 8 --width "$width" --height "$height" --frames "$frames" --save_fps 24 \
-  --num_inference_steps 51 --seed 42 --prompt="$prompt" --save_path "$output" \
+  --num_inference_steps "${H3_BASE_STEPS:-50}" --seed "${H3_SEED:-42}" --prompt="$prompt" --save_path "$output" \
   "${profile[@]}" "${input_args[@]}"

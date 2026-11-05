@@ -1,8 +1,8 @@
 # xGen
 
-xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用命令行生成视频，也可以启动 HTTP 服务。MiniMax-H3 支持文字、首帧和多张参考图输入，输出带声音的视频。
+xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用命令行生成视频，也可以启动 HTTP 服务。MiniMax-H3 支持文字、首帧及图片、视频、音频参考输入，输出带声音的视频。
 
-三种任务分别是文生视频（T2VA）、首帧图生视频（I2VA，接口名 `fl2va`）和五图参考生视频（R2VA，接口名 `ref2va`）。xGen 支持 768P 生成和可选 2K 超分。CUDA MaaS 模式另外提供输入校验、排队、健康检查和成片校验。
+三种任务分别是文生视频（T2VA）、首帧图生视频（I2VA，接口名 `fl2va`）和多媒体参考生视频（R2VA，接口名 `ref2va`）。xGen 支持 768P 生成和可选 2K 超分。CUDA MaaS 模式另外提供输入校验、排队、健康检查和成片校验。
 
 [快速开始](#快速开始) · [权重下载](#h3-权重下载) · [离线生成](#离线生成) · [在线服务](#在线服务) · [B2/B3 性能](#b2b3-性能) · [GPU 性能](#gpu-性能) · [Agent 指南](#agent-使用指南) · [版本](#版本)
 
@@ -10,7 +10,7 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v3.2-maas](../../tree/v3.2-maas) | CUDA H3 FL2VA 增加默认关闭的 MaaS 接口。支持输入校验、可配置排队和超时、去重、取消、就绪探针、成片原子发布及分阶段计时。新增双后端环境采集。 | [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-CUDA.md#maas-在线服务) · [环境采集](tools/README.md#cuda-和-npu-环境采集) |
+| [v3.2-maas](../../tree/v3.2-maas) | MaaS 接口、排队与超时、健康探针、原子发布、环境采集；补充 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和每条成片后的显存回收。 | [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) · [环境采集](tools/README.md#cuda-和-npu-环境采集) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
 | [v0.3-cuda](../../tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](docs/H3-CUDA.md) |
 | [v0.3](../../tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](docs/H3-ATTENTION.md) · [实测](docs/H3-ATTENTION-VALIDATION.md) |
@@ -48,6 +48,8 @@ mkdir -p outputs
 ## 离线生成
 
 在仓库根目录运行。把提示词放到 `inputs/prompt.txt`。I2VA 默认读取 `inputs/first-frame.png`，R2VA 默认读取 `inputs/ref01.png` 到 `inputs/ref05.png`。视频保存到 `outputs/`。
+
+H3 的 `num_inference_steps` 直接填实际 Base DiT 次数，例如 20 或 50。旧版直接传调度点的普通 H3 配置需将 `51` 改为 `50`、`21` 改为 `20`；Turbo-SLA 等已经按实际步数配置的路径见 [升级说明](docs/H3-UPGRADE.md)。
 
 ### 昇腾 NPU 启动
 
@@ -87,7 +89,7 @@ bash example/diffusers/scripts/run_h3.sh cuda i2va 5 2k
 H3_FAST=1 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
 ```
 
-换素材时，可以在命令末尾直接传首帧或五张参考图。`PROMPT_FILE` 和 `OUTPUT_PATH` 分别覆盖提示词和输出路径。
+换素材时，可以在命令末尾直接传首帧或 R2VA 参考文件。`PROMPT_FILE` 和 `OUTPUT_PATH` 分别覆盖提示词和输出路径。[参考媒体限制](docs/H3-DEPLOYMENT.md#r2va-多媒体参考)
 
 ```bash
 PROMPT_FILE=inputs/my-prompt.txt OUTPUT_PATH=outputs/result.mp4 \
@@ -96,7 +98,28 @@ PROMPT_FILE=inputs/my-prompt.txt OUTPUT_PATH=outputs/result.mp4 \
 
 NPU 默认使用 Laser、INT8 线性层和 50 次 Base DiT。Spark-H3、Veda 和 LightX2V 8 步另见 [可选加速配方](docs/H3-ATTENTION.md)。
 
+H3 在线、离线均在每条视频保存完、临时输出释放后同步设备并回收 PyTorch 空闲显存，保留常驻模型。日志记录回收耗时和前后显存；该策略对单条请求内部的峰值 OOM 不作保证，当前策略的完整设备矩阵待验证。
+
 ## B2/B3 性能
+
+[NPU 离线 benchmark](docs/H3-NPU-BENCHMARK.md) 提供 20 步矩阵、媒体检查和 HBM/RSS/PSS 采样。[2026-11-04 至 05 的完整实测](docs/performance/h3-npu-offline-20261105.md) 包含 35 项正式结果及预热、阶段耗时和内存数据。该批使用了现已移除的阶段性清理，不能当作当前「成片后回收」策略的回归结果。
+
+### NPU 20 步离线矩阵（2026-11-04 至 05）
+
+8 卡昇腾 910B1、SP8、文本 TP8、PHAA2、Laser、DiT INT8；每项一次匹配预热后测一次。单位为秒，包含推理和保存、不含初始化。2K 另加 3 步 BF16 Refiner。以下为旧阶段清理策略的历史值，当前成片后回收策略待复测。
+
+| 时长 | 输出 | T2VA | I2VA | R2VA 1 图 | R2VA 5 图 | R2VA 9 图 |
+|---|---|---:|---:|---:|---:|---:|
+| 5s | 768P | 64.23 | 65.48 | 96.07 | 300.39 | 623.64 |
+| 5s | 2K | 128.03 | 138.57 | 159.49 | 362.48 | 682.01 |
+| 10s | 768P | 144.46 | 148.01 | 196.49 | 462.09 | 845.88 |
+| 10s | 2K | 336.24 | 334.72 | 386.49 | 644.11 | 1031.13 |
+| 15s | 768P | 269.86 | 274.38 | 332.07 | 665.90 | 1120.32 |
+| 15s | 2K | 651.42 | 654.23 | 715.40 | 1044.61 | 1499.03 |
+
+35 项技术检查通过；人工画面及听音未全部通过验收，已知问题、5 项多媒体探针及内存表见 [完整报告](docs/performance/h3-npu-offline-20261105.md)。
+
+### 历史 50 步在线／离线对照
 
 B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两组均是 8 卡、SP8、单卡 64 GiB，Base 50 次实际 DiT，2K 另加 3 次 Refiner DiT。I2VA 输入为 1280×720 首帧，R2VA 为五张 2560×1440 参考图。
 

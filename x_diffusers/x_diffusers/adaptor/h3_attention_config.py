@@ -30,14 +30,14 @@ def validate(args):
         raise ValueError('Veda sparsity must be 0.7 or 0.9')
     if args.dtype != 'bf16' or args.atten != 'laser' or args.sp != 8:
         raise ValueError('Use BF16, SP8 and atten=laser (legacy components retain Laser)')
-    points = 9 if getattr(args, "h3_turbo8", False) else 51
+    steps = 8 if getattr(args, "h3_turbo8", False) else 50
     if i2va:
         if (not getattr(args, 'keyframe_image', None) or getattr(args, 'h3_refiner', False)
                 or getattr(args, 'h3_turbo8', False)):
             raise ValueError('Veda I2VA requires one first frame and the original 768P Base model')
-        points = 21
+        steps = 20
     frames = 243 if i2va else 124
-    if args.num_inference_steps != points or args.frames != frames:
+    if args.num_inference_steps != steps or args.frames != frames:
         raise ValueError('Initial H3 attention validation requires the configured schedule and native frame count')
     expected = (2560, 1440) if getattr(args, 'h3_refiner', False) else (1344, 768)
     if (args.width, args.height) != expected or args.save_fps != 24:

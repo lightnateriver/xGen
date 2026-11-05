@@ -11,6 +11,7 @@ import torch.distributed as dist
 from x_base.device import device_type
 from x_base.infinite_vram.immutable_weights import CpuWeights
 from x_base.utils.stage_metrics import Telemetry
+from ....adaptor.h3_schedule import schedule_points
 from .assets import prepared_cache, validate_base_schedule
 from .vendor import geometry, upscaler, vae_fast
 from .vendor.sigmas import SCHEDULES
@@ -124,15 +125,19 @@ class H3RefinerPipeline:
     @torch.inference_mode()
     def _draft(self, args, spec):
         from diffusers.utils import load_image
-        from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
         from x_diffusers.adaptor.h3_refiner_config import native_padding
+        from x_diffusers.adaptor.h3_references import load_references, reference_conditioning, select_adaln
         self.base_weights.onload()
         self.base_vae.onload()
         params = dict(prompt=args.prompt, width=1344, height=768, num_frames=spec['generation_frames'],
-                      num_inference_steps=args.num_inference_steps,
+                      num_inference_steps=schedule_points(args.num_inference_steps),
                       generator=torch.Generator().manual_seed(args.seed), output=['latents', 'audio_latents'])
+        reference_audio = False
         if args.task_type == 'ref2va':
-            params['references'] = [MiniMaxH3ImageReference.from_file(p) for p in args.reference_paths]
+            params['references'] = load_references(args.reference_paths)
+            conditioning = reference_conditioning(args)
+            select_adaln(self.base, args, conditioning)
+            reference_audio = conditioning == 'both'
         elif args.task_type == 'fl2va':
             params['image'] = load_image(args.keyframe_image)
         original = self.base._blocks
@@ -140,10 +145,14 @@ class H3RefinerPipeline:
         blocks.sub_blocks.pop('decode')
         self.base._blocks = blocks
         try:
+            if reference_audio:
+                self.base_audio.onload()
             with native_padding(self.base, spec), self.metrics.span('h3.pipeline'):
                 result = self.base(**params)
         finally:
             self.base._blocks = original
+            if reference_audio:
+                self.base_audio.offload()
         video, audio = result['latents'].float().cpu(), result['audio_latents'].float().cpu()
         if tuple(video.shape) != (1,24,spec['latent_frames'],48,84) or not torch.isfinite(video).all():
             raise ValueError('Unexpected or nonfinite normalized H3 video latent')

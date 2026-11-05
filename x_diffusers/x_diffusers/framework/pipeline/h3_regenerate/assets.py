@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 
 
-def validate_base_schedule(points, metadata=None, *, turbo8=False):
-    allowed = (9,) if turbo8 else (21, 51)
-    if type(points) is not int or points not in allowed:
+def validate_base_schedule(steps, metadata=None, *, turbo8=False):
+    allowed = (8,) if turbo8 else (20, 50)
+    if type(steps) is not int or steps not in allowed:
         raise ValueError("Resident Base schedule does not match the selected inference profile")
-    evaluations = points - 1
-    if metadata is not None and int(metadata.get("num_eval_steps", "-1")) != evaluations:
+    if metadata is not None and (int(metadata.get("num_steps", "-1")) != steps + 1
+                                 or int(metadata.get("num_eval_steps", steps)) != steps):
         raise ValueError("Base AdaLN cache evaluation count differs from the configured schedule")
-    return evaluations
+    return steps
 
 
 def digest(path):

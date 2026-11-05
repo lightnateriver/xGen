@@ -1,5 +1,6 @@
 """Small H3 additions to the existing service validation/configuration; no routes."""
 from .h3_refiner_config import profile
+from .h3_references import LIMITS, MAX_FILES, MAX_SECONDS, MIN_SECONDS
 
 
 def apply_startup_settings(config, args, argv):
@@ -18,9 +19,11 @@ def parameter_spec(config):
         'duration':dict(type='integer',allowed_values=[5,10,15],default=config.get('h3_refiner_seconds',5)),
         'resolution':dict(type='string',allowed_values=['2k'],default='2k'),
         'aspect_ratio':dict(type='string',allowed_values=['16:9'],default='16:9'),
-        'num_inference_steps':dict(type='integer',allowed_values=[config.get('num_inference_steps',51)]),
+        'num_inference_steps':dict(type='integer',allowed_values=[config.get('num_inference_steps',50)]),
         'first_frame':dict(type='string',required=config.get('task_type')=='fl2va'),
-        'ref_path':dict(type='array',count=5,required=config.get('task_type')=='ref2va'),
+        'ref_path':dict(type='array',max_items=MAX_FILES,media_limits=LIMITS,
+                        clip_seconds=[MIN_SECONDS,MAX_SECONDS],max_seconds_per_media_type=MAX_SECONDS,
+                        required=config.get('task_type')=='ref2va'),
         'enable_audio':dict(type='boolean',default=True),
         'seed':dict(type='integer',min=0,max=2**63-1)},
         example=dict(prompt='A small robot walks through a sunlit garden.',duration=5,resolution='2k',seed=42))
@@ -34,7 +37,7 @@ def configure_args(config, data, args):
     spec = profile(args.h3_refiner_seconds)
     args.frames = spec['generation_frames']
     args.width, args.height, args.save_fps = 2560, 1440, 24
-    args.num_inference_steps = data.get('num_inference_steps', config.get('num_inference_steps', 51))
+    args.num_inference_steps = data.get('num_inference_steps', config.get('num_inference_steps', 50))
     args.adopt_sr = False
 
 
@@ -48,8 +51,6 @@ def validate_request(service, data, errors, warnings):
         errors.append('task_type must be t2va/fl2va/ref2va')
     first, last = service._validate_mmh3_frame_fields(data, task, errors)
     refs = service._validate_mmh3_ref_path(data, task, errors)
-    if task == 'ref2va' and (not isinstance(refs, list) or len(refs) != 5):
-        errors.append('Experimental ref2va requires exactly five images')
     if task == 'fl2va' and (not first or last):
         errors.append('Experimental fl2va accepts one first-frame image only')
     duration = data.get('duration', service.default_config.get('h3_refiner_seconds', 5))
@@ -59,8 +60,8 @@ def validate_request(service, data, errors, warnings):
         errors.append(str(exc)); spec = profile(5)
     if data.get('resolution', '2k') != '2k' or data.get('aspect_ratio', '16:9') != '16:9':
         errors.append('Experimental H3 Refiner requires resolution=2k and aspect_ratio=16:9')
-    steps = data.get('num_inference_steps', service.default_config.get('num_inference_steps', 51))
-    if type(steps) is not int or steps != service.default_config.get('num_inference_steps', 51):
+    steps = data.get('num_inference_steps', service.default_config.get('num_inference_steps', 50))
+    if type(steps) is not int or steps != service.default_config.get('num_inference_steps', 50):
         errors.append('num_inference_steps is fixed at startup and must match Base AdaLN assets')
     seed = data.get('seed', 42)
     if type(seed) is not int or not 0 <= seed < 2**63:

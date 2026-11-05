@@ -24,7 +24,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --pretrained_model_name_or_path ../weights/MiniMax-H3 \
          --task_type t2va \
          --save_path ./${TASK_NAME}.mp4 \
-         --num_inference_steps 51 \
+         --num_inference_steps 50 \
          --width 1344 \
          --height 768 \
          --frames 124 \

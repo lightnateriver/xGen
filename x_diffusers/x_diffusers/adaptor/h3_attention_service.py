@@ -21,9 +21,9 @@ def validate_request(config, data, errors):
         errors.append('Initial sparse H3 attention requires duration=5')
     if data.get('task_type',config.get('task_type','t2va'))!='t2va':
         errors.append('Initial sparse H3 attention requires t2va')
-    steps=data.get('num_inference_steps',config.get('num_inference_steps',51))
-    if type(steps) is not int or steps!=51:
-        errors.append('Initial sparse H3 attention requires 51 schedule points / 50 actual steps')
+    steps=data.get('num_inference_steps',config.get('num_inference_steps',50))
+    if type(steps) is not int or steps!=50:
+        errors.append('Initial sparse H3 attention requires 50 Base denoising steps')
     resolution='2k' if config.get('h3_refiner',False) else '768p'
     if data.get('resolution',resolution)!=resolution or data.get('aspect_ratio','16:9')!='16:9':
         errors.append('Sparse H3 resolution and landscape aspect ratio are fixed at startup')
@@ -39,7 +39,7 @@ def configure_args(config, data, args):
     args.h3_attention=config['h3_attention']
     args.h3_veda_predictor=config.get('h3_veda_predictor')
     args.frames=124
-    args.num_inference_steps=data.get('num_inference_steps',config.get('num_inference_steps',51))
+    args.num_inference_steps=data.get('num_inference_steps',config.get('num_inference_steps',50))
     validate(args)
 
 
@@ -56,6 +56,6 @@ def parameter_spec(config):
         'duration':dict(type='integer',allowed_values=[5],default=5),
         'resolution':dict(type='string',allowed_values=['2k' if config.get('h3_refiner',False) else '768p']),
         'aspect_ratio':dict(type='string',allowed_values=['16:9']),
-        'num_inference_steps':dict(type='integer',allowed_values=[51]),
+        'num_inference_steps':dict(type='integer',allowed_values=[50]),
         'seed':dict(type='integer',min=0,max=2**31-1),
         'enable_audio':dict(type='boolean',default=True)})

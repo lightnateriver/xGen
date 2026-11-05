@@ -56,7 +56,7 @@ python tools/adaln_cache/precompute_adaln_cache.py \
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--model_path` | str | (必填) | transformer checkpoint 目录路径（含 model-*.safetensors） |
-| `--steps` | int | 50 | 采样步数 |
+| `--steps` | int | 50 | 实际 Base DiT 执行次数 |
 | `--video_shift` | float | 12.0 | 视频 scheduler shift |
 | `--audio_shift` | float | 3.0 | 音频 scheduler shift |
 | `--output` | str | None | 缓存文件输出路径。指定则生成缓存 |
@@ -76,7 +76,7 @@ python run.py \
     --model MiniMax-H3 \
     --pretrained_model_name_or_path ./weights/minimax \
     --task_type fl2va \
-    --steps 50 \
+    --num_inference_steps 50 \
     --adaln_cache_file ./weights/base/adaln_cache/adaln_cache_fl2va_50step.safetensors
 ```
 
@@ -87,7 +87,7 @@ python run.py \
     --model MiniMax-H3 \
     --pretrained_model_name_or_path ./weights/minimax \
     --task_type fl2va \
-    --steps 50 \
+    --num_inference_steps 50 \
     --adaln_cache_file ./weights/base/adaln_cache/adaln_cache_fl2va_50step.safetensors \
     --adaln_stripped_weights
 ```
@@ -117,6 +117,6 @@ tensors per step:
 
 ## 注意事项
 
-1. **采样参数必须匹配**：预计算时使用的 `--steps`、`--video_shift`、`--audio_shift` 必须与推理时一致，否则缓存未命中会报错（权重已剥离时无法回退计算）。
+1. **采样参数必须匹配**：预计算时使用的 `--steps`、`--video_shift`、`--audio_shift` 必须与推理时一致，否则缓存未命中会报错（权重已剥离时无法回退计算）。已有缓存按表内实际执行次数复用，例如旧 51 点表对应 50 步。
 2. **SP 场景**：8 卡 Ulysses SP 下每卡独立加载缓存，无需额外处理。
 3. **剥离权重后**：精简模型目录包含完整的非 AdaLN 权重 + config 文件，可直接用于推理（需配合 `--adaln_cache_file`）。

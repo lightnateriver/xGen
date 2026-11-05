@@ -18,7 +18,7 @@ MAX_ENCODED_IMAGE_BYTES = 4 * ((MAX_IMAGE_BYTES + 2) // 3)
 MAX_BODY_BYTES = MAX_ENCODED_IMAGE_BYTES + 32 * 1024
 FIXED_FIELDS = {
     "model": "MiniMax-H3", "task_type": "fl2va", "resolution": "768p",
-    "aspect_ratio": "16:9", "duration": 5, "num_inference_steps": 51,
+    "aspect_ratio": "16:9", "duration": 5, "num_inference_steps": 50,
 }
 INPUT_FIELDS = FIXED_FIELDS.keys() | {"prompt", "first_frame", "seed", "enable_audio"}
 IMAGE_HEADERS = {"data:image/jpeg;base64": "JPEG", "data:image/png;base64": "PNG"}

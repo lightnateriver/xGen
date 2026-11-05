@@ -14,6 +14,8 @@
 
 Base 服务生成 15 秒视频时，在请求里设 `"duration":15`。模型按 VAE 要求生成 362 帧，服务保存 360 帧和对应的音频。历史性能表里的 15 秒在线 768P 来自独立批测程序。
 
+每条 H3 视频完成保存后，各 rank 会释放请求输出引用，同步设备并通过 PyTorch 回收空闲显存；常驻模型保留。日志 `H3_REQUEST_MEMORY_RELEASE` 给出耗时和前后 allocated/reserved。该清理也用于离线入口，不能代替单条请求内部的峰值显存验证。
+
 ## NPU Base
 
 先按 [模型准备](H3-DEPLOYMENT.md#4-模型与目录准备) 生成 Base Transformer 和 AdaLN 表。下面的服务接收 T2VA 和 I2VA。
@@ -50,7 +52,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   --config config-cuda-base-15s.json --host 127.0.0.1 --port 5001
 ```
 
-用 I2VA 请求示例，将 `duration` 设为 15。设 `num_inference_steps` 为 2 可以跑 1 次 DiT，适合检查生成和下载链路。本配置已通过 1 次 DiT 的 15 秒音视频验证。全驻留配置在同一用例的 VAE 解码阶段显存不足。
+用 I2VA 请求示例，将 `duration` 设为 15。设 `num_inference_steps` 为 1 可以跑 1 次 DiT，适合检查生成和下载链路。本配置已通过 1 次 DiT 的 15 秒音视频验证。全驻留配置在同一用例的 VAE 解码阶段显存不足。
 
 ## 2K Refiner
 
@@ -72,24 +74,24 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
 curl -fsS http://127.0.0.1:5001/params
 ```
 
-选择下面对应任务的 JSON，保存为 `request.json`。本地路径相对于服务的启动目录，远程客户端需要用服务可读取的素材。2K 请求把 `resolution` 改为 `2k`。显式传入 51 个调度点可运行 50 次 Base DiT。Base HTTP 在没有 AdaLN 表时，省略该字段会使用旧接口的默认值 50。
+选择下面对应任务的 JSON，保存为 `request.json`。本地路径相对于服务的启动目录，远程客户端需要用服务可读取的素材。2K 请求把 `resolution` 改为 `2k`。`num_inference_steps` 直接填 Base DiT 次数。有 AdaLN 表时，请求值须与表内记录的执行次数一致；省略则从表内读取。没有 AdaLN 表时，省略则使用启动配置的步数，默认 50。
 
 **T2VA**
 
 ```json
-{"task_type":"t2va","prompt":"A small robot walks through a garden.","duration":5,"resolution":"768p","num_inference_steps":51}
+{"task_type":"t2va","prompt":"A small robot walks through a garden.","duration":5,"resolution":"768p","num_inference_steps":50}
 ```
 
 **I2VA**
 
 ```json
-{"task_type":"fl2va","prompt":"The camera follows the moving subject.","duration":5,"resolution":"768p","num_inference_steps":51,"first_frame":"inputs/first-frame.png"}
+{"task_type":"fl2va","prompt":"The camera follows the moving subject.","duration":5,"resolution":"768p","num_inference_steps":50,"first_frame":"inputs/first-frame.png"}
 ```
 
 **R2VA**
 
 ```json
-{"task_type":"ref2va","prompt":"The characters walk together.","duration":5,"resolution":"768p","num_inference_steps":51,"ref_path":["inputs/ref01.png","inputs/ref02.png","inputs/ref03.png","inputs/ref04.png","inputs/ref05.png"]}
+{"task_type":"ref2va","prompt":"The characters walk together.","duration":5,"resolution":"768p","num_inference_steps":50,"ref_path":["inputs/ref01.png","inputs/ref02.png","inputs/ref03.png","inputs/ref04.png","inputs/ref05.png"]}
 ```
 
 ```bash

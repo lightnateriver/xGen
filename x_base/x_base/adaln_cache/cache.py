@@ -93,8 +93,8 @@ class AdalnScheduleCache:
 
         # MiniMaxH3Scheduler: num_steps sigmas (terminal 0 included),
         # but only num_eval_steps timesteps (timesteps = 1 - sigmas[:-1]).
-        # Use num_eval_steps if available, fall back to num_steps.
-        num_eval_steps = int(metadata.get("num_eval_steps", metadata["num_steps"]))
+        # For older tables, derive evaluations from the sigma point count.
+        num_eval_steps = int(metadata.get("num_eval_steps", int(metadata["num_steps"]) - 1))
         num_blocks = int(metadata.get("num_blocks", len(self.model.transformer_blocks)))
         quantization = metadata.get("quantization", "none")
 

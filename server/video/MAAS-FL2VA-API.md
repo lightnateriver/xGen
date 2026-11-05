@@ -6,7 +6,7 @@
 
 可直接复制的配置、八卡启动和预热命令见 [CUDA MaaS 启动](../../docs/H3-CUDA.md#maas-在线服务)。
 
-沿用已有 H3 CUDA FL2VA 配置，加上 `--init --maas-fl2va-input`。启动配置使用 `model=MiniMax-H3`、`task_type=fl2va`、`num_inference_steps=51` 和 `h3_attention=legacy`，SP 与实际 rank 数一致。环境需提供 `ffmpeg` 和 `ffprobe`，可通过 `FFMPEG_PATH`、`FFPROBE_PATH` 指定。使用真实请求预热，省略启动参数 `--warmup`。权重和环境配置见 [H3 CUDA 部署教程](../../docs/H3-CUDA.md)。
+沿用已有 H3 CUDA FL2VA 配置，加上 `--init --maas-fl2va-input`。启动配置使用 `model=MiniMax-H3`、`task_type=fl2va`、`num_inference_steps=50` 和 `h3_attention=legacy`，SP 与实际 rank 数一致。环境需提供 `ffmpeg` 和 `ffprobe`，可通过 `FFMPEG_PATH`、`FFPROBE_PATH` 指定。使用真实请求预热，省略启动参数 `--warmup`。权重和环境配置见 [H3 CUDA 部署教程](../../docs/H3-CUDA.md)。
 
 1. 启动后直接向实例提交一条符合规格的预热请求。首条成片发布成功且各 rank 确认后，`/ready` 返回 `200`。
 2. MaaS 使用自有任务 ID 调用 `POST /v1/tasks`，轮询 `GET /v1/tasks/<id>`。
@@ -69,7 +69,7 @@ curl -fS -o result.mp4 "$BASE_URL/download/fl2va-0001"
   "resolution": "768p",
   "aspect_ratio": "16:9",
   "duration": 5,
-  "num_inference_steps": 51
+  "num_inference_steps": 50
 }
 ```
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import MethodType
 
 LORA_SHA256 = "9b0efe3613b43a84e30febaa43af27432ea9d0711eac7bba904b2556b175f6d4"
-SCHEDULE_POINTS = 9
+EVAL_STEPS = 8
 SHIFTS = {"scheduler": 6.0, "audio_scheduler": 3.0}
 logger = logging.getLogger("infer")
 
@@ -16,9 +16,9 @@ def validate(args):
         raise ValueError("Turbo8 requires MiniMax-H3 T2VA, BF16, SP8 and atten=laser")
     expected = (2560, 1440) if getattr(args, "h3_refiner", False) else (1344, 768)
     if ((args.width, args.height) != expected or args.frames != 124 or args.save_fps != 24
-            or args.num_inference_steps != SCHEDULE_POINTS
+            or args.num_inference_steps != EVAL_STEPS
             or getattr(args, "h3_refiner_seconds", 5) != 5):
-        raise ValueError("Turbo8 requires 9 schedule points and the 5s 768P or 2K profile")
+        raise ValueError("Turbo8 requires 8 denoising steps and the 5s 768P or 2K profile")
     if getattr(args, "h3_attention", "legacy") not in ("legacy", "veda"):
         raise ValueError("Turbo8 supports Laser and experimental Veda")
     if any(getattr(args, name, None) for name in (
@@ -44,13 +44,16 @@ def validate_assets(args):
 
 
 def configure(pipe):
+    from .h3_schedule import schedule_points
     from .h3_turbo_sla import training_euler_step
+
+    points = schedule_points(EVAL_STEPS)
 
     for name, shift in SHIFTS.items():
         scheduler = getattr(pipe, name)
         scheduler.set_shift(shift)
-        scheduler.set_timesteps(SCHEDULE_POINTS, device="cpu")
-        if len(scheduler.timesteps) != 8 or len(scheduler.sigmas) != SCHEDULE_POINTS:
+        scheduler.set_timesteps(points, device="cpu")
+        if len(scheduler.timesteps) != EVAL_STEPS or len(scheduler.sigmas) != points:
             raise RuntimeError("Turbo8 scheduler must produce eight DiT evaluations")
         scheduler.step = MethodType(training_euler_step, scheduler)
     logger.warning("H3_TURBO8 experimental=true nfe=8 video_shift=6 audio_shift=3")

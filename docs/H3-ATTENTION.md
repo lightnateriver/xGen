@@ -6,7 +6,7 @@ the v0.2 attention selection, models, scheduler, offload, cache, VAE and codecs.
 This feature is experimental; implementation is not a claim of validation.
 
 Initial qualification: T2VA, batch one, 1344x768 Base, 124 native frames,
-24fps, SP8, BF16 Q/K/V, 50 actual DiT evaluations (`num_inference_steps=51`).
+24fps, SP8, BF16 Q/K/V, 50 actual DiT evaluations (`num_inference_steps=50`).
 The existing optional Refiner exports 2560x1440/120 frames with three Laser
 steps. Only Base attention changes. The additional offline 10-second Veda
 I2VA profile is described below. R2VA, arbitrary masks, extra LoRAs and
@@ -155,7 +155,7 @@ python -m x_diffusers.framework.pipeline.h3_regenerate.prepare_base_cache \
 For 768P, add the following to the existing MiniMax-H3 CLI invocation with SP8, BF16, Laser, 124 native frames and 24 fps. For Veda, also set `--h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR"`.
 
 ```bash
---h3_turbo8 --num_inference_steps 9 \
+--h3_turbo8 --num_inference_steps 8 \
 --transformer_path "$TURBO8_TRANSFORMER" --adaln_cache_file "$TURBO8_ADALN"
 ```
 
@@ -164,7 +164,7 @@ For 2K, use the existing Refiner example.
 ```bash
 BASE_TRANSFORMER="$TURBO8_TRANSFORMER" BASE_ADALN="$TURBO8_ADALN" \
   bash example/diffusers/scripts/infer_minimax_h3_refiner.sh \
-  --h3_turbo8 --num_inference_steps 9
+  --h3_turbo8 --num_inference_steps 8
 ```
 
 The Turbo preset adds no runtime LoRA buffers. Veda still uses its own predictor and scratch space. Initialization includes loading the prepared transformer and any existing quantization. Measure initialization, request latency and peak HBM separately. To switch back, remove the flag and restore the original transformer, AdaLN table and step count together.
@@ -173,7 +173,7 @@ The Turbo preset adds no runtime LoRA buffers. Veda still uses its own predictor
 
 Use the existing offline CLI with MiniMax-H3, `--task_type fl2va`, one
 `--keyframe_image`, 1344×768, 243 native frames, 24 fps and SP8. Set
-`--num_inference_steps 21` for 20 Base DiT evaluations and use matching Base
+`--num_inference_steps 20` for 20 Base DiT evaluations and use matching Base
 AdaLN assets if the transformer has been stripped. The validated NPU recipe
 uses INT8 DiT/VAE linear layers, text encoder TP8 and PHAA2.
 
@@ -185,7 +185,7 @@ transformer and AdaLN table as a pair.
 ```bash
 export PYTHONPATH="$PWD/optional/Ascend-H3/src:$PWD/x_diffusers:$PWD/x_base${PYTHONPATH:+:$PYTHONPATH}"
 python -m x_diffusers.framework.pipeline.h3_regenerate.prepare_base_cache \
-  --source "$BASE_MODEL/transformer" --model-variant T2VA --eval-steps 20 \
+  --source "$BASE_MODEL/transformer" --model-variant T2VA --steps 20 \
   --stripped-output "$BASE_TRANSFORMER" --output "$BASE_ADALN"
 
 export TASK_QUEUE_ENABLE=2
@@ -193,7 +193,7 @@ torchrun --nproc_per_node=8 --max_restarts=0 example/diffusers/infer.py \
   --model MiniMax-H3 --pretrained_model_name_or_path "$BASE_MODEL" \
   --transformer_path "$BASE_TRANSFORMER" --adaln_cache_file "$BASE_ADALN" \
   --task_type fl2va --keyframe_image "$FIRST_FRAME" --frames 243 \
-  --width 1344 --height 768 --save_fps 24 --num_inference_steps 21 --seed 42 \
+  --width 1344 --height 768 --save_fps 24 --num_inference_steps 20 --seed 42 \
   --dtype bf16 --sp 8 --text_encoder_tp 8 --phaa_num 2 --rope_fused \
   --atten laser --matmul_quant int8 --vae_matmul_quant int8 --vae_lightning decoder \
   --h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR" \

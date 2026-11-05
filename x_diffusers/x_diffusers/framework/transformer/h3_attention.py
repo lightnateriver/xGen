@@ -58,7 +58,7 @@ class BaseAttentionSession:
         if self.calls:
             raise RuntimeError('Previous H3 request did not complete the configured steps')
         self.request = args
-        self.expected_steps = args.num_inference_steps - 1
+        self.expected_steps = args.num_inference_steps
         self.metrics.reset()
         self.started = time.perf_counter()
         self.operator_calls = 0

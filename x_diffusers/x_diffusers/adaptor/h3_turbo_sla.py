@@ -177,17 +177,16 @@ def configure_pipe(pipe, args):
     logger.warning("Turbo-SLA uses the portable selected-block BF16 reference backend; Sage2 INT8 parity and NPU speed are unqualified.")
 
 
-def inference_params(pipe, args):
-    """Diffusers counts sigma points; LightX2V counts transformer evaluations."""
+def validate_schedule(pipe, args, points):
+    """Verify the four-step Turbo-SLA schedule against Diffusers."""
     validate_args(args)
     if not getattr(args, "h3_turbo_sla_lora", None):
-        return {}
+        return
     if getattr(pipe, "_h3_turbo_sla_path", None) != os.path.abspath(args.h3_turbo_sla_lora):
         raise RuntimeError("Turbo-SLA adapter changed; rebuild the pipeline before inference.")
     # Five sigma points -> four forwards. Verify upstream semantics on every request.
     for name in ("scheduler", "audio_scheduler"):
         scheduler = getattr(pipe, name)
-        scheduler.set_timesteps(5, device="cpu")
-        if len(scheduler.timesteps) != 4 or len(scheduler.sigmas) != 5:
+        scheduler.set_timesteps(points, device="cpu")
+        if len(scheduler.timesteps) != args.num_inference_steps or len(scheduler.sigmas) != points:
             raise RuntimeError("Diffusers H3 scheduler step-count contract changed; expected 5 sigmas / 4 forwards.")
-    return {"num_inference_steps": 5}

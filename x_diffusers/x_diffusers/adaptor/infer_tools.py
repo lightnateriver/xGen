@@ -463,28 +463,27 @@ class InferenceManager(object):
     # MiniMax-H3 inference (ModularPipeline — joint video + audio)
     # ------------------------------------------------------------------
 
-    _MMH3_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-    _MMH3_VIDEO_EXTS = {".mp4", ".avi", ".mov", ".webm", ".mkv"}
-    _MMH3_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".aac", ".ogg"}
-
     def _infer_minimax_h3(self, args):
         """Run MiniMax-H3 joint video + audio generation via ModularPipeline."""
         if getattr(args, "h3_refiner", False):
             from .h3_refiner import infer
             return infer(self, args)
+        from .h3_schedule import schedule_points
+
+        points = schedule_points(args.num_inference_steps, getattr(args, "adaln_cache_file", None))
         infer_params = {
             "prompt": args.prompt,
             "height": args.height,
             "width": args.width,
             "num_frames": args.frames,
-            "num_inference_steps": args.num_inference_steps,
+            "num_inference_steps": points,
             "generator": torch.Generator().manual_seed(args.seed),
         }
         if getattr(args, "h3_turbo8", False):
             from .h3_turbo8 import validate
             validate(args)
-        from .h3_turbo_sla import inference_params
-        infer_params.update(inference_params(self.pipe, args))
+        from .h3_turbo_sla import validate_schedule
+        validate_schedule(self.pipe, args, points)
 
         # Keyframe conditioning (fl2va / fl2va_last_frame)
         if getattr(args, "keyframe_image", ""):
@@ -495,25 +494,15 @@ class InferenceManager(object):
         # Reference conditioning (ref2va)
         ref_paths = getattr(args, "reference_paths", None)
         if ref_paths:
-            from diffusers.modular_pipelines.minimax_h3 import (
-                MiniMaxH3ImageReference,
-                MiniMaxH3VideoReference,
-                MiniMaxH3AudioReference,
-            )
+            from .h3_references import load_references, select_reference_adaln
 
-            references = []
-            for path in ref_paths:
-                ext = os.path.splitext(path)[1].lower()
-                if ext in self._MMH3_IMAGE_EXTS:
-                    references.append(MiniMaxH3ImageReference.from_file(path))
-                elif ext in self._MMH3_VIDEO_EXTS:
-                    references.append(MiniMaxH3VideoReference.from_file(path))
-                elif ext in self._MMH3_AUDIO_EXTS:
-                    references.append(MiniMaxH3AudioReference.from_file(path))
-                else:
-                    logger.warning(f"Unknown reference media type for: {path}, skipping")
-            if references:
-                infer_params["references"] = references
+            infer_params["references"] = load_references(ref_paths)
+            if args.task_type == "ref2va":
+                select_reference_adaln(self.pipe, args)
+        elif getattr(args, "adaln_cache_file", None) and args.task_type in ("t2va", "fl2va"):
+            from .h3_references import select_adaln
+
+            select_adaln(self.pipe, args, "video" if "image" in infer_params or "last_image" in infer_params else "none")
 
         # Rainfusion / sparse attention setup (MiniMax-H3 early-returns from infer_single,
         # so the generic setup at L669 is never reached — must set up here).
@@ -524,7 +513,7 @@ class InferenceManager(object):
             latent_width = args.width // 16
             attention_manager.set_rainfusion_attention(
                 [num_latent_frames, latent_height, latent_width],
-                skip_timesteps=int(args.rainfusion_ratio * args.num_inference_steps),
+                skip_timesteps=int(args.rainfusion_ratio * points),
                 sparsity=getattr(args, 'rainfusion_sparsity', 0.64))
         if args.atten == 'sparse':
             attention_manager.set_ada_bsa_sparse_flash_attention(args.ada_sparsity)
@@ -544,8 +533,6 @@ class InferenceManager(object):
         videos = result.get("videos")
         audio = result.get("audio")
         sampling_rate = result.get("sampling_rate")
-
-        torch.cuda.empty_cache()
 
         # Route B: SaveAVStream 已在 _decode_ascend 内部完成保存
         if getattr(infer_info, "_route_b_saved", False):
@@ -698,6 +685,8 @@ class InferenceManager(object):
         # --- MiniMax-H3 branch (ModularPipeline, joint video+audio) ---
         if "MiniMax-H3" in args.model:
             self._infer_minimax_h3(args)
+            from .h3_memory import release_request_memory
+            release_request_memory()
             return
 
         infer_params = {
@@ -889,6 +878,10 @@ class InferenceManager(object):
         return self.infer_batch_from_testdata(args)
 
     def infer(self, args) -> float:
+        if args.model == "MiniMax-H3" and args.task_type == "ref2va":
+            from .h3_references import reference_conditioning
+
+            reference_conditioning(args)
         if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
                 getattr(self.init_args, 'h3_attention', 'legacy') != 'legacy'):
             from .h3_attention_config import key

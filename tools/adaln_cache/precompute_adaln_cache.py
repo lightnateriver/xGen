@@ -345,7 +345,7 @@ def main():
     )
     parser.add_argument(
         "--steps", type=int, default=50,
-        help="Number of inference steps"
+        help="Number of actual H3 Base denoising steps"
     )
     parser.add_argument(
         "--video_shift", type=float, default=12.0,
@@ -372,6 +372,8 @@ def main():
              "--adaln_cache_file at inference time."
     )
     args = parser.parse_args()
+    if args.steps < 1:
+        parser.error("--steps must be a positive integer")
 
     if not args.output and not args.strip_output:
         parser.error("at least one of --output or --strip_output is required")
@@ -379,7 +381,7 @@ def main():
     if args.output:
         precompute_cache(
             model_path=args.model_path,
-            num_steps=args.steps,
+            num_steps=args.steps + 1,
             video_shift=args.video_shift,
             audio_shift=args.audio_shift,
             output_path=args.output,

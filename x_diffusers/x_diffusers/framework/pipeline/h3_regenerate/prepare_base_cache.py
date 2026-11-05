@@ -13,7 +13,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--source", required=True)
     p.add_argument("--output", required=True)
-    p.add_argument("--eval-steps", type=int, choices=(20, 50), default=20)
+    p.add_argument("--steps", "--eval-steps", dest="eval_steps", type=int, choices=(20, 50), default=20)
     p.add_argument("--model-variant", choices=("Ref2VA", "T2VA"), default="Ref2VA")
     p.add_argument("--stripped-output", help="New directory for the same model with cached AdaLN weights removed")
     p.add_argument("--turbo8-lora", help="Prepare merged LightX2V 768p Base assets")

@@ -62,7 +62,7 @@ class MaaSInputTests(unittest.TestCase):
         invalid = {
             "duration": (None, True, "5", 5.0, 5.9, 4, 6, 10, 11, 15),
             "seed": (None, True, 1.9, "42", -1, 2**31),
-            "num_inference_steps": (None, True, "51", 51.0, 0, 50, 52),
+            "num_inference_steps": (None, True, "50", 50.0, 0, 49, 51),
             "resolution": (None, "1080p", "2k", 768, []),
             "aspect_ratio": (None, "9:16"),
             "model": (None, "other", {}),
@@ -146,7 +146,7 @@ class MaaSInputTests(unittest.TestCase):
         validate_startup(FIXED_FIELDS, "cuda", False)
         for settings, backend, warmup in ((FIXED_FIELDS, "npu", False), (FIXED_FIELDS, "cuda", True),
                                           (dict(FIXED_FIELDS, h3_refiner=True), "cuda", False),
-                                          (dict(FIXED_FIELDS, num_inference_steps=50), "cuda", False)):
+                                          (dict(FIXED_FIELDS, num_inference_steps=51), "cuda", False)):
             with self.assertRaises(ValueError):
                 validate_startup(settings, backend, warmup)
 
@@ -179,6 +179,7 @@ class H3BaseDurationTests(unittest.TestCase):
     def setUp(self):
         config = Path(__file__).resolve().parents[2] / "example/diffusers/configs/h3_npu_base.example.json"
         self.service = VideoGenerationService(str(config))
+        self.service.default_config["adaln_cache_file"] = None
         self.service.is_initialized = True
         self.client = self.service.app.test_client()
 
@@ -201,6 +202,7 @@ class H3BaseDurationTests(unittest.TestCase):
                 task = self.service.task_queue.get_nowait()["data"]
                 self.assertEqual(task["duration"], 15)
                 self.assertEqual(task["frames"], 360)
+                self.assertEqual(task["num_inference_steps"], 50)
 
     def test_base_duration_outside_range_or_fractional_is_rejected(self):
         for duration in (4, 15.5, 16):

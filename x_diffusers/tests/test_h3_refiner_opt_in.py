@@ -2,6 +2,7 @@
 import argparse
 import ast
 import copy
+from contextlib import nullcontext
 import importlib.util
 import math
 import os
@@ -30,6 +31,7 @@ package = ModuleType('_h3_test'); package.__path__ = [str(ADAPTOR)]
 sys.modules['_h3_test'] = package
 contract = load('_h3_test.h3_refiner_config', ADAPTOR/'h3_refiner_config.py')
 service_config = load('_h3_test.h3_refiner_service', ADAPTOR/'h3_refiner_service.py')
+references = sys.modules['_h3_test.h3_references']
 config = load('_h3_test.config', ADAPTOR/'config.py')
 
 
@@ -54,8 +56,11 @@ class PortableBaseline(ast.NodeTransformer):
         return node
 
 
+BASELINE_COMMIT = 'ef1a3210ff7eea8c4d23227719352fb78e8e53cf'
+
+
 def baseline(path):
-    raw = subprocess.check_output(['git','show','origin/v0.1:'+path], cwd=ROOT).decode()
+    raw = subprocess.check_output(['git','show',BASELINE_COMMIT+':'+path], cwd=ROOT).decode()
     return ast.unparse(PortableBaseline().visit(ast.parse(raw)))
 
 
@@ -75,6 +80,42 @@ def logic_tree(text):
 
 
 class ContractTests(unittest.TestCase):
+    def test_refiner_draft_loads_reference_audio_weights_and_restores_them(self):
+        source = ROOT/'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py'
+        tree = ast.parse(source.read_text(encoding='utf-8'))
+        pipeline = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                        and node.name == 'H3RefinerPipeline')
+        draft = next(node for node in pipeline.body if isinstance(node, ast.FunctionDef)
+                     and node.name == '_draft')
+        draft.decorator_list = []
+        torch = Mock()
+        namespace = dict(torch=torch, schedule_points=lambda steps: steps + 1)
+        exec(compile(ast.Module(body=[draft], type_ignores=[]), str(source), 'exec'), namespace)
+        modules = {
+            'diffusers.utils': SimpleNamespace(load_image=Mock()),
+            'x_diffusers.adaptor.h3_refiner_config': SimpleNamespace(native_padding=lambda *args: nullcontext()),
+            'x_diffusers.adaptor.h3_references': SimpleNamespace(
+                load_references=Mock(), reference_conditioning=Mock(), select_adaln=Mock()),
+        }
+        for conditioning in ('both', 'video'):
+            base = Mock(side_effect=RuntimeError('encode sentinel'))
+            original = base._blocks
+            base.blocks = SimpleNamespace(sub_blocks={'decode': object()})
+            holder = Mock()
+            lifecycle = Mock()
+            lifecycle.attach_mock(holder, 'audio')
+            lifecycle.attach_mock(base, 'base')
+            runner = SimpleNamespace(base=base, base_audio=holder, base_weights=Mock(), base_vae=Mock(),
+                                     metrics=SimpleNamespace(span=lambda *args: nullcontext()))
+            request = SimpleNamespace(task_type='ref2va', prompt='test', num_inference_steps=20,
+                                      seed=42, reference_paths=['reference'])
+            modules['x_diffusers.adaptor.h3_references'].reference_conditioning.return_value = conditioning
+            with patch.dict(sys.modules, modules), self.assertRaisesRegex(RuntimeError, 'encode sentinel'):
+                namespace['_draft'](runner, request, {'generation_frames': 124})
+            self.assertIs(base._blocks, original)
+            expected = ['audio.onload', 'base', 'audio.offload'] if conditioning == 'both' else ['base']
+            self.assertEqual([call[0] for call in lifecycle.mock_calls], expected)
+
     def test_partial_initialization_failure_cannot_silently_reload(self):
         package_name='_refiner_init_test'
         root=ModuleType(package_name);root.__path__=[]
@@ -98,7 +139,7 @@ class ContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder,patch.dict(sys.modules,modules):
             adapter=load(package_name+'.adaptor.h3_refiner',ADAPTOR/'h3_refiner.py')
             value=args(h3_refiner=True,model='MiniMax-H3',task_type='t2va',sp=8,dtype='bf16',atten='laser',
-                       num_inference_steps=51,width=2560,height=1440,save_fps=24,phaa_num=2,
+                       num_inference_steps=50,width=2560,height=1440,save_fps=24,phaa_num=2,
                        matmul_quant='int8',vae_matmul_quant='none',vae_lightning='none',
                        inf_vram_blocks_num=0,h3_refiner_weights=folder,h3_refiner_prepared=folder)
             manager=SimpleNamespace(pipe=None)
@@ -127,14 +168,12 @@ class ContractTests(unittest.TestCase):
 
     def test_existing_cli_defaults_unchanged(self):
         original = baseline('x_diffusers/x_diffusers/adaptor/config.py')
-        namespace = {}; exec(compile(original,'v0.1-config','exec'),namespace)
+        namespace = {'__name__': '_h3_test.baseline_config', '__package__': '_h3_test'}
+        exec(compile(original,'baseline-config','exec'),namespace)
         with patch.object(sys, 'argv', ['test']):
             old = vars(namespace['parse_args']())
         now = vars(args())
-        self.assertEqual(old, {key:now[key] for key in old})
-        self.assertEqual(set(now)-set(old),{'h3_turbo8','h3_attention','h3_veda_predictor','h3_veda_sparsity','h3_refiner','h3_refiner_weights','h3_refiner_prepared',
-                                         'h3_refiner_seconds','h3_refiner_loading','h3_nvfp4_checkpoint','h3_nvfp4_resident',
-                                         'h3_nvfp4_compile','h3_cuda_vae_sp'})
+        self.assertEqual(old, now)
         self.assertIsNone(now['h3_nvfp4_checkpoint'])
         for flag in ('h3_nvfp4_resident','h3_nvfp4_compile','h3_cuda_vae_sp'):
             self.assertFalse(now[flag])
@@ -171,11 +210,11 @@ class ContractTests(unittest.TestCase):
     def test_conflicts_rejected_before_loading(self):
         with tempfile.TemporaryDirectory() as folder:
             valid=args(h3_refiner=True,model='MiniMax-H3',task_type='t2va',sp=8,dtype='bf16',atten='laser',
-                       num_inference_steps=51,width=2560,height=1440,save_fps=24,phaa_num=2,
+                       num_inference_steps=50,width=2560,height=1440,save_fps=24,phaa_num=2,
                        matmul_quant='int8',vae_matmul_quant='none',vae_lightning='none',
                        inf_vram_blocks_num=0,h3_refiner_weights=folder,h3_refiner_prepared=folder)
             self.assertEqual(contract.validate_settings(valid)['output_frames'],120)
-            for key,value in [('sp',1),('num_inference_steps',50),('width',1344),('adopt_sr',True),
+            for key,value in [('sp',1),('num_inference_steps',51),('width',1344),('adopt_sr',True),
                               ('cache_dit',True),('vae_lightning','decoder'),('inf_vram_blocks_num',1),
                               ('vae_matmul_quant','int8'),('task_type','i2v'),('h3_refiner_weights','missing')]:
                 bad=copy.copy(valid); setattr(bad,key,value)
@@ -185,20 +224,67 @@ class ContractTests(unittest.TestCase):
         from PIL import Image
         with tempfile.TemporaryDirectory() as folder:
             paths=[]
-            for index in range(5):
+            for index in range(10):
                 path=Path(folder)/f'{index}.png';Image.new('RGB',(16,16)).save(path);paths.append(str(path))
-            value=args(task_type='ref2va',reference_paths=paths,prompt='test',seed=42)
-            contract.validate_inputs(value)
-            for images in (paths[:4],paths+[paths[0]],[paths[0]]*5):
+            value=args(task_type='ref2va',prompt='test',seed=42)
+            for count in (1, 5, 9):
+                value.reference_paths = paths[:count]
+                contract.validate_inputs(value)
+            for images in ([], paths, [paths[0]]*5):
                 value.reference_paths=images
                 with self.assertRaises(ValueError): contract.validate_inputs(value)
-            value.reference_paths=paths;value.seed=True
+            value.reference_paths=paths[:5];value.seed=True
             with self.assertRaises(ValueError):contract.validate_inputs(value)
-            value.seed=42;Path(paths[0]).write_text('corrupt')
+            value.seed=42;value.reference_paths=paths[:1];Path(paths[0]).write_text('corrupt')
             with self.assertRaises(Exception):contract.validate_inputs(value)
 
+    def test_reference_media_count_duration_and_conditioning(self):
+        from decimal import Decimal
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            images = [root / f"image-{i}.png" for i in range(10)]
+            videos = [root / f"video-{i}.mp4" for i in range(4)]
+            audios = [root / f"audio-{i}.wav" for i in range(4)]
+            for path in images:
+                Image.new("RGB", (16, 16)).save(path)
+            for path in videos + audios:
+                path.touch()
+            durations = dict(zip(videos + audios, [2, 5, 8, 6] * 2))
+
+            def probe(path, kind):
+                return Decimal(str(durations[path])), kind == "audio" or path == videos[1]
+
+            def check(paths):
+                return references.validate_references([str(path) for path in paths])
+
+            with patch.object(references, "probe_clip", side_effect=probe):
+                self.assertEqual(check([videos[0]]), "video")
+                self.assertEqual(check([videos[1]]), "both")
+                self.assertEqual(check(images[:6] + videos[:3] + audios[:3]), "both")
+                for paths in (images, videos, images[:1] + audios, images[:9] + videos[:2] + audios[:2],
+                              audios[:1], [videos[1], videos[2], videos[3]],
+                              images[:1] + audios[1:]):
+                    with self.subTest(paths=paths), self.assertRaises(ValueError):
+                        check(paths)
+                for seconds in (1.99, 15.01):
+                    durations[videos[0]] = seconds
+                    with self.assertRaisesRegex(ValueError, "Each video"):
+                        check([videos[0]])
+                durations[videos[0]] = 15
+                self.assertEqual(check([videos[0]]), "video")
+
+                pipe = SimpleNamespace(transformer=SimpleNamespace(
+                    _adaln_cache=SimpleNamespace(_conditioning_type="video"),
+                ))
+                request = args(reference_paths=[str(videos[1])], adaln_cache_file="ref2va-21step.safetensors")
+                installer = Mock()
+                with patch.dict(sys.modules, {"x_base.adaln_cache": SimpleNamespace(install_adaln_cache=installer)}):
+                    references.select_reference_adaln(pipe, request)
+                installer.assert_called_once_with(pipe, "ref2va-21step.safetensors", conditioning_type="both")
+
     def test_service_profiles_and_immutable_startup_settings(self):
-        fake=SimpleNamespace(default_config=dict(task_type='t2va',num_inference_steps=51))
+        fake=SimpleNamespace(default_config=dict(task_type='t2va',num_inference_steps=50))
         fake._validate_prompt=lambda data,errors:data.get('prompt','test')
         fake._validate_mmh3_frame_fields=lambda data,task,errors:('','')
         fake._validate_mmh3_ref_path=lambda data,task,errors:[]
@@ -211,64 +297,36 @@ class ContractTests(unittest.TestCase):
             ok,_=service_config.validate_request(fake,data,[],[]);self.assertFalse(ok,data)
 
 
-class LegacyBranchNormalizer(ast.NodeTransformer):
-    """Specialize only feature gates to their default values; do not erase old logic."""
-    def visit_ImportFrom(self,node):
-        if node.module and node.module.endswith(('h3_refiner_config','h3_refiner_service','h3_attention_config')):
-            return None
-        return self.generic_visit(node)
-
-    def visit_Expr(self,node):
-        if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id in ('add_arguments','add_h3_attention_arguments'):
-            return None
-        if isinstance(node.value, ast.Call) and any(
-                isinstance(arg, ast.Constant) and arg.value == '--h3_turbo8' for arg in node.value.args):
-            return None
-        return self.generic_visit(node)
-
-    def visit_List(self, node):
-        node.elts = [elt for elt in node.elts
-                     if not isinstance(elt, ast.Constant) or elt.value != 'h3_turbo8']
-        return self.generic_visit(node)
-
-    def visit_Assign(self,node):
-        if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id in ('add_arguments','add_h3_attention_arguments'):
-            return None
-        return self.generic_visit(node)
-
-    def visit_If(self,node):
-        test=ast.unparse(node.test)
-        if 'h3_attention' in test or "getattr(args, 'h3_turbo8', False)" in test:
-            return [self.visit(n) for n in node.orelse]
-        if ('h3_refiner' in test and not isinstance(node.test,ast.BoolOp)) or "'failed', False" in test:
-            return [self.visit(n) for n in node.orelse]
-        if test=='frame_callback is None':
-            return [self.visit(n) for n in node.body]
-        return self.generic_visit(node)
-
-    def visit_BoolOp(self,node):
-        if isinstance(node.op,ast.And):
-            node.values=[v for v in node.values if 'h3_refiner' not in ast.unparse(v)]
-            if len(node.values)==1:return self.visit(node.values[0])
-        return self.generic_visit(node)
-
-    def visit_FunctionDef(self,node):
-        if node.name=='_decode_chunks_streaming':
-            node.args.args=[a for a in node.args.args if a.arg!='frame_callback'];node.args.defaults=[]
-        return self.generic_visit(node)
-
-
 class LegacyCompatibilityTests(unittest.TestCase):
-    def test_disabled_original_code_paths_match_v01_ast(self):
-        paths=['x_diffusers/x_diffusers/adaptor/config.py','x_diffusers/x_diffusers/adaptor/infer_tools.py',
-               'x_diffusers/x_diffusers/adaptor/load_pipe.py','server/video/video_server.py',
-               'x_diffusers/x_diffusers/framework/vae/minimax_h3.py']
-        for path in paths:
+    def test_non_h3_paths_match_previous_release(self):
+        # H3 steps and request cleanup intentionally change. Compare the actual
+        # Wan branches, and the untouched CLI/VAE, against a fixed release.
+        for path in ('x_diffusers/x_diffusers/adaptor/config.py',
+                     'x_diffusers/x_diffusers/framework/vae/minimax_h3.py'):
             with self.subTest(path=path):
-                original=baseline(path)
-                old=ast.dump(logic_tree(original),include_attributes=False)
-                new=ast.dump(LegacyBranchNormalizer().visit(logic_tree((ROOT/path).read_text(encoding='utf-8'))),include_attributes=False)
+                old=ast.dump(logic_tree(baseline(path)),include_attributes=False)
+                new=ast.dump(logic_tree((ROOT/path).read_text(encoding='utf-8')),include_attributes=False)
                 self.assertEqual(old,new,'Default-path AST changed: '+path)
+        for path, name in (('x_diffusers/x_diffusers/adaptor/infer_tools.py', 'InferenceManager'),
+                           ('server/video/video_server.py', 'VideoInferenceManager')):
+            methods = []
+            for source in (baseline(path), (ROOT/path).read_text(encoding='utf-8')):
+                cls = next(node for node in ast.parse(source).body
+                           if isinstance(node, ast.ClassDef) and node.name == name)
+                method = next(node for node in cls.body
+                              if isinstance(node, ast.FunctionDef) and node.name == 'infer_single')
+                method.body = [node for node in method.body if not (
+                    isinstance(node, ast.If) and 'minimax-h3' in ast.unparse(node.test).lower())]
+                methods.append(ast.dump(method, include_attributes=False))
+            self.assertEqual(*methods, msg=path)
+        path = 'x_diffusers/x_diffusers/adaptor/load_pipe.py'
+        loaders = []
+        for source in (baseline(path), (ROOT/path).read_text(encoding='utf-8')):
+            tree = logic_tree(source)
+            tree.body = [node for node in tree.body if not (
+                isinstance(node, ast.FunctionDef) and node.name == '_apply_adaln_cache')]
+            loaders.append(ast.dump(tree, include_attributes=False))
+        self.assertEqual(*loaders, msg='Non-AdaLN loading paths changed')
 
     def test_no_independent_service_or_scheduler(self):
         folder=ROOT/'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate'
@@ -288,6 +346,8 @@ def service_classes(source):
     module=ast.Module(body=[ast.ImportFrom(module='__future__',names=[ast.alias(name='annotations')],level=0)]+classes,type_ignores=[])
     namespace=dict(sys=sys,os=os,re=re,math=math,Path=Path,logger=Mock(),parse_args=config.parse_args,
                    jsonify=lambda value:value,_resolve_input_file=lambda value:value,
+                   MAAS_QUEUE_CAPACITY=10,MAAS_QUEUE_TIMEOUT_S=600,
+                   H3_BASE_MAX_DURATION_S=contract.H3_BASE_MAX_DURATION_S,
                    MMH3_RESOLUTION_MAP={'768p':{'16:9':(1344,768)},'1080p':{'16:9':(1920,1080)}})
     exec(compile(ast.fix_missing_locations(module),'service-methods','exec'),namespace)
     return namespace
@@ -301,15 +361,18 @@ class ServiceCompatibilityTests(unittest.TestCase):
 
     def instance(self,namespace,enabled):
         obj=namespace['VideoGenerationService'].__new__(namespace['VideoGenerationService'])
-        obj.default_config=dict(model='MiniMax-H3',task_type='t2va',num_inference_steps=51,
+        obj.maas_fl2va_input=False
+        obj.default_config=dict(model='MiniMax-H3',task_type='t2va',num_inference_steps=50,
                                 h3_refiner=enabled,vae_lightning='none',sp=8)
         return obj
 
-    def test_existing_service_build_args_is_identical_when_disabled(self):
+    def test_service_build_args_preserves_startup_steps_and_other_fields(self):
         left=self.instance(self.old,False);right=self.instance(self.new,False)
         for data in [dict(prompt='test'),dict(prompt='test',duration=10,resolution='1080p'),
                      dict(prompt='test',duration=5,seed=100)]:
             a=vars(left._build_args(data,'./test.mp4'));b=vars(right._build_args(data,'./test.mp4'))
+            a.pop('num_inference_steps')
+            self.assertEqual(b.pop('num_inference_steps'),50)
             self.assertEqual(a,b)
 
     def test_service_enabled_build_args_keeps_startup_model_and_changes_duration(self):
@@ -319,7 +382,7 @@ class ServiceCompatibilityTests(unittest.TestCase):
             for seconds in (5,10,15):
                 value=service._build_args(dict(prompt='test',duration=seconds,resolution='2k'),'./test.mp4')
                 self.assertTrue(value.h3_refiner)
-                self.assertEqual((value.width,value.height,value.num_inference_steps),(2560,1440,51))
+                self.assertEqual((value.width,value.height,value.num_inference_steps),(2560,1440,50))
                 self.assertEqual(value.frames,contract.profile(seconds)['generation_frames'])
                 self.assertFalse(value.adopt_sr)
 
@@ -333,7 +396,10 @@ class ServiceCompatibilityTests(unittest.TestCase):
         with patch.dict(sys.modules,{'x_diffusers.adaptor.h3_refiner_service':service_config}):
             for service in services:
                 service.app=App();service._setup_config_routes()
-            self.assertEqual(services[0].app.routes['/params'](),services[1].app.routes['/params']())
+            old=services[0].app.routes['/params']();new=services[1].app.routes['/params']()
+            old['parameters'].pop('num_inference_steps')
+            self.assertEqual(new['parameters'].pop('num_inference_steps')['default'],50)
+            self.assertEqual(old,new)
             result=services[2].app.routes['/params']()
             self.assertTrue(result['experimental'])
             self.assertEqual(result['parameters']['duration']['allowed_values'],[5,10,15])

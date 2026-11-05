@@ -86,7 +86,7 @@ xGen/
 │   ├── t2va-51step.safetensors
 │   ├── ref2va-51step.safetensors
 │   └── refiner/                 预处理后的 Refiner transformer、表和 manifest
-├── inputs/                      使用者自备首帧/五张参考图
+├── inputs/                      使用者自备首帧或参考媒体
 ├── outputs/                     使用者生成的视频和指标
 └── logs/
 ```
@@ -130,12 +130,12 @@ python model-cache/download-refiner.py --weights weights/refiner
 
 ```bash
 python -m x_diffusers.framework.pipeline.h3_regenerate.prepare_base_cache \
-  --source weights/base/transformer --model-variant T2VA --eval-steps 50 \
+  --source weights/base/transformer --model-variant T2VA --steps 50 \
   --output model-cache/t2va-51step.safetensors \
   --stripped-output model-cache/base-t2va
 
 python -m x_diffusers.framework.pipeline.h3_regenerate.prepare_base_cache \
-  --source weights/base/transformer_ref --model-variant Ref2VA --eval-steps 50 \
+  --source weights/base/transformer_ref --model-variant Ref2VA --steps 50 \
   --output model-cache/ref2va-51step.safetensors \
   --stripped-output model-cache/base-ref2va
 
@@ -145,7 +145,7 @@ python -m x_diffusers.framework.pipeline.h3_regenerate.prepare \
 
 组合 LoRA 已包含发布的 Refiner/Turbo/Sharp 线性增量，准备工具另核对 Sharp AdaLN 曲线分支；不要在启动时再次重复合并。输入模型目录需与所选模式对应。新目录默认不覆盖；源模型、调度或 LoRA 变化时使用新资产目录，不混用旧表。
 
-`num_inference_steps=51` 在当前调度器对应 **50 次实际 Base DiT**；21 对应 20 次。改成 20 次必须重新准备匹配资产并重启，不能只改请求步数。Refiner 固定 3 步，Refiner INT8 和融合 RoPE 均未开启。
+H3 的 `num_inference_steps` 和 AdaLN 预计算的 `--steps` 都填实际 Base DiT 次数。50 步填 50，20 步填 20。普通旧 H3 的 `51` 调度点改填 `50` 步，已有同一采样序列的 AdaLN 文件可以直接复用；Turbo-SLA 等特殊路径按 [升级说明](H3-UPGRADE.md) 处理。切换步数时，在线服务需换用匹配的 AdaLN 表并重启。Refiner 固定 3 步，Refiner INT8 和融合 RoPE 均未开启。
 
 ## 5. 原链路：不启用超分
 
@@ -160,7 +160,7 @@ bash example/diffusers/scripts/infer_minimax_h3_ref2va.sh
 
 ### v0.3.1 NPU 首帧图生音视频
 
-在已配置 CANN、TorchNPU、FFmpeg 和 Python 包的环境中，使用现有 FL2VA 脚本。下面的相对路径以脚本目录为基准。模型目录需要根级 modular index，Transformer 和 AdaLN 表须来自对应的 Base，使用 51 个调度点。
+在已配置 CANN、TorchNPU、FFmpeg 和 Python 包的环境中，使用现有 FL2VA 脚本。下面的相对路径以脚本目录为基准。模型目录需要根级 modular index，Transformer 和 AdaLN 表须来自对应的 Base，对应 50 次 Base DiT。
 
 ```bash
 cd example/diffusers/scripts
@@ -209,7 +209,7 @@ bash example/diffusers/scripts/infer_minimax_h3_refiner.sh \
   --task_type fl2va --keyframe_image inputs/first-frame.png
 ```
 
-### 五图 R2VA
+### R2VA 多媒体参考
 
 ```bash
 export BASE_TRANSFORMER=model-cache/base-ref2va
@@ -220,7 +220,9 @@ bash example/diffusers/scripts/infer_minimax_h3_refiner.sh \
     inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
 ```
 
-首帧必须可解码；R2VA 首版限定五张不同图片，单图像素总量不超过 4096×4096。历史性能使用首帧 1280×720 和五张 2560×1440 原图，不使用方图代替性能输入。模型内部仍由原 H3 processor 处理尺寸和视觉 token，源图分辨率不等于最终 DiT token 数。
+R2VA 每次最多 9 张图、3 段视频、3 段独立音频，合计最多 12 个文件。视频和音频每段 2–15 秒，两类各自累计最多 15 秒。音频需要配合图或视频。视频内嵌音轨随视频进入 Base，仍按一个视频文件计数。单图像素总量不超过 4096×4096。2K 路径由 Base 消费参考文件，Refiner 沿用 Base latent。媒体时长校验使用 FFprobe。
+
+历史性能使用 1280×720 首帧和五张 2560×1440 参考原图。源图分辨率与最终进入 DiT 的 token 数分别记录。
 
 设置 `SECONDS_TO_GENERATE=10` 或 `15` 可选择时长；这是已实现参数范围，不表示新分支已完成对应 NPU 全矩阵验收。输出固定 2560×1440/24fps。生成帧数 124/243/362，导出裁剪到 120/240/360 帧。
 
@@ -382,7 +384,7 @@ ffprobe -v error -show_streams -show_format -of json outputs/t2va-5s-2k.mp4
 ffmpeg -v error -i outputs/t2va-5s-2k.mp4 -f null -
 ```
 
-- **配置 51 为什么实际 50？** 当前 H3 scheduler 的调度点与 DiT 执行次数不同；看 metrics 的实际调用数，并使用匹配 AdaLN 资产。
+- **升级后旧的 `51step` AdaLN 文件还能用吗？** 可以。旧文件名里的 51 是包含终点的 sigma 点数。推理配置填 50，文件路径照旧，实际步数由缓存元数据校验。
 - **为何不能再加 SeedVR2/旧 offload？** 两套资源 hook 可能同时接管同一模型，启用新后端时会拒绝互斥设置；关闭后走旧逻辑。
 - **为什么卷积输入 BF16、bias FP32 报错？** Refiner VAE 加载后需要整体物化 BF16，再将 norm 权重保留 FP32；本分支已补齐该策略和测试。
 - **只有模型 HTTP 状态成功就正常吗？** 不够。需要最终视频技术检查，再人工检查人物一致性、画面、音频和音画同步。

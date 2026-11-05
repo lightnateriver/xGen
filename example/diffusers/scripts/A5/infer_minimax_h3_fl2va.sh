@@ -24,7 +24,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --keyframe_image ./astronaut.jpg \
          --keyframe_last_image ./astronaut.jpg \
          --save_path ./${TASK_NAME}.mp4 \
-         --num_inference_steps 51 \
+         --num_inference_steps 50 \
          --width 1344 \
          --height 768 \
          --frames 124 \

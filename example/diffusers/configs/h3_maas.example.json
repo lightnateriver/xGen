@@ -9,7 +9,7 @@
   "sp": 8,
   "text_encoder_tp": 8,
   "phaa_num": 4,
-  "num_inference_steps": 51,
+  "num_inference_steps": 50,
   "fsdp": null,
   "atten": "sparge",
   "matmul_quant": "none",

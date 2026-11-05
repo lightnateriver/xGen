@@ -25,7 +25,7 @@ service=importlib.util.module_from_spec(service_spec);service_spec.loader.exec_m
 
 def args(**changes):
     values=dict(h3_attention='spark',h3_veda_predictor=None,model='MiniMax-H3',task_type='t2va',
-                dtype='bf16',atten='laser',sp=8,num_inference_steps=51,frames=124,width=1344,height=768,
+                dtype='bf16',atten='laser',sp=8,num_inference_steps=50,frames=124,width=1344,height=768,
                 save_fps=24,h3_refiner=False,keyframe_image='',keyframe_last_image='',reference_paths=[],
                 h3_turbo_sla_lora=None,lora_path_list=None,cache_dit=False)
     values.update(changes)
@@ -69,7 +69,7 @@ class ContractTests(unittest.TestCase):
     def test_turbo8_veda_requires_explicit_profile_and_eight_evaluations(self):
         with tempfile.NamedTemporaryFile() as file:
             value = args(h3_attention='veda', h3_veda_predictor=file.name,
-                         h3_turbo8=True, num_inference_steps=9)
+                         h3_turbo8=True, num_inference_steps=8)
             contract.validate(value)
             value.h3_turbo8 = False
             with self.assertRaises(ValueError):
@@ -78,7 +78,7 @@ class ContractTests(unittest.TestCase):
     def test_veda_i2va_10s_and_sparsity(self):
         with tempfile.NamedTemporaryFile() as file:
             value = args(h3_attention='veda', h3_veda_predictor=file.name, task_type='fl2va',
-                         frames=243, num_inference_steps=21, keyframe_image='first.png',
+                         frames=243, num_inference_steps=20, keyframe_image='first.png',
                          h3_veda_sparsity=0.7)
             contract.validate(value)
             value.h3_veda_sparsity = 0.8
@@ -96,7 +96,7 @@ class ContractTests(unittest.TestCase):
                         dict(h3_refiner=True,h3_refiner_seconds=10,width=2560,height=1440),
                         dict(keyframe_image='image.png'),dict(reference_paths=['r.png']),
                         dict(lora_path_list=['lora.safetensors']),dict(h3_attention='unknown'),
-                        dict(num_inference_steps=51.0),dict(sp=8.0),dict(frames=124.0),
+                        dict(num_inference_steps=50.0),dict(sp=8.0),dict(frames=124.0),
                         dict(width=1344.0),dict(height=768.0),dict(save_fps=24.0),
                         dict(h3_refiner=True,h3_refiner_seconds=5.0,width=2560,height=1440)]:
             with self.subTest(changes=changes),self.assertRaises(ValueError):contract.validate(args(**changes))
@@ -112,16 +112,16 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(config['h3_attention'],'veda')
         for data in [dict(h3_attention='spark'),dict(h3_veda_predictor='elsewhere'),dict(duration=10),
                      dict(duration=True),dict(task_type='ref2va'),dict(resolution='2k'),dict(num_inference_steps=21),
-                     dict(first_frame='image.png'),dict(attention_sparse=True),dict(num_inference_steps=51.0)]:
+                     dict(first_frame='image.png'),dict(attention_sparse=True),dict(num_inference_steps=50.0)]:
             errors=[];service.validate_request(config,data,errors)
             self.assertTrue(errors,data)
 
     def test_service_uses_native_124_frames_and_50_actual_steps(self):
         value=args(num_inference_steps=40,frames=120)
-        config=dict(h3_attention='spark',num_inference_steps=51)
+        config=dict(h3_attention='spark',num_inference_steps=50)
         service.configure_args(config,dict(prompt='test'),value)
         self.assertEqual(value.frames,124)
-        self.assertEqual(value.num_inference_steps,51)
+        self.assertEqual(value.num_inference_steps,50)
         spec=service.parameter_spec(config)
         self.assertEqual(spec['parameters']['duration']['allowed_values'],[5])
 
@@ -149,22 +149,8 @@ class ContractTests(unittest.TestCase):
         for name in ['x_diffusers/x_diffusers/framework/vae/minimax_h3.py',
                      'x_diffusers/x_diffusers/framework/vae/h3_refiner_output.py',
                      'x_base/x_base/vae_parallelism/save_av_stream.py']:
-            old=subprocess.check_output(['git','show','origin/v0.2:'+name],cwd=ROOT)
+            old=subprocess.check_output(['git','show','ef1a3210ff7eea8c4d23227719352fb78e8e53cf:'+name],cwd=ROOT)
             actual = (ROOT/name).read_bytes()
-            if name.endswith('/vae/minimax_h3.py'):
-                # Compare the default branch after removing the CUDA-only import guard and dispatch.
-                guarded = (b'from x_base.device import device_type\n\nif device_type() == "npu":\n'
-                           b'    import torch_npu  # noqa: F401\n'
-                           b'    from torch_npu.contrib import transfer_to_npu  # noqa: F401\n')
-                original = (b'import torch_npu  # noqa: F401\n'
-                            b'from torch_npu.contrib import transfer_to_npu  # noqa: F401\n')
-                cuda_dispatch = (b'    cuda_parallel = getattr(self, "_h3_cuda_vae_parallel", None)\n'
-                                 b'    if cuda_parallel is not None:\n'
-                                 b'        decoded = _decode_sp_full(self, z, cuda_parallel)\n'
-                                 b'        infer_info._route_b_saved = False\n'
-                                 b'    elif is_lightning_mode and is_distributed:')
-                actual = actual.replace(guarded, original, 1)
-                actual = actual.replace(cuda_dispatch, b'    if is_lightning_mode and is_distributed:', 1)
             self.assertEqual(old,actual,name)
 
     def test_vendored_veda_accepts_shared_bundle_without_vllm_dependency(self):

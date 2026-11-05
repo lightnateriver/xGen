@@ -37,6 +37,8 @@ from maas_artifacts import StorageError, publish_obs, publish_video, validate_me
 from x_diffusers import init_env, parse_args
 from x_base.device import device_type
 from x_diffusers.adaptor.h3_refiner_config import H3_BASE_MAX_DURATION_S, base_temporal_padding
+from x_diffusers.adaptor.h3_schedule import cache_steps, schedule_points
+from x_diffusers.adaptor.h3_references import LIMITS, MAX_FILES, reference_conditioning
 from x_diffusers.adaptor.load_pipe import load_pipe, load_v2v_pipe, update_pipe, pipe_to_device, load_seedvr2_pipe, update_lora
 from x_diffusers.adaptor.infer_tools import InferenceManager, GUIDANCE_SCALE_MAP
 from x_diffusers.framework.vae.wan import vfi
@@ -250,7 +252,7 @@ DEFAULT_MINIMAX_H3_CONFIG = {
     "phaa_num": 7,
     "adaln_cache_file": "./weights/MiniMax-H3/adaln_cache/adaln_cache_8step.safetensors",
     "transformer_path": "./weights/MiniMax-H3/transformer_adaln_cache",
-    "num_inference_steps": 8,
+    "num_inference_steps": 50,
     "save_fps": 24,
     "ten_second": False,
     "adopt_sr": False,
@@ -547,7 +549,7 @@ class VideoInferenceManager:
             "height": args.height,
             "width": args.width,
             "num_frames": args.frames,
-            "num_inference_steps": args.num_inference_steps,
+            "num_inference_steps": schedule_points(args.num_inference_steps, getattr(args, "adaln_cache_file", None)),
             "generator": torch.Generator().manual_seed(args.seed),
         }
         if getattr(args, "keyframe_image", ""):
@@ -587,7 +589,7 @@ class VideoInferenceManager:
             from x_base import attention_manager
             attention_manager.set_rainfusion_attention(
                 [num_latent_frames, latent_height, latent_width],
-                skip_timesteps=int(args.rainfusion_ratio * args.num_inference_steps),
+                skip_timesteps=int(args.rainfusion_ratio * schedule_points(args.num_inference_steps)),
                 sparsity=getattr(args, 'rainfusion_sparsity', 0.64))
         if args.atten == 'sparse':
             from x_base import attention_manager
@@ -799,8 +801,6 @@ class VideoInferenceManager:
                 result = self.pipe(output=output_keys, **infer_params)
         finally:
             self._mmh3_cleanup(transformer, denoiser_patched, orig_denoiser_call)
-
-        torch.cuda.empty_cache()
 
         # --- SeedVR2 super-resolution post-processing ---
         if need_sr and self.sr_pipe is not None:
@@ -1615,12 +1615,11 @@ class VideoGenerationService:
             elif mt == 'audio':
                 audio_count += 1
 
-        if img_count > 9:
-            errors.append(f"ref_path: too many image references ({img_count}), maximum 9")
-        if video_count > 3:
-            errors.append(f"ref_path: too many video references ({video_count}), maximum 3")
-        if audio_count > 3:
-            errors.append(f"ref_path: too many audio references ({audio_count}), maximum 3")
+        if len(ref_path_list) > MAX_FILES:
+            errors.append(f"ref_path: maximum {MAX_FILES} reference files total")
+        for kind, count in (("image", img_count), ("video", video_count), ("audio", audio_count)):
+            if count > LIMITS[kind]:
+                errors.append(f"ref_path: too many {kind} references ({count}), maximum {LIMITS[kind]}")
         if audio_count > 0 and img_count == 0 and video_count == 0:
             errors.append("ref_path: audio references cannot be used alone, "
                           "must be paired with at least one image or video reference")
@@ -1628,31 +1627,21 @@ class VideoGenerationService:
         return ref_path
 
     def _validate_mmh3_steps(self, data: Dict[str, Any], errors: List[str]) -> int:
-        """Validate num_inference_steps, enforcing adaln_cache_file step count."""
-        adaln_cache_file = self.default_config.get('adaln_cache_file')
+        """Validate Base denoising steps against the loaded AdaLN schedule."""
+        cache_file = self.default_config.get('adaln_cache_file')
         expected_steps = None
-        if adaln_cache_file:
-            m = re.search(r'(\d+)step', os.path.basename(adaln_cache_file))
-            if m:
-                expected_steps = int(m.group(1))
-        if expected_steps is not None:
-            steps, err = self._validate_and_convert_param(
-                data.get('num_inference_steps'), 'num_inference_steps',
-                int, expected_steps, None, None
-            )
-            if err:
-                errors.append(err)
-            elif steps != expected_steps:
-                errors.append(
-                    f"num_inference_steps must be {expected_steps} to match "
-                    f"adaln_cache_file '{adaln_cache_file}', got {steps}"
-                )
-        else:
-            steps, err = self._validate_and_convert_param(
-                data.get('num_inference_steps'), 'num_inference_steps', int, 50, 1, 200
-            )
-            if err:
-                errors.append(err)
+        if cache_file:
+            try:
+                expected_steps = cache_steps(cache_file)
+            except ValueError as exc:
+                errors.append(str(exc))
+                return 50
+        default_steps = expected_steps if expected_steps is not None else self.default_config.get('num_inference_steps', 50)
+        steps = data.get('num_inference_steps', default_steps)
+        if type(steps) is not int or not 1 <= steps <= 200:
+            errors.append("num_inference_steps must be an integer in [1, 200]")
+        elif expected_steps is not None and steps != expected_steps:
+            errors.append(f"num_inference_steps must be {expected_steps} to match the Base AdaLN cache")
         return steps
 
     def _generate_mmh3_warnings(self, data: Dict[str, Any], resolution: str, warnings: List[str]) -> None:
@@ -2139,6 +2128,15 @@ class VideoGenerationService:
                 from x_diffusers.adaptor.h3_refiner_service import parameter_spec
                 return jsonify(parameter_spec(self.default_config))
             h3_base = 'minimax-h3' in self.default_config.get('model', '').lower()
+            step_constraints = {"min": 1, "max": 200}
+            default_steps = 40
+            if h3_base:
+                errors = []
+                default_steps = self._validate_mmh3_steps({}, errors)
+                if errors:
+                    return jsonify({"errors": errors}), 503
+                if self.default_config.get('adaln_cache_file'):
+                    step_constraints = {"min": default_steps, "max": default_steps}
             return jsonify({
                 "parameters": {
                     "prompt": {
@@ -2178,9 +2176,9 @@ class VideoGenerationService:
                     "num_inference_steps": {
                         "type": "integer",
                         "required": False,
-                        "default": 40,
+                        "default": default_steps,
                         "description": "Number of denoising steps",
-                        "constraints": {"min": 1, "max": 200}
+                        "constraints": step_constraints
                     },
                     "seed": {
                         "type": "integer",
@@ -2717,7 +2715,9 @@ class VideoGenerationService:
 
         # --- MiniMax-H3: skip Wan2.2-specific config updates ---
         if "minimax-h3" in config.get("model", "").lower():
+            steps = data.get('num_inference_steps', config.get('num_inference_steps', 50))
             self._update_basic_config(config, data, prompt)
+            config['num_inference_steps'] = steps
             self._update_path_config(config, data, save_path)
             # MiniMax-H3 specific params from request
             if data.get('task_type'):
@@ -2788,6 +2788,8 @@ class VideoGenerationService:
             if self.default_config.get('h3_attention', 'legacy') != 'legacy':
                 from x_diffusers.adaptor.h3_attention_service import configure_args as configure_sparse_args
                 configure_sparse_args(self.default_config, data, args)
+            if args.task_type == "ref2va" and data.get("ref_path"):
+                reference_conditioning(args)
             return args
 
         # --- Wan2.2 original path ---
@@ -3134,8 +3136,15 @@ class VideoGenerationService:
                 self.maas_health = self.maas_health.advance('saving')
             if maas_task is not None:
                 self._publish_maas_task(maas_task, output, save_path, args, infer_time)
+                output = None
+                from x_diffusers.adaptor.h3_memory import release_request_memory
+                release_request_memory()
                 return True
             self._save_video(output, save_path, args)
+            if "minimax-h3" in args.model.lower():
+                output = None
+                from x_diffusers.adaptor.h3_memory import release_request_memory
+                release_request_memory()
             self._complete_task(task_id, save_path, infer_time)
 
             logger.info(f"[Rank 0] Task {task_id} completed in {infer_time:.2f}s")
@@ -3203,6 +3212,9 @@ class VideoGenerationService:
                     infer_info.update_info(args)
                     infer_info.save_path = save_path
                     self.inference_manager.infer_single(args)
+                    if "minimax-h3" in args.model.lower():
+                        from x_diffusers.adaptor.h3_memory import release_request_memory
+                        release_request_memory()
 
             except Exception as e:
                 logger.error(f"[Rank {self.rank}] Worker loop error: {str(e)}", exc_info=True)
@@ -3268,11 +3280,12 @@ class VideoGenerationService:
                         self.maas_health = self.maas_health.advance('idle')
                 last_heartbeat_time = time.time()
 
-                gc.collect()
-                if hasattr(torch, 'npu') and torch.npu.is_available():
-                    torch.npu.empty_cache()
-                else:
-                    torch.cuda.empty_cache()
+                if "minimax-h3" not in self.default_config.get('model', '').lower():
+                    gc.collect()
+                    if hasattr(torch, 'npu') and torch.npu.is_available():
+                        torch.npu.empty_cache()
+                    else:
+                        torch.cuda.empty_cache()
 
             except Exception as e:
                 logger.error(f"[Rank 0] Task processor error: {str(e)}", exc_info=True)

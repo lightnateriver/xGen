@@ -66,8 +66,8 @@ def validate_settings(args):
         raise ValueError('Experimental CUDA H3 Refiner supports --atten none, sage or sparge')
     if not cuda and args.atten != 'laser':
         raise ValueError('Experimental NPU H3 Refiner requires Laser attention')
-    points = (9,) if getattr(args, "h3_turbo8", False) else (21, 51)
-    if args.num_inference_steps not in points:
+    steps = (8,) if getattr(args, "h3_turbo8", False) else (20, 50)
+    if type(args.num_inference_steps) is not int or args.num_inference_steps not in steps:
         raise ValueError('Base schedule does not match the selected inference profile')
     if (args.width, args.height) != (2560, 1440) or args.save_fps != 24:
         raise ValueError('Experimental H3 Refiner supports landscape 2560x1440 at 24fps only')
@@ -101,16 +101,21 @@ def validate_inputs(args):
     refs = getattr(args, 'reference_paths', None) or []
     first, last = getattr(args, 'keyframe_image', ''), getattr(args, 'keyframe_last_image', '')
     if not isinstance(refs, (list, tuple)) or any(not isinstance(p, str) for p in refs):
-        raise ValueError('reference_paths must be a list of image paths')
+        raise ValueError('reference_paths must be a list of media paths')
     if not isinstance(first, str) or not isinstance(last, str):
         raise ValueError('Keyframes must be image paths')
     if args.task_type == 't2va' and (refs or first or last):
         raise ValueError('t2va does not accept images')
     if args.task_type == 'fl2va' and (not first or last or refs):
         raise ValueError('Initial fl2va support requires one first-frame image only')
-    if args.task_type == 'ref2va' and (len(refs) != 5 or first or last):
-        raise ValueError('Initial ref2va support requires exactly five reference images')
-    paths = refs if args.task_type == 'ref2va' else ([first] if first else [])
+    if args.task_type == 'ref2va':
+        if first or last:
+            raise ValueError('Ref2VA does not accept first or last keyframes')
+        from .h3_references import reference_conditioning
+
+        reference_conditioning(args)
+        return
+    paths = [first] if first else []
     if len(set(paths)) != len(paths):
         raise ValueError('Reference image paths must be distinct')
     from PIL import Image

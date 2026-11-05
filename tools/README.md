@@ -105,6 +105,10 @@ git apply ./seedvr2.patch
 bash seedvr2.sh
 ```
 
+## NPU 离线 H3 benchmark
+
+`bench_h3_npu.py` 复用原有八卡推理入口，覆盖 T2VA、I2VA、R2VA 的 5/10/15 秒、768P/2K 和多媒体参考。每个工作组只加载一次模型，逐项追加性能与内存采样到带时间戳的报告。素材准备、全矩阵命令、预热与计时口径见 [benchmark 教程](../docs/H3-NPU-BENCHMARK.md)，历史结果见 [20 步性能表](../docs/performance/h3-npu-offline-20261105.md)。
+
 ## 插帧模型
 
 插帧功能使用 IFRNet_S_Vimeo90K 模型，下载地址：

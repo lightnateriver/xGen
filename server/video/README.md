@@ -8,7 +8,7 @@ MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](
 
 平台对接所需的请求、响应、错误码、计时和探针语义见 [MaaS FL2VA 接口文档](MAAS-FL2VA-API.md)。
 
-在已有的 H3 CUDA FL2VA 服务启动命令上添加 `--maas-fl2va-input`。模型配置使用 `MiniMax-H3`、`task_type=fl2va` 和 `num_inference_steps=51`，并按 [CUDA 部署教程](../../docs/H3-CUDA.md) 准备权重。这个模式固定使用 H3 Base、768P 横屏、5 秒、24 fps、50 次实际 DiT。省略开关时使用原有接口校验。启用后 `/params` 返回这套规格，`/config` 保持只读。
+在已有的 H3 CUDA FL2VA 服务启动命令上添加 `--maas-fl2va-input`。模型配置使用 `MiniMax-H3`、`task_type=fl2va` 和 `num_inference_steps=50`，并按 [CUDA 部署教程](../../docs/H3-CUDA.md) 准备权重。这个模式固定使用 H3 Base、768P 横屏、5 秒、24 fps、50 次实际 DiT。省略开关时使用原有接口校验。启用后 `/params` 返回这套规格，`/config` 保持只读。
 
 `POST /v1/tasks` 接受 JSON 对象 `{"id":"job-1","input":{...}}`，可选 `created_at` 使用 Unix 毫秒。`POST /generate` 直接接收 `input` 对象的内容。`prompt` 和 `first_frame` 必填，`seed` 默认为 42，`enable_audio` 默认为 `true`。固定字段可以省略，显式传入时必须匹配 `/params`。
 

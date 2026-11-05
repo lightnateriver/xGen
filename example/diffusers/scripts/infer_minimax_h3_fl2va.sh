@@ -68,7 +68,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --task_type fl2va \
          --keyframe_image "${FIRST_FRAME}" "${LAST_FRAME_ARGS[@]}" \
          --save_path "${OUTPUT_PATH}" \
-         --num_inference_steps "${NUM_INFERENCE_STEPS:-51}" \
+         --num_inference_steps "${NUM_INFERENCE_STEPS:-50}" \
          --width "${WIDTH:-1344}" \
          --height "${HEIGHT:-768}" \
          --frames "${FRAMES:-124}" \

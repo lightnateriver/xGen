@@ -33,7 +33,7 @@ GPUS=8 ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 XGEN_PHAA_FP8=1 \
   --h3_nvfp4_resident --h3_cuda_vae_sp --phaa_num 2
 ```
 
-默认请求 124 帧，24 fps，51 个调度点对应 50 次 DiT。可选 `ATTENTION_BACKEND=sage` 使用 5090 上的 INT8 Q/K 和 FP8 P×V。FP8 PHAA 同时控制去程和回程。关闭该环境开关即可恢复常规通信。
+默认生成 124 帧，24 fps，执行 50 次 DiT。可选 `ATTENTION_BACKEND=sage` 使用 5090 上的 INT8 Q/K 和 FP8 P×V。FP8 PHAA 同时控制去程和回程。关闭该环境开关即可恢复常规通信。
 
 `XGEN_PHAA_DEVICE_JOIN=1` 可在 CUDA H3 的单通信流 FP8 PHAA 中试用 GPU 流间等待。它默认关闭，且不能与 `XGEN_PHAA_DUAL_COMM=1` 组合。流间等待可能延后临时张量的回收，显存峰值和时延收益需按实际请求验证。取消设置该变量即可恢复原来的主机同步。
 
@@ -163,7 +163,7 @@ BF16 配置和 NVFP4 Base 权重，由 Refiner 统一管理阶段驻留。
   "text_encoder_tp": 1,
   "phaa_num": 2,
   "atten": "none",
-  "num_inference_steps": 51,
+  "num_inference_steps": 50,
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
   "vae_lightning": "none",

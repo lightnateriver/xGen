@@ -174,6 +174,8 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 
 [详细 GPU 性能与对照口径](docs/performance/h3-cuda.md)
 
+整理后的默认配置另做了八卡 20 步回归：T2VA 57.67 s、I2VA 88.70 s。两条 MP4 均与上述人工认可样例的文件哈希完全一致；新机器首次图像条件请求没有单独预热，具体口径见详细记录。
+
 ## 在线服务
 
 在另一个终端提交请求。下面的示例都用本机 5001 端口，启动其中一个即可。
@@ -190,7 +192,7 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
 
 ### CUDA 在线
 
-普通 768P I2VA 可用 BF16 配置。它与 NPU Base 使用同一套提交、查询和下载接口。
+普通 768P I2VA 默认使用 FP8 Linear＋BF16 attention。它与 NPU Base 使用同一套提交、查询和下载接口。
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \

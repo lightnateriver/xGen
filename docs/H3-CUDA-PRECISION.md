@@ -23,7 +23,7 @@ CUDA H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。它复用现有 Inference
 ## 离线启动
 
 ```bash
-export MODEL_PATH=./weights/h3
+export BASE_MODEL=./weights/h3
 export PROMPT_FILE=./inputs/prompt.txt
 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p inputs/first-frame.png
@@ -68,3 +68,15 @@ decoder 复用 Diffusers ModuleGroup 保存约 4.52 GiB 锁页 CPU 权重 / rank
 用户人工认可的历史样例：八卡 RTX 5090、5 秒档、768P、实际 20 次 DiT，T2VA 56.752 s、I2VA 72.669 s；取八 rank 最慢常驻请求至 MP4 保存，不含初始化和客户端下载。一条完整 1 步 T2VA 预热后测两项，I2VA 为首次图像条件请求。不是 HTTP SLA，也不能外推为所有素材的质量保证。
 
 这条精度可接受路径尚未达到 T2VA <50 秒。新默认没有包含快于 50 秒但人工精度不可接受的 NVFP4 实验。本轮 10/15 秒、R2VA、2K 和不同 GPU 没有继承上述精度结论；R2VA / 2K 继续使用既有路线。整理后代码的回归结果单独记录，不冒充新性能数据。
+
+算子、VAE 和默认配置回归不需要下载模型权重，在已安装 xGen / H3 运行依赖和 pytest 的环境执行：
+
+```bash
+XGEN_DEVICE=cuda PYTHONPATH=./server/video:./x_base:./x_diffusers \
+  python -m pytest --noconftest --import-mode=importlib -q \
+  x_base/tests/test_h3_cuda_precision_ops.py \
+  x_diffusers/tests/test_h3_cuda_precision_config.py \
+  x_diffusers/tests/test_h3_cuda_decode_chunks.py server/video/test_cuda_precision.py
+```
+
+无 CUDA 时部分算子测试会跳过；CPU 测试不能替代真实八卡出片。整理后离线及 MaaS 验证结果见 [性能与回归记录](performance/h3-cuda.md#整理后代码的默认路径回归)。

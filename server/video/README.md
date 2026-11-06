@@ -507,3 +507,20 @@ while True:
 > 实际性能取决于分辨率、帧数、模型等参数
 > 
 > 默认开启: `atten_laser`, `matmul_a8w8`, `rope_fused`
+
+
+## CUDA H3 默认配方
+
+CUDA H3 Base 的 T2VA / I2VA 默认采用 `fp8-bf16`：FP8 Linear、BF16 cuDNN attention / 通信、文本 TP8、PHAA2、50 层常驻。使用完整原始模块权重；默认 Base / MaaS 无需 packed NVFP4 文件。NPU 的默认配置保持不变。
+
+从仓库根目录运行八卡服务：
+
+```bash
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
+  server/video/video_server.py --init --maas-fl2va-input \
+  --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
+```
+
+先填写 JSON 中的模型路径。普通 Base HTTP 使用 `h3_cuda_base.example.json` 并去掉 MaaS 开关。通过配置或启动参数 `--h3_cuda_precision none` 可选择旧 CUDA 路径，服务启动后不能在请求之间切换 precision。MaaS 仍固定 I2VA、5 秒、768P 和 50 次实际 DiT；排队、超时、健康探针及原子发布接口不变。
+
+详细的精度、锁页内存成本、验证范围及历史性能见 [CUDA 默认配方](../../docs/H3-CUDA-PRECISION.md)。当前只将 5 秒、20 步 T2VA / I2VA 的人工审核结论记录为该组样例通过，不将解码成功等同于所有素材的精度通过。

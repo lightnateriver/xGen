@@ -55,6 +55,19 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 使用干净的启动终端，清除旧配方的 `XGEN_PHAA_FP8=1` 等环境变量。新配方要求 BF16 通信，会拒绝该冲突，不会悄悄改成 FP8 通信。服务也采用同样的 RGB8 / veryfast 保存策略。接口和预热见 [在线教程](H3-ONLINE.md#cuda-maas)。
 
+## 可选输出 AdaLN 融合
+
+`XGEN_H3_FUSED_OUTPUT_ADALN=1` 是默认关闭的 CUDA fp8-bf16 实验开关。它复用现有 indexed affine 算子处理输出 AdaLN，避免在 SP gather 后展开完整序列的 scale / shift 和乘加中间张量。LayerNorm、投影、AdaLN 缓存、BF16 各次舍入、SP / PHAA 及权重常驻策略保留；不增加依赖。
+
+```bash
+XGEN_H3_FUSED_OUTPUT_ADALN=1 H3_BASE_STEPS=20 \
+  bash example/diffusers/scripts/run_h3.sh cuda t2va 15 768p
+```
+
+I2VA 改为 `cuda i2va 15 768p inputs/first-frame.png`，并使用对应 prompt。关闭时取消设置该变量，再启动进程。该开关仅在 fp8-bf16 配方安装；NPU 及其他旧路径不安装输出融合。启动日志出现 `output AdaLN indexed affine fusion enabled` 表示已接入。它只降低该运算的临时显存，不卸载常驻权重，不保证任意形状均无 OOM。
+
+算子回归见 `x_base/tests/test_h3_output_adaln.py`：CUDA BF16 逐位对照覆盖普通投影及缓存命中路径，另核验临时显存峰值。整条链路的可用性和新时长的人工画面 / 听音结论须分开记录。
+
 ## 内存与后处理
 
 decoder 复用 Diffusers ModuleGroup 保存约 4.52 GiB 锁页 CPU 权重 / rank，八卡约 36.1 GiB；这是该 CPU 副本的大小，并非相对旧方案净增内存的实测值。DiT 阶段 decoder 不驻留 GPU，解码阶段加载其设备副本，结束后切回已有 CPU master，不回传未修改的权重。DiT 的 50 层始终保留在 GPU。

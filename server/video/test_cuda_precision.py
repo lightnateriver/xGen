@@ -23,7 +23,7 @@ def test_npu_service_defaults_are_unchanged():
         else:assert result['phaa_num']==2 and result['matmul_quant']=='none' and result['h3_cuda_precision']=='auto'
 
 
-@pytest.mark.parametrize('profile,preset',[('none','fast'),('fp8-bf16','veryfast')])
+@pytest.mark.parametrize('profile,preset',[('none','fast'),('fp8-bf16','veryfast'),('fp8-sage','veryfast')])
 def test_service_encoding_uses_selected_profile_only(profile,preset):
     service=object.__new__(video_server.VideoGenerationService)
     process=Mock(returncode=0)
@@ -35,11 +35,24 @@ def test_service_encoding_uses_selected_profile_only(profile,preset):
     assert command[command.index('-crf')+1]=='10'
 
 
-def test_http_cached_worker_rejects_precision_change_before_loading():
+@pytest.mark.parametrize('profile',('fp8-bf16','fp8-sage'))
+def test_http_cached_worker_rejects_precision_change_before_loading(profile):
     manager=video_server.VideoInferenceManager()
     manager.pipe=object()
-    manager._h3_cuda_precision_key='fp8-bf16'
+    manager._h3_cuda_precision_key=profile
     args=SimpleNamespace(h3_cuda_precision='none')
     with patch.object(video_server,'device_type',return_value='cuda'):
         with pytest.raises(ValueError,match='Restart the service'):
             manager.initialize_pipe(args)
+
+
+@pytest.mark.parametrize('config_name,profile',[
+    ('h3_cuda_base.example.json','fp8-bf16'),('h3_cuda_sage.example.json','fp8-sage'),
+])
+def test_http_uses_startup_precision_and_ignores_request_override(config_name,profile):
+    config=Path(video_server.__file__).resolve().parents[2]/'example/diffusers/configs'/config_name
+    with patch.object(video_server.VideoGenerationService,'_setup_signal_handlers'):
+        service=video_server.VideoGenerationService(str(config))
+    args=service._build_args(dict(prompt='route contract',task_type='t2va',duration=5,
+                                 h3_cuda_precision='none'),save_path='unused.mp4')
+    assert args.h3_cuda_precision==profile and args.sp==args.text_encoder_tp==8

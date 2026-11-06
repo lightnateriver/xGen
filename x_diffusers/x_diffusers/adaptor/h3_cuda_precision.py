@@ -30,7 +30,7 @@ def resolve(args, backend):
         requested = ('fp8-bf16' if backend == 'cuda' and getattr(args, 'model', None) == 'MiniMax-H3'
                      and getattr(args, 'task_type', None) in ('t2va', 'fl2va') and not legacy else 'none')
     if requested != 'none' and (backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3'):
-        raise ValueError('fp8-bf16 requires CUDA MiniMax-H3; use auto or none on NPU and other models')
+        raise ValueError(f'{requested} requires CUDA MiniMax-H3; use auto or none on NPU and other models')
     args.h3_cuda_precision = requested
     if requested in ('fp8-bf16', 'fp8-sage'):
         if getattr(args, 'phaa_num', 0) == 0:
@@ -40,23 +40,24 @@ def resolve(args, backend):
 
 
 def validate(args, backend):
-    if getattr(args, 'h3_cuda_precision', 'none') == 'none':
+    profile = getattr(args, 'h3_cuda_precision', 'none')
+    if profile == 'none':
         return
     if (backend != 'cuda' or args.model != 'MiniMax-H3' or args.dtype != 'bf16'
             or args.task_type not in ('t2va', 'fl2va') or args.sp != 8
             or not dist.is_initialized() or dist.get_world_size() != 8 or args.text_encoder_tp != 8):
-        raise ValueError('fp8-bf16 requires CUDA BF16 T2VA/FL2VA and world=SP=text TP=8')
+        raise ValueError(f'{profile} requires CUDA BF16 T2VA/FL2VA and world=SP=text TP=8')
     conflicts = ('h3_nvfp4_checkpoint', 'h3_nvfp4_resident', 'h3_nvfp4_compile', 'transformer_path',
                  'adaln_cache_file', 'h3_turbo8', 'h3_turbo_sla_lora', 'h3_refiner', 'lora_path_list',
                  'fsdp', 'inf_vram_blocks_num', 'cache_dit')
     if any(getattr(args, name, None) for name in conflicts) or args.atten != 'none' or args.matmul_quant != 'none':
-        raise ValueError('fp8-bf16 cannot combine with packed weights, LoRA, caches or other attention/quantization recipes; use --h3_cuda_precision none')
+        raise ValueError(f'{profile} cannot combine with packed weights, LoRA, caches or other attention/quantization recipes; use --h3_cuda_precision none')
     if args.h3_cuda_precision == 'fp8-bf16' and os.environ.get('XGEN_PHAA_FP8') == '1':
         raise ValueError('fp8-bf16 requires BF16 communication; unset XGEN_PHAA_FP8')
     if type(args.phaa_num) is not int or args.phaa_num < 1:
-        raise ValueError('fp8-bf16 requires PHAA; the recommended value is 2')
+        raise ValueError(f'{profile} requires PHAA; the recommended value is 2')
     if not getattr(args, 'h3_cuda_vae_sp', False):
-        raise ValueError('fp8-bf16 requires --h3_cuda_vae_sp')
+        raise ValueError(f'{profile} requires --h3_cuda_vae_sp')
 
 
 def validate_manager(manager, args, backend):
@@ -79,9 +80,9 @@ def prepare_transformer(pipe, args, device):
     if args.h3_cuda_precision == 'fp8-sage':
         from x_base.operator.h3_sage_cuda import H3SageCUDA
 
-        dense = H3SageCUDA()
+        attention_backend = H3SageCUDA()
     else:
-        dense = H3DenseCUDA()
+        attention_backend = H3DenseCUDA()
     converted = 0
     for index, block in enumerate(model.transformer_blocks):
         attn = block.attn
@@ -101,7 +102,7 @@ def prepare_transformer(pipe, args, device):
             setattr(parent, name, H3FP8Linear(original.weight, original.bias))
         converted += 4
         block.adaln_proj = H3OwnedAdaLN(block.adaln_proj, index, exact_cache=True)
-        attn._h3_attention_backend = dense
+        attn._h3_attention_backend = attention_backend
     model.time_embedder.register_forward_hook(check_shared_timestep)
     # These fusions preserve the ordinary BF16/FP8 Linear interfaces. Packed FP4 FFN fusions do not.
     from .h3_cuda import install_dit_fusions
@@ -112,13 +113,13 @@ def prepare_transformer(pipe, args, device):
     install_dit_fusions(model, flags)
     resident = len(model.transformer_blocks)
     if resident != 50:
-        raise ValueError('fp8-bf16 expects the complete 50-block H3 Base checkpoint')
+        raise ValueError(f'{args.h3_cuda_precision} expects the complete 50-block H3 Base checkpoint')
     model.to(device)
     model._h3_cuda_precision = args.h3_cuda_precision
     if args.h3_cuda_precision == 'fp8-sage':
-        model._h3_sage_cuda = dense
+        model._h3_sage_cuda = attention_backend
     else:
-        model._h3_dense_cuda = dense
+        model._h3_dense_cuda = attention_backend
     model._h3_cuda_resident_blocks = resident
     logger.info('H3 CUDA precision=%s FP8_main_projections=%d resident_blocks=%d AdaLN=rank-owner exact_cache=%s GEMM=torch._scaled_mm',
                 args.h3_cuda_precision, converted, resident, True)

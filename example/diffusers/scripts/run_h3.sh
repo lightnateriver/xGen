@@ -54,6 +54,10 @@ if [[ ${H3_FAST:-0} == 1 && $backend/$task/$duration/$resolution != cuda/fl2va/5
   echo "H3_FAST=1 selects the measured CUDA FL2VA 5-second 768p profile." >&2
   exit 2
 fi
+if [[ ${H3_CUDA_PRECISION:-auto} == fp8-sage && ( $backend != cuda || $resolution != 768p || $task == ref2va || ${H3_FAST:-0} == 1 ) ]]; then
+  echo "fp8-sage is CUDA standard recipe 2 for T2VA/I2VA 768p; it cannot combine with H3_FAST, R2VA or Refiner." >&2
+  exit 2
+fi
 
 export XGEN_DEVICE=$backend
 export PYTHONPATH="$root/x_base:$root/x_diffusers${PYTHONPATH:+:$PYTHONPATH}"
@@ -105,6 +109,15 @@ else
       --text_encoder_tp 8 --phaa_num 2 --h3_cuda_vae_sp --h3_cuda_precision "${H3_CUDA_PRECISION:-fp8-bf16}")
     if [[ ${H3_CUDA_PRECISION:-fp8-bf16} != none ]]; then
       export NCCL_MAX_CTAS=2
+    fi
+    if [[ ${H3_CUDA_PRECISION:-fp8-bf16} == fp8-sage ]]; then
+      if [[ -n ${PYTORCH_ALLOC_CONF:-} && $PYTORCH_ALLOC_CONF != expandable_segments:True ]]; then
+        echo "fp8-sage standard recipe requires expandable_segments:True; unset conflicting PYTORCH_ALLOC_CONF." >&2
+        exit 2
+      fi
+      export XGEN_PHAA_FP8=1 XGEN_H3_FUSED_OUTPUT_ADALN=1
+      export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
     fi
   fi
   if [[ $resolution == 2k ]]; then

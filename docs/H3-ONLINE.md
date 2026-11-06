@@ -9,6 +9,7 @@
 | NPU Base | T2VA、I2VA、R2VA | 768P | 5 至 15 秒，接受整数 |
 | NPU Refiner | T2VA、I2VA、R2VA | 2K | 5、10 或 15 秒 |
 | CUDA Base fp8-bf16 | T2VA、I2VA；R2VA 保留独立旧路线 | 768P | 5 至 15 秒，接受整数 |
+| CUDA Base fp8-sage | T2VA、I2VA；在线端到端待实测 | 768P | 接口沿用 5 至 15 秒，离线已测 5/10/15 秒 |
 | CUDA Refiner | I2VA | 2K | 接口接受 5、10 或 15 秒，已有 5 和 10 秒结果 |
 | CUDA MaaS | I2VA，单首帧 | 768P、16:9 | 固定 5 秒 |
 
@@ -38,7 +39,20 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   --config example/diffusers/configs/h3_cuda_base.example.json --host 127.0.0.1 --port 5001
 ```
 
-### 5090 上的 15 秒 I2VA
+### CUDA 标准方案二：Sage-FP8
+
+方案一继续作为默认精度参考。方案二复用相同服务接口，采用 Sage attention、FP8 通信、输出调制融合和 expandable segments。修改 [Sage 配置](../example/diffusers/configs/h3_cuda_sage.example.json) 中的模型目录后，从新终端启动：
+
+```bash
+XGEN_DEVICE=cuda XGEN_PHAA_FP8=1 XGEN_H3_FUSED_OUTPUT_ADALN=1 \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True OMP_NUM_THREADS=1 NCCL_MAX_CTAS=2 \
+torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --service-mode t2va \
+  --config example/diffusers/configs/h3_cuda_sage.example.json --host 127.0.0.1 --port 5001
+```
+
+这是尚未完成在线端到端实测的部署示例；离线六项成片与性能见 [方案二教程](H3-CUDA-SAGE.md)。precision 只能在启动时选择，切换后须重启。MaaS 可复用此 JSON 和环境变量，将服务模式参数换为 `--maas-fl2va-input`；固定 5 秒、50 步等输入限制保持原样，不能将离线 20 步性能当作 MaaS 性能。
+
+### 历史 NVFP4 的 15 秒 I2VA
 
 八卡实测使用打包 NVFP4 权重和分层加载。复制 [历史 NVFP4 模型配置](../example/diffusers/configs/h3_cuda_nvfp4_legacy.example.json) 为 `config-cuda-base-15s.json`，把 `h3_nvfp4_resident` 改成 `false`。在新终端执行下列命令，使用原 Base API。
 

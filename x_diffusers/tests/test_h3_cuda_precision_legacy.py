@@ -35,6 +35,14 @@ class DisabledPrecision(ast.NodeTransformer):
         return self.generic_visit(node)
 
     def visit_If(self,node):
+        # The installer adds this opt-in output hook; an empty enabled set
+        # must leave the pre-profile CUDA installer unchanged.
+        if (isinstance(node.test,ast.Compare) and isinstance(node.test.left,ast.Constant)
+                and node.test.left.value=='XGEN_H3_FUSED_OUTPUT_ADALN'
+                and len(node.test.ops)==1 and isinstance(node.test.ops[0],ast.In)
+                and len(node.test.comparators)==1 and isinstance(node.test.comparators[0],ast.Name)
+                and node.test.comparators[0].id=='enabled'):
+            return None
         self.generic_visit(node)
         value=constant(node.test)
         return node if value is None else node.body if value else node.orelse

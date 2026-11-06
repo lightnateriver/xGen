@@ -1,12 +1,14 @@
 # H3 步数、参考输入与显存回收升级说明
 
-本次更新继续使用 `v3.2-maas` 分支。对比上一发布提交 `ef1a321`，主要增加 NPU 离线 benchmark、统一的 R2VA 多媒体输入处理和请求结束后的显存回收。
+本次更新继续使用 `v3.2-maas` 分支。在 `6d462df` 的基础上增加 CUDA 标准方案二 Sage-FP8 和可选输出 AdaLN 融合，保留默认方案一及 NPU 行为。此前相对 `ef1a321` 增加的 NPU benchmark、R2VA 多媒体输入处理和请求结束后的显存回收继续保留。
 
 ## CUDA Base 默认配方更新
 
 CUDA H3 T2VA / I2VA 的 `--h3_cuda_precision auto` 默认选择 `fp8-bf16`：FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻。需要完整原始模块权重，默认示例不再要求 packed NVFP4 文件。当前配方要求八卡；启动配置、CPU 锁页权重成本和验证范围见 [CUDA 默认配方](H3-CUDA-PRECISION.md)。
 
-NPU、其他模型、R2VA，以及显式 packed NVFP4 / Refiner / LoRA / 其他 attention 配置保留既有路线。可用 `--h3_cuda_precision none` 回到旧 CUDA 路径。服务只能在启动时选择配方，修改后需重启；MaaS 请求格式、排队和超时参数不变。本次不合入新的 NVFP4 attention、FP8 通信或 AdaLN gather 实验。
+NPU、其他模型、R2VA，以及显式 packed NVFP4 / Refiner / LoRA / 其他 attention 配置保留既有路线。可用 `--h3_cuda_precision none` 回到旧 CUDA 路径。服务只能在启动时选择配方，修改后需重启；MaaS 请求格式、排队和超时参数不变。
+
+第二套标准方案用 `H3_CUDA_PRECISION=fp8-sage` 通过通用离线脚本选择，脚本自动开启已有 FP8 通信、输出 AdaLN indexed affine fusion 和 expandable segments。需要 SageAttention CUDA 扩展；原默认路径不需要它。5/10/15 秒 T2VA / I2VA 六项、20 步已通过完整解码，人工精度待审；R2VA、2K、四卡及在线端到端尚未验证。详情见 [方案二](H3-CUDA-SAGE.md)。本次不纳入新的 NVFP4 或 AdaLN gather 试验。
 
 ## 步数现在表示实际 DiT 次数
 

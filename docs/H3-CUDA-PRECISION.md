@@ -1,6 +1,6 @@
 # CUDA H3 默认配方：fp8-bf16
 
-CUDA H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。它复用现有 InferenceManager、SP、PHAA、文本 TP 和 VAE tile，不新增服务或调度体系。NPU 和其他模型的默认路径不变。
+这是 CUDA 标准方案一，H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。5 秒、20 步固定样例已有人工精度认可。它复用现有 InferenceManager、SP、PHAA、文本 TP 和 VAE tile，不新增服务或调度体系。NPU 和其他模型的默认路径不变。更快、人工精度待审核的第二套标准方案见 [Sage-FP8](H3-CUDA-SAGE.md)。
 
 | 模块 | 当前精度 / 策略 |
 |---|---|
@@ -12,7 +12,7 @@ CUDA H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。它复用现有 Inference
 | 视频 decoder | 原 FP16 autocast；218 个 Linear 提前存 FP16，其余层保留原 dtype |
 | 音频 VAE | FP32，整模块按需上卡，结束或异常后回 CPU |
 
-本轮不包含 NVFP4 attention、FP8 通信、AdaLN gather、部分层常驻或区域编译实验。历史 NVFP4 / Refiner 路线仍可显式使用，不能将其精度结论套用到本配方。
+本方案默认不包含 NVFP4 attention、FP8 通信、AdaLN gather、部分层常驻或区域编译。历史 NVFP4 / Refiner 路线仍可显式使用，不能将其精度结论套用到本配方。
 
 ## 模型与环境
 
@@ -68,7 +68,7 @@ I2VA 改为 `cuda i2va 15 768p inputs/first-frame.png`，并使用对应 prompt�
 
 算子回归见 `x_base/tests/test_h3_output_adaln.py`：CUDA BF16 逐位对照覆盖普通投影及缓存命中路径，另核验临时显存峰值。整条链路的可用性和新时长的人工画面 / 听音结论须分开记录。
 
-可选的 Sage 配方与独立启动方法见 [CUDA Sage 实验](H3-CUDA-SAGE-EXPERIMENT.md)。它默认关闭，复用本配方的 FP8 Linear、常驻权重和 VAE 链路；Sage attention 及 FP8 通信的成片精度仍需单独人工审核。
+标准方案二与独立启动方法见 [CUDA Sage-FP8](H3-CUDA-SAGE.md)。它显式选择，复用本配方的 FP8 Linear、常驻权重和 VAE 链路；Sage attention 及 FP8 通信的成片精度仍需单独人工审核。
 
 ## 内存与后处理
 

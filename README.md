@@ -10,9 +10,11 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 CUDA H3 Base 的 T2VA / I2VA 默认采用 [fp8-bf16 配方](docs/H3-CUDA-PRECISION.md)：FP8 Linear 与文本 TP8、BF16 attention / 通信、50 层 DiT 常驻，以及 VAE 和音频内存修复。NPU 默认保持不变；可显式选择旧 CUDA 路径。
 
+CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage attention、FP8 双向通信、输出 AdaLN 调制融合和 `expandable_segments`。八卡 5090 的 5/10/15 秒、20 步 T2VA / I2VA 实测更快，六条成片均完整解码通过；人工画面、口型和听音审核仍待完成。原精度认可方案继续保留为默认。
+
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v3.2-maas](../../tree/v3.2-maas) | CUDA H3 Base 默认 fp8-bf16，补齐 VAE / 音频搬运与保存优化；MaaS 接口、排队与超时、健康探针、原子发布、环境采集；补充 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和每条成片后的显存回收。 | [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) · [环境采集](tools/README.md#cuda-和-npu-环境采集) |
+| [v3.2-maas](../../tree/v3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
 | [v0.3-cuda](../../tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](docs/H3-CUDA.md) |
 | [v0.3](../../tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](docs/H3-ATTENTION.md) · [实测](docs/H3-ATTENTION-VALIDATION.md) |
@@ -73,6 +75,11 @@ bash example/diffusers/scripts/run_h3.sh npu r2va 15 2k
 
 先准备 [完整 FL2VA 权重和依赖](docs/H3-CUDA-PRECISION.md#模型与环境)。CUDA 768P 的 T2VA / I2VA 默认使用 **FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻**，八卡启动。5 秒、20 步样例已获人工精度认可；R2VA 保留原路线，精度仍待验证。建议先从 5 秒试跑。
 
+| 标准方案 | 选择方式 | 适用范围与审核状态 |
+|---|---|---|
+| 一：精度参考 `fp8-bf16` | 默认，不需新增开关 | 八卡 T2VA / I2VA；5 秒、20 步固定样例人工精度认可 |
+| 二：更高性能 `fp8-sage` | 命令前加 `H3_CUDA_PRECISION=fp8-sage` | 八卡 T2VA / I2VA 768P，5/10/15 秒、20 步技术通过；人工精度待审 |
+
 ```bash
 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
@@ -80,6 +87,15 @@ bash example/diffusers/scripts/run_h3.sh cuda r2va 5 768p
 ```
 
 用 `H3_BASE_STEPS=20` 可做 20 步复测；用 `H3_CUDA_PRECISION=none` 显式回到旧 CUDA 路径。长视频须单独验证峰值和画质。
+
+**方案二：Sage-FP8。** 脚本自动开启 FP8 通信、输出 AdaLN 融合和 `expandable_segments`，无需再拼接环境变量。准备对应时长的 prompt 后，时长可改为 `5`、`10` 或 `15`。下面按已测的 20 步启动：
+
+```bash
+H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
+H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
+```
+
+两套方案均使用 FP8 Linear 和文本 TP8、50 层常驻及 VAE 空间 tile。方案二需安装 SageAttention CUDA 扩展；不是 NVFP4 或稀疏方案。本次未验证 Sage 的 R2VA、2K、四卡及在线端到端，范围见 [方案二教程](docs/H3-CUDA-SAGE.md)。
 
 CUDA 2K 目前走 I2VA，需要打包 NVFP4 和 [CUDA Refiner 资产](docs/H3-CUDA.md#实验性-cuda-2k-refiner)。接口接受 5、10、15 秒，已有 5 和 10 秒结果。
 
@@ -174,6 +190,19 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 
 [详细 GPU 性能与对照口径](docs/performance/h3-cuda.md)
 
+**CUDA 两套标准方案的 20 步参考**：8×RTX 5090、SP8、768P；单位为生成至 MP4 保存的秒数，不含模型初始化。Sage 每项先完整预热 1 步，复用同一组模型。历史基线的预热条件存在差异，比较的是整套配方，不能归因为单个算子收益。方案一仅 5 秒样例已人工认可，Sage 六项均为技术通过、人工待审。
+
+| 任务 | 时长 | 方案一 BF16 attention / 通信 | 方案二 Sage / FP8 通信 |
+|---|---:|---:|---:|
+| T2VA | 5s | 56.75 | **42.93** |
+| I2VA | 5s | 72.67 | **48.09** |
+| T2VA | 10s | 148.76 | **76.23** |
+| I2VA | 10s | 164.70 | **97.81** |
+| T2VA | 15s | 293.38 | **148.15** |
+| I2VA | 15s | 308.16 | **161.12** |
+
+方案一的 15 秒行额外开启输出 AdaLN 融合和 `expandable_segments`，不是未加开关的默认路径。15 秒峰值 allocated 仍约 29.88 / 30.00 GiB/卡，Sage 主要提速，没有明显降低该形状的峰值。详细阶段、显存和预热口径见 [六项实测](docs/H3-CUDA-SAGE.md#性能与验证)。
+
 整理后的默认配置另做了八卡 20 步回归：T2VA 57.67 s、I2VA 88.70 s。两条 MP4 均与上述人工认可样例的文件哈希完全一致；新机器首次图像条件请求没有单独预热，具体口径见详细记录。
 
 ## 在线服务
@@ -201,6 +230,8 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 ```
 
 原服务用 `/generate` 提交。Base HTTP 接受 5 至 15 秒的整数时长。 [各任务的请求和下载示例](docs/H3-ONLINE.md#提交原服务请求)
+
+Sage-FP8 在线启动配置见 [方案二在线说明](docs/H3-CUDA-SAGE.md#在线服务)。它复用原接口，属于尚未完成在线端到端实测的部署示例；上述六项性能来自离线常驻请求。
 
 ### 2K 在线
 

@@ -4,6 +4,13 @@
 
 默认 Base / MaaS 配方为 [fp8-bf16](H3-CUDA-PRECISION.md)：FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻。完整模块权重不需要 NVFP4、FlashInfer、Sage、Sparge 或 Comfy-Kitchen；下述 NVFP4 段落为保留的显式历史路线。用 `--h3_cuda_precision none` 回到旧路径。
 
+CUDA 第二套标准方案为 [Sage-FP8](H3-CUDA-SAGE.md)：相同 FP8 Linear、Sage attention、FP8 双向通信、输出调制融合和 expandable segments。八卡 5090 的 5/10/15 秒 T2VA / I2VA、20 步实测更快，人工画面与听音待审核。通用脚本用 `H3_CUDA_PRECISION=fp8-sage` 一次选择完整组合，原默认方案继续保留。
+
+```bash
+H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
+H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
+```
+
 ## 环境和模型
 
 在运行 xGen 的环境中，可执行 `XGEN_DEVICE=cuda python tools/collect_env.py` 检查 GPU、驱动和 CUDA 依赖。脚本也支持 [自动识别设备](../tools/README.md#cuda-和-npu-环境采集)。
@@ -27,7 +34,7 @@ hf download lilcheaty/MiniMax-H3-NVFP4 minimax_h3_fl2va_pruned_nvfp4.safetensors
   --revision 8c5abfed61e1b6a170240792b65253fba1a65b7b --local-dir ./weights/nvfp4
 ```
 
-## 768P 离线
+## 历史 NVFP4 768P 离线
 
 ```bash
 GPUS=8 ATTENTION_BACKEND=sparge XGEN_SPARGE_TOPK=0.5 XGEN_PHAA_FP8=1 \

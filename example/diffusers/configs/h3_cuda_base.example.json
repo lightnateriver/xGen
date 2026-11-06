@@ -6,7 +6,7 @@
   "dtype": "bf16",
   "sp": 8,
   "text_encoder_tp": 8,
-  "phaa_num": 4,
+  "phaa_num": 2,
   "num_inference_steps": 50,
   "fsdp": null,
   "atten": "none",
@@ -16,5 +16,6 @@
   "rope_fused": false,
   "transformer_path": null,
   "adaln_cache_file": null,
-  "h3_cuda_vae_sp": true
+  "h3_cuda_vae_sp": true,
+  "h3_cuda_precision": "fp8-bf16"
 }

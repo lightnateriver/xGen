@@ -100,6 +100,13 @@ else
   launch=(--standalone)
   profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
     --text_encoder_tp 8 --phaa_num 4 --h3_cuda_vae_sp)
+  if [[ $resolution == 768p && $task != ref2va ]]; then
+    profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
+      --text_encoder_tp 8 --phaa_num 2 --h3_cuda_vae_sp --h3_cuda_precision "${H3_CUDA_PRECISION:-fp8-bf16}")
+    if [[ ${H3_CUDA_PRECISION:-fp8-bf16} != none ]]; then
+      export NCCL_MAX_CTAS=2
+    fi
+  fi
   if [[ $resolution == 2k ]]; then
     base_model=${MODEL_PATH:-weights/h3}
     profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none

@@ -8,7 +8,7 @@
 |---|---|---|---|
 | NPU Base | T2VA、I2VA、R2VA | 768P | 5 至 15 秒，接受整数 |
 | NPU Refiner | T2VA、I2VA、R2VA | 2K | 5、10 或 15 秒 |
-| CUDA Base BF16 | I2VA。T2VA、R2VA 为待实机验证的候选入口 | 768P | 5 至 15 秒，接受整数 |
+| CUDA Base fp8-bf16 | T2VA、I2VA；R2VA 保留独立旧路线 | 768P | 5 至 15 秒，接受整数 |
 | CUDA Refiner | I2VA | 2K | 接口接受 5、10 或 15 秒，已有 5 和 10 秒结果 |
 | CUDA MaaS | I2VA，单首帧 | 768P、16:9 | 固定 5 秒 |
 
@@ -30,7 +30,7 @@ R2VA 单独启动。复制上述 JSON，修改 `task_type` 为 `ref2va`，`trans
 
 ## CUDA Base
 
-以下为 BF16 稠密配置。先准备包含完整 BF16 Transformer 的 `weights/base`。它可用于 FL2VA 请求。需要验证 T2VA 或 R2VA 时，将 JSON 的 `task_type` 和启动时的 `--service-mode` 设为相应工作流。R2VA 使用包含 `transformer_ref/` 的完整模型目录。
+默认配置为 [fp8-bf16](H3-CUDA-PRECISION.md)：FP8 Linear、BF16 稠密 attention / 通信、文本 TP8、50 层常驻。准备包含完整 Transformer 的 `weights/base`。T2VA 使用 `--service-mode t2va`，该模式同时接受 T2VA / I2VA；只服务 I2VA 时使用 fl2va。R2VA 使用独立 ref2va 模式及包含 transformer_ref 的模型目录，继续走旧路线。需要回退时，在配置中设置 `"h3_cuda_precision":"none"` 或启动时加同名 CLI 参数。
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
@@ -40,7 +40,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 ### 5090 上的 15 秒 I2VA
 
-八卡实测使用打包 NVFP4 权重和分层加载。复制 [CUDA MaaS 模型配置](../example/diffusers/configs/h3_maas.example.json) 为 `config-cuda-base-15s.json`，把 `h3_nvfp4_resident` 改成 `false`。在新终端执行下列命令，使用原 Base API。
+八卡实测使用打包 NVFP4 权重和分层加载。复制 [历史 NVFP4 模型配置](../example/diffusers/configs/h3_cuda_nvfp4_legacy.example.json) 为 `config-cuda-base-15s.json`，把 `h3_nvfp4_resident` 改成 `false`。在新终端执行下列命令，使用原 Base API。
 
 ```bash
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -108,7 +108,7 @@ curl -fsS -o result.mp4 "http://127.0.0.1:5001/download/$TASK_ID"
 
 ## CUDA MaaS
 
-准备 [CUDA 模型组件与 NVFP4 权重](H3-CUDA.md#环境和模型)，然后启动：
+准备 [完整 FL2VA 模块与 fp8-bf16 环境](H3-CUDA-PRECISION.md#模型与环境)，然后启动：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \

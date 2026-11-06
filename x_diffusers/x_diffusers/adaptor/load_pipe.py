@@ -311,7 +311,11 @@ def load_minimax_h3_pipe(args):
     # enable_tp() in parallelism_ability will replace nn.Linear with
     # ColumnParallelLinear/RowParallelLinear, and group offloading must
     # be applied AFTER that replacement to wrap the new TP layers.
-    if packed_resident:
+    if getattr(args, "h3_cuda_precision", "none") != "none":
+        from .h3_cuda_precision import prepare_transformer
+
+        prepare_transformer(pipe, args, onload_device)
+    elif packed_resident:
         logger.info("Keeping packed H3 DiT resident on %s", onload_device)
         pipe.transformer.to(onload_device)
         if cuda_fusions:
@@ -336,8 +340,13 @@ def load_minimax_h3_pipe(args):
         apply_group_offloading(pipe.text_encoder, offload_type="leaf_level", **offload)
 
     # VAEs are small enough to stay on device
-    pipe.vae.to(onload_device)
-    pipe.audio_vae.to(onload_device)
+    if getattr(args, "h3_cuda_precision", "none") != "none":
+        from .h3_cuda_precision import prepare_vaes
+
+        prepare_vaes(pipe, args, onload_device)
+    else:
+        pipe.vae.to(onload_device)
+        pipe.audio_vae.to(onload_device)
 
     if backend == "cuda":
         return pipe
@@ -427,6 +436,13 @@ def to_dtype(name: str):
 
 def load_pipe(args):
     backend = device_type()
+    precision = getattr(args, "h3_cuda_precision", "auto")
+    if precision != "none":
+        from .h3_cuda_precision import resolve, validate
+
+        precision = resolve(args, backend)
+        if precision != "none":
+            validate(args, backend)
     if (backend != "cuda" or args.model != "MiniMax-H3") and any((
         getattr(args, "h3_nvfp4_checkpoint", None),
         getattr(args, "h3_nvfp4_resident", False),
@@ -634,6 +650,10 @@ def parallelism_ability(pipe, args):
         if is_minimax_h3:
             # MiniMax-H3: TP 目标是 text_encoder (Qwen3-VL)，只对前 50 层做 TP
             enable_tp(pipe.text_encoder, args.text_encoder_tp, target_layers=range(50))
+            if getattr(args, "h3_cuda_precision", "none") != "none":
+                from .h3_cuda_precision import prepare_text_tp
+
+                prepare_text_tp(pipe)
             # TP 替换后重新 apply group offloading (load_minimax_h3_pipe 中跳过了)
             if not hasattr(pipe.text_encoder, '_tp_offload_applied'):
                 from diffusers.hooks import apply_group_offloading
@@ -933,5 +953,10 @@ def pipe_to_device(pipe, args):
         _pipe_to_device_vram_offload(pipe, args, is_contain_transformer_2)
     else:
         _pipe_to_device_full(pipe, args)
+
+    if getattr(args, "h3_cuda_precision", "none") != "none":
+        from .h3_cuda_precision import offload_audio
+
+        offload_audio(pipe.audio_vae)
 
     return pipe

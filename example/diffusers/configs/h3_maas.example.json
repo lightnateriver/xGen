@@ -3,19 +3,18 @@
   "task_type": "fl2va",
   "resolution": "768p",
   "pretrained_model_name_or_path": "weights/h3",
-  "h3_nvfp4_checkpoint": "weights/nvfp4/minimax_h3_fl2va_pruned_nvfp4.safetensors",
-  "h3_nvfp4_resident": true,
   "h3_cuda_vae_sp": true,
   "sp": 8,
   "text_encoder_tp": 8,
-  "phaa_num": 4,
+  "phaa_num": 2,
   "num_inference_steps": 50,
   "fsdp": null,
-  "atten": "sparge",
+  "atten": "none",
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
   "vae_lightning": "none",
   "rope_fused": false,
   "transformer_path": null,
-  "adaln_cache_file": null
+  "adaln_cache_file": null,
+  "h3_cuda_precision": "fp8-bf16"
 }

@@ -68,6 +68,7 @@ class InferenceManager(object):
             "h3_nvfp4_resident",
             "h3_nvfp4_compile",
             "h3_cuda_vae_sp",
+            "h3_cuda_precision",
         ]
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.rank = dist.get_rank() if dist.is_initialized() else 0
@@ -594,6 +595,8 @@ class InferenceManager(object):
         fps = getattr(args, "save_fps", None) or 24
 
         cmd = InferenceManager._build_ffmpeg_cmd(width, height, fps, audio_path, args.save_path)
+        if getattr(args, "h3_cuda_precision", "none") != "none":
+            cmd[cmd.index("-preset") + 1] = "veryfast"
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
         for frame in frames:
             proc.stdin.write(InferenceManager._frame_to_uint8_hwc(frame).tobytes())
@@ -825,6 +828,10 @@ class InferenceManager(object):
 
     def _prepare_pipeline(self, args):
         """抽离出的公共逻辑：处理 pipeline 重建、LoRA 更新和设备分配"""
+        if getattr(args, "h3_cuda_precision", "auto") != "none":
+            from .h3_cuda_precision import resolve
+
+            resolve(args, device_type())
         if getattr(args, "h3_refiner", False):
             from .h3_refiner import prepare
             return prepare(self, args)

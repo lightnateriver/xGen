@@ -807,11 +807,14 @@ _original_video_decode_step_call = MiniMaxH3VideoDecodeStep.__call__
 
 @torch.no_grad()
 def _decode_long_cuda_video(self, pipeline, state):
-    if not getattr(pipeline, "_h3_base_long_video", False):
+    cpu_chunks = getattr(pipeline, "_h3_cuda_cpu_decode_chunks", False)
+    if not cpu_chunks and not getattr(pipeline, "_h3_base_long_video", False):
         return _original_video_decode_step_call(self, pipeline, state)
     device = pipeline._execution_device
     block_state = self.get_block_state(state)
     if device.type != "cuda" or block_state.output_type != "pil":
+        if cpu_chunks:
+            raise ValueError("H3 CUDA CPU decode chunks require CUDA PIL video output")
         return _original_video_decode_step_call(self, pipeline, state)
 
     vae = pipeline.vae
@@ -826,8 +829,16 @@ def _decode_long_cuda_video(self, pipeline, state):
     videos = [[] for _ in range(video.shape[0])]
     # Keep the VAE and pixel math unchanged, but limit FP32 temporaries to eight frames.
     for frames in video.split(8, dim=2):
+        if cpu_chunks:
+            frames = frames.to(device)
         rgb = (frames.float() * pixel_std + pixel_mean).clamp(0, 1)
-        for output, images in zip(videos, pipeline.video_processor.postprocess_video(rgb.cpu(), output_type="pil")):
+        if cpu_chunks and not getattr(pipeline.video_processor.config,"do_normalize",True):
+            from .h3_cuda_chunks import rgb8_to_pil
+
+            processed = rgb8_to_pil(rgb)
+        else:
+            processed = pipeline.video_processor.postprocess_video(rgb.cpu(), output_type="pil")
+        for output, images in zip(videos, processed):
             output.extend(images)
     block_state.videos = videos
     self.set_block_state(state, block_state)

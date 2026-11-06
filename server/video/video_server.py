@@ -278,6 +278,15 @@ DEFAULT_MINIMAX_H3_CONFIG = {
     "duration": 5,
 }
 
+# CUDA Base defaults are independent of the existing NPU defaults above.
+if device_type() == "cuda":
+    DEFAULT_MINIMAX_H3_CONFIG.update({
+        "h3_cuda_precision": "auto", "phaa_num": 2, "h3_cuda_vae_sp": True,
+        "atten": "none", "matmul_quant": "none", "vae_matmul_quant": "none",
+        "vae_lightning": "none", "rope_fused": False,
+        "transformer_path": None, "adaln_cache_file": None,
+    })
+
 # MiniMax-H3 resolution presets (resolution + aspect_ratio -> width x height)
 MMH3_RESOLUTION_MAP = {
     "768p": {
@@ -409,6 +418,11 @@ class VideoInferenceManager:
         self.current_model = None
 
     def initialize_pipe(self, args):
+        if (getattr(args, "h3_cuda_precision", "auto") != "none"
+                or getattr(self, "_h3_cuda_precision_key", None) == "fp8-bf16"):
+            from x_diffusers.adaptor.h3_cuda_precision import validate_manager
+
+            validate_manager(self, args, device_type())
         if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
                 getattr(getattr(self, 'init_args', None), 'h3_attention', 'legacy') != 'legacy'):
             from x_diffusers.adaptor.h3_attention_service import validate_manager
@@ -2924,7 +2938,8 @@ class VideoGenerationService:
                "-s", f"{width}x{height}", "-r", str(fps), "-i", "pipe:0"]
         if audio_path:
             cmd += ["-i", audio_path]
-        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "10", "-pix_fmt", "yuv420p"]
+        preset = "veryfast" if getattr(args, "h3_cuda_precision", "none") == "fp8-bf16" else "fast"
+        cmd += ["-c:v", "libx264", "-preset", preset, "-crf", "10", "-pix_fmt", "yuv420p"]
         if audio_path:
             cmd += ["-c:a", "aac", "-shortest"]
         cmd += ["-loglevel", "error", save_path]
@@ -3411,6 +3426,8 @@ def _apply_ten_second_config_args(args) -> None:
 
 def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None:
     """Apply MiniMax-H3 specific command line arguments."""
+    if getattr(args, 'h3_cuda_precision', None) is not None:
+        service.default_config['h3_cuda_precision'] = args.h3_cuda_precision
     if getattr(args, 'text_encoder_tp', None):
         service.default_config['text_encoder_tp'] = args.text_encoder_tp
         logger.info(f"[Rank {rank}] Text encoder TP set to: {args.text_encoder_tp}")
@@ -3550,6 +3567,8 @@ def main():
     parser.add_argument('--service-mode', type=str, default=None,
                         choices=['t2va', 'fl2va', 'ref2va'],
                         help='Service mode: t2va (allows t2va+fl2va) or ref2va (allows ref2va only)')
+    parser.add_argument('--h3_cuda_precision', choices=['auto', 'none', 'fp8-bf16'], default=None,
+                        help='CUDA H3 Base defaults to fp8-bf16; none selects legacy; NPU auto stays unchanged')
     parser.add_argument('--adaln_cache_file', type=str, default=None,
                         help='Path to precomputed AdaLN cache file (MiniMax-H3)')
     parser.add_argument('--transformer_path', type=str, default=None,

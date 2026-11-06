@@ -8,9 +8,11 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 ## 版本
 
+CUDA H3 Base 的 T2VA / I2VA 默认采用 [fp8-bf16 配方](docs/H3-CUDA-PRECISION.md)：FP8 Linear 与文本 TP8、BF16 attention / 通信、50 层 DiT 常驻，以及 VAE 和音频内存修复。NPU 默认保持不变；可显式选择旧 CUDA 路径。
+
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v3.2-maas](../../tree/v3.2-maas) | MaaS 接口、排队与超时、健康探针、原子发布、环境采集；补充 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和每条成片后的显存回收。 | [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) · [环境采集](tools/README.md#cuda-和-npu-环境采集) |
+| [v3.2-maas](../../tree/v3.2-maas) | CUDA H3 Base 默认 fp8-bf16，补齐 VAE / 音频搬运与保存优化；MaaS 接口、排队与超时、健康探针、原子发布、环境采集；补充 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和每条成片后的显存回收。 | [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) · [环境采集](tools/README.md#cuda-和-npu-环境采集) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
 | [v0.3-cuda](../../tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](docs/H3-CUDA.md) |
 | [v0.3](../../tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](docs/H3-ATTENTION.md) · [实测](docs/H3-ATTENTION-VALIDATION.md) |
@@ -39,7 +41,7 @@ mkdir -p outputs
 |---|---|---|---|
 | MiniMax-H3 Base BF16 | [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) | [MiniMax/MiniMax-H3](https://modelscope.cn/models/MiniMax/MiniMax-H3) | 768P Base。按任务使用 `transformer/` 或 `transformer_ref/`，并保留根目录的 `modular_model_index.json` |
 | Open-H3-Regenerate-2K | [权重仓库](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K) | [权重仓库](https://modelscope.cn/models/Efficient-Large-Model/Open-H3-Regenerate-2K) | 2K 链路所需的 latent upscaler 和 Refiner 资产，按部署教程补齐 Sharp AdaLN 表并预处理 |
-| FL2VA Pruned NVFP4 | [实测版本的单文件](https://huggingface.co/lilcheaty/MiniMax-H3-NVFP4/blob/8c5abfed61e1b6a170240792b65253fba1a65b7b/minimax_h3_fl2va_pruned_nvfp4.safetensors) | — | CUDA 高性能 FL2VA、MaaS 示例及 CUDA 2K 的 Base DiT。另需匹配的 H3 模型组件 |
+| FL2VA Pruned NVFP4 | [实测版本的单文件](https://huggingface.co/lilcheaty/MiniMax-H3-NVFP4/blob/8c5abfed61e1b6a170240792b65253fba1a65b7b/minimax_h3_fl2va_pruned_nvfp4.safetensors) | — | 历史 CUDA 高性能 FL2VA 与 CUDA 2K 的 Base DiT；当前默认 Base / MaaS 配方不需要此文件。另需匹配的 H3 模型组件 |
 | LightX2V Turbo 8 步 LoRA | [768P Diffusers BF16 文件](https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors) | [LightX2V Turbo](https://modelscope.cn/models/lightx2v/Minimax-h3-Turbo) | 可选的 8 步 FL2VA/T2VA 配方 |
 | Veda FP8 预测器 | [实测版本的单文件](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview/blob/76f202874608115408d73280be9531c4ab888242/minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors) | [Veda 预测器仓库](https://modelscope.cn/models/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview) | 仅启用 Veda 时需要 |
 
@@ -69,7 +71,7 @@ bash example/diffusers/scripts/run_h3.sh npu r2va 15 2k
 
 ### NVIDIA CUDA 启动
 
-先准备 [CUDA 权重和依赖](docs/H3-CUDA.md#环境和模型)。768P 默认用 BF16 稠密 attention。xGen 已验证 I2VA 出片，下面的 CUDA T2VA 和 R2VA 命令待实机和画质复核。建议先从 5 秒试跑。
+先准备 [完整 FL2VA 权重和依赖](docs/H3-CUDA-PRECISION.md#模型与环境)。CUDA 768P 的 T2VA / I2VA 默认使用 **FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻**，八卡启动。5 秒、20 步样例已获人工精度认可；R2VA 保留原路线，精度仍待验证。建议先从 5 秒试跑。
 
 ```bash
 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
@@ -77,13 +79,15 @@ bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
 bash example/diffusers/scripts/run_h3.sh cuda r2va 5 768p
 ```
 
+用 `H3_BASE_STEPS=20` 可做 20 步复测；用 `H3_CUDA_PRECISION=none` 显式回到旧 CUDA 路径。长视频须单独验证峰值和画质。
+
 CUDA 2K 目前走 I2VA，需要打包 NVFP4 和 [CUDA Refiner 资产](docs/H3-CUDA.md#实验性-cuda-2k-refiner)。接口接受 5、10、15 秒，已有 5 和 10 秒结果。
 
 ```bash
 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 2k
 ```
 
-**高性能 FL2VA**。`H3_FAST=1` 选择实测的 5 秒 768P 配方。该配方已通过完整解码，跨素材画质仍待复核。请在未开启其他实验开关的终端运行。 [详细配置](docs/H3-CUDA.md#v031-5-秒实验配方)
+**历史实验配方**。`H3_FAST=1` 显式选择另一套 5 秒 768P 配方，不是当前默认的精度认可方案。该配方已通过完整解码，跨素材画质仍待复核。请在未开启其他实验开关的终端运行。 [详细配置](docs/H3-CUDA.md#v031-5-秒实验配方)
 
 ```bash
 H3_FAST=1 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
@@ -164,6 +168,8 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 | xGen NVFP4 Base＋Sparge/FP8 PHAA＋Refiner | I2VA，5s/2K | 172.03 s | rank 0 请求周期，Base 50＋Refiner 3 次 DiT |
 | xGen 原生 attention＋Refiner | I2VA，10s/2K | 606.24 s | 历史服务推理计时，同实例从 5 秒切换到 10 秒 |
 | xGen MaaS 早期八卡 HTTP 测试 | I2VA，5s/768P | 51.655 s | 一条热态成功请求，从受理到发布。推理 50.232 s |
+| xGen 当前默认 fp8-bf16 | T2VA，5s/768P，**20 步** | 56.75 s | 历史常驻生成至保存，取最慢 rank；本轮样例人工精度可接受 |
+| xGen 当前默认 fp8-bf16 | I2VA，5s/768P，**20 步** | 72.67 s | 同组模型复用；首次图像条件请求，样例人工精度可接受 |
 | xGen CUDA R2VA | 五图，768P | — | 待完整推理、音视频复核和计时 |
 
 [详细 GPU 性能与对照口径](docs/performance/h3-cuda.md)
@@ -206,7 +212,7 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
 
 ### MaaS 在线服务
 
-MaaS 固定为 CUDA I2VA、5 秒、768P 横屏。准备好 FL2VA 组件和 NVFP4 权重后启动：
+MaaS 固定为 CUDA I2VA、5 秒、768P 横屏、50 步。默认采用 fp8-bf16；准备好完整 FL2VA/Base 模块权重后启动：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \

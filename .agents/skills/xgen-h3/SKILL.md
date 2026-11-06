@@ -12,9 +12,9 @@ Resolve the repository root from this skill's location. Run the documented comma
 | Route | Supported launch examples |
 |---|---|
 | NPU offline | T2VA, I2VA, R2VA at 768P or 2K, with 5, 10 or 15 seconds |
-| CUDA offline 768P | BF16 I2VA has an end-to-end result. BF16 T2VA and R2VA are candidates awaiting hardware and quality validation. Longer durations require a target-shape check |
+| CUDA offline 768P | Default fp8-bf16: SP8/text TP8/PHAA2/50 resident blocks, FP8 Linear and BF16 attention/communication. The 5s/20-step T2VA and I2VA samples passed user review. R2VA keeps the legacy route; longer durations require target-shape validation |
 | CUDA offline 2K | I2VA with packed NVFP4 FL2VA Base plus the CUDA-prepared Refiner. The experimental profile accepts 5, 10 and 15 seconds |
-| Legacy HTTP Base | Integer durations from 5 to 15 seconds. NPU uses a T2VA/I2VA service or a separate R2VA service. CUDA BF16 T2VA and R2VA remain validation candidates |
+| Legacy HTTP Base | Integer durations from 5 to 15 seconds. NPU uses a T2VA/I2VA service or a separate R2VA service. CUDA Base defaults to fp8-bf16 for T2VA/I2VA; R2VA remains on the legacy route |
 | Legacy HTTP 2K | One workflow per instance. NPU supports all three tasks. CUDA requires FL2VA. Accepted durations are 5, 10 and 15 seconds |
 | CUDA MaaS | 5-second 768P landscape FL2VA with one inline first frame and 50 actual DiT evaluations |
 
@@ -32,7 +32,7 @@ Use the [online launch and request guide](../../../docs/H3-ONLINE.md) for servic
 
 - Use the [model source table](../../../README.md#h3-权重下载). Use Base/FL2VA Transformer assets for T2VA and I2VA, and Ref2VA assets for R2VA. I2VA takes one first frame. R2VA uses the [reference media limits](../../../docs/H3-DEPLOYMENT.md#r2va-多媒体参考).
 - On NPU, follow [Base/Refiner preparation](../../../docs/H3-DEPLOYMENT.md#4-模型与目录准备). The stripped Transformer and AdaLN table must match the workflow and schedule. Set `num_inference_steps` and AdaLN preparation `--steps` to the actual Base evaluations (for example, 50). An existing 51-point table matches 50 steps. Refiner adds three.
-- On CUDA, read [CUDA deployment](../../../docs/H3-CUDA.md) for component layouts and packed weight requirements. `H3_FAST=1` on the offline launcher selects the measured 5-second 768P FL2VA profile. Use the BF16 route for a quality reference. Keep the documented quality and hardware limits attached to the result.
+- On CUDA, use the default [fp8-bf16 profile](../../../docs/H3-CUDA-PRECISION.md) with a complete original FL2VA modular checkpoint. No packed NVFP4 file is required for default Base/MaaS. Auto keeps NPU, other models and explicit legacy/Refiner workflows unchanged. `H3_CUDA_PRECISION=none` selects the legacy offline path; service JSON/CLI can set h3_cuda_precision=none. H3_FAST=1 is a separate historical experiment, not the manually accepted profile. Never set XGEN_PHAA_FP8=1 for fp8-bf16. Precision is fixed at service startup, not a request option.
 - Read [MaaS API](../../../server/video/MAAS-FL2VA-API.md) for bounds, queue errors, timeouts and delivery. The current MaaS input profile has no 2K, 10-second, 15-second, T2VA or R2VA route. Use legacy HTTP or offline as appropriate.
 
 ## Verify a run

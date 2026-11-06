@@ -160,7 +160,8 @@ class MaaSInputTests(unittest.TestCase):
                                                                     video_server.CMD_SHUTDOWN]), \
              patch.object(video_server, "broadcast_dict", return_value={"data": {}, "save_path": "video.mp4"}), \
              patch.object(video_server.dist, "barrier"), patch.object(video_server, "infer_info"), \
-             patch.object(self.service, "_build_args", return_value=args):
+             patch.object(self.service, "_build_args", return_value=args), \
+             patch("x_diffusers.adaptor.h3_memory.release_request_memory"):
             self.service._worker_loop()
         self.service.inference_manager.infer_single.assert_called_once_with(args)
         self.assertFalse(path.exists())

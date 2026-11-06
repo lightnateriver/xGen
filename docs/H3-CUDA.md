@@ -2,6 +2,8 @@
 
 使用 `XGEN_DEVICE=cuda` 启动现有 CLI 或 HTTP 服务。省略该变量时选择 NPU。设备由启动环境决定，HTTP 请求沿用现有生成参数。
 
+默认 Base / MaaS 配方为 [fp8-bf16](H3-CUDA-PRECISION.md)：FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻。完整模块权重不需要 NVFP4、FlashInfer、Sage、Sparge 或 Comfy-Kitchen；下述 NVFP4 段落为保留的显式历史路线。用 `--h3_cuda_precision none` 回到旧路径。
+
 ## 环境和模型
 
 在运行 xGen 的环境中，可执行 `XGEN_DEVICE=cuda python tools/collect_env.py` 检查 GPU、驱动和 CUDA 依赖。脚本也支持 [自动识别设备](../tools/README.md#cuda-和-npu-环境采集)。
@@ -91,23 +93,15 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
 
 ### MaaS 在线服务
 
-在仓库根目录运行。准备支持 CUDA H3 的运行环境、FFmpeg 和 FFprobe，以及匹配的 FL2VA 模型组件和打包 NVFP4 权重。下面以早期八卡 HTTP 实测的 NVFP4/Sparge 配方为例。MaaS 模式固定 5 秒、768P、16:9 和 50 次实际 DiT。
-
-使用 [MaaS 示例配置](../example/diffusers/configs/h3_maas.example.json)。如果权重放在其他目录，复制配置并修改路径。下面的环境变量开启实测使用的通信、DiT 和 VAE 优化。基础启动方式见 [在线服务指南](H3-ONLINE.md#cuda-maas)。
+默认采用 [fp8-bf16 配方](H3-CUDA-PRECISION.md)，无需 NVFP4 文件。复制 [MaaS 配置](../example/diffusers/configs/h3_maas.example.json) 并填写完整 FL2VA 模块目录。在未设置旧 FP8 通信环境变量的新终端启动：
 
 ```bash
-export XGEN_DEVICE=cuda CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export PYTHONPATH="./x_base:./x_diffusers${PYTHONPATH:+:$PYTHONPATH}"
-export TOKENIZERS_PARALLELISM=false NCCL_MAX_CTAS=2 XGEN_SPARGE_TOPK=0.5
-export XGEN_PHAA_FP8=1 XGEN_PHAA_GATHER_PRIORITY=1 XGEN_PHAA_DEVICE_JOIN=1
-export XGEN_PHAA_ASYNC_EXCHANGE=1 XGEN_PHAA_DIRECT_RETURN=1 XGEN_PHAA_FP8_ROW_TILING=1
-export XGEN_H3_FUSED_INDEXED_AFFINE=1 XGEN_H3_FUSED_PARTIAL_ROPE=1 XGEN_H3_FUSED_QK_RMS=1
-export XGEN_H3_FUSED_FF_AMAX=1 XGEN_H3_CUDA_VAE_TILES=1
-torchrun --standalone --nproc_per_node=8 --max_restarts=0 server/video/video_server.py \
-  --init --maas-fl2va-input --config example/diffusers/configs/h3_maas.example.json \
-  --host 127.0.0.1 --port 5001 \
-  --maas-queue-capacity 10 --maas-queue-timeout-s 600
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 --max_restarts=0 \
+  server/video/video_server.py --init --maas-fl2va-input \
+  --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
+
+MaaS 仍固定 5 秒、768P 横屏、50 次实际 DiT。队列容量默认 10，排队上限 600 秒。服务先通过一条真实请求预热，再将流量接入 `/ready`。新的 precision 是启动配置，不属于请求字段。历史 NVFP4 配置另存为 [显式旧配方](../example/diffusers/configs/h3_cuda_nvfp4_legacy.example.json)，不作为本轮人工认可配方。
 
 在另一个终端准备一条预热请求。示例使用自备 PNG，提示词保存在 UTF-8 文本文件。
 

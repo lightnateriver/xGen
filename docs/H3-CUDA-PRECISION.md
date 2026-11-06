@@ -57,7 +57,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 ## 可选输出 AdaLN 融合
 
-`XGEN_H3_FUSED_OUTPUT_ADALN=1` 是默认关闭的 CUDA fp8-bf16 实验开关。它复用现有 indexed affine 算子处理输出 AdaLN，避免在 SP gather 后展开完整序列的 scale / shift 和乘加中间张量。LayerNorm、投影、AdaLN 缓存、BF16 各次舍入、SP / PHAA 及权重常驻策略保留；不增加依赖。
+`XGEN_H3_FUSED_OUTPUT_ADALN=1` 是默认关闭的 CUDA fp8-bf16 实验开关。它复用现有 indexed affine 算子处理输出 AdaLN，避免在 SP gather 后展开完整序列的 scale / shift 和乘加中间张量。RMSNorm、投影、AdaLN 缓存、BF16 各次舍入、SP / PHAA 及权重常驻策略保留；不增加依赖。
 
 ```bash
 XGEN_H3_FUSED_OUTPUT_ADALN=1 H3_BASE_STEPS=20 \
@@ -67,6 +67,8 @@ XGEN_H3_FUSED_OUTPUT_ADALN=1 H3_BASE_STEPS=20 \
 I2VA 改为 `cuda i2va 15 768p inputs/first-frame.png`，并使用对应 prompt。关闭时取消设置该变量，再启动进程。该开关仅在 fp8-bf16 配方安装；NPU 及其他旧路径不安装输出融合。启动日志出现 `output AdaLN indexed affine fusion enabled` 表示已接入。它只降低该运算的临时显存，不卸载常驻权重，不保证任意形状均无 OOM。
 
 算子回归见 `x_base/tests/test_h3_output_adaln.py`：CUDA BF16 逐位对照覆盖普通投影及缓存命中路径，另核验临时显存峰值。整条链路的可用性和新时长的人工画面 / 听音结论须分开记录。
+
+可选的 Sage 配方与独立启动方法见 [CUDA Sage 实验](H3-CUDA-SAGE-EXPERIMENT.md)。它默认关闭，复用本配方的 FP8 Linear、常驻权重和 VAE 链路；Sage attention 及 FP8 通信的成片精度仍需单独人工审核。
 
 ## 内存与后处理
 

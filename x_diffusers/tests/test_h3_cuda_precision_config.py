@@ -80,6 +80,27 @@ def test_resident_http_profile_cannot_silently_change():
         module.validate_manager(manager,settings(h3_cuda_precision='none'),'cuda')
 
 
+def test_sage_is_explicit_and_keeps_npu_rejected():
+    args=settings(h3_cuda_precision='fp8-sage',phaa_num=0)
+    assert module.resolve(args,'cuda')=='fp8-sage'
+    assert args.phaa_num==2 and args.h3_cuda_vae_sp
+    with pytest.raises(ValueError,match='requires CUDA'):
+        module.resolve(settings(h3_cuda_precision='fp8-sage'),'npu')
+
+
+def test_sage_can_reuse_fp8_transport_but_bf16_profile_still_rejects_it():
+    with patch.object(module.dist,'is_initialized',return_value=True),patch.object(module.dist,'get_world_size',return_value=8),patch.dict(module.os.environ,{'XGEN_PHAA_FP8':'1'}):
+        module.validate(settings(h3_cuda_precision='fp8-sage'),'cuda')
+        with pytest.raises(ValueError,match='requires BF16 communication'):
+            module.validate(settings(),'cuda')
+
+
+def test_resident_sage_profile_cannot_silently_change():
+    manager=SimpleNamespace(pipe=object(),_h3_cuda_precision_key='fp8-sage')
+    with pytest.raises(ValueError,match='Restart the service'):
+        module.validate_manager(manager,settings(),'cuda')
+
+
 def test_precision_argument_default_is_hardware_auto():
     tree=ast.parse((ROOT/'config.py').read_text(encoding='utf-8'))
     matches=[node for node in ast.walk(tree) if isinstance(node,ast.Call) and node.args and isinstance(node.args[0],ast.Constant) and node.args[0].value=='--h3_cuda_precision']

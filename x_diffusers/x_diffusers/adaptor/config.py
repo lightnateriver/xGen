@@ -93,8 +93,8 @@ def add_wan_vace_args(parser: argparse.ArgumentParser):
 
 def add_minimax_h3_args(parser: argparse.ArgumentParser):
     group = parser.add_argument_group(title="MiniMax-H3 args")
-    group.add_argument("--h3_cuda_precision", choices=["auto", "none", "fp8-bf16"], default="auto",
-                       help="CUDA H3 Base defaults to FP8 Linear/BF16 attention and communication; auto preserves NPU, other models and explicit legacy recipes. Use none for the legacy CUDA path.")
+    group.add_argument("--h3_cuda_precision", choices=["auto", "none", "fp8-bf16", "fp8-sage"], default="auto",
+                       help="CUDA H3 Base defaults to FP8 Linear/BF16 attention and communication; fp8-sage is an experimental explicit Sage recipe. Auto preserves NPU, other models and explicit legacy recipes. Use none for the legacy CUDA path.")
     group.add_argument("--h3_turbo8", action="store_true",
                        help="Experimental LightX2V 768p preset with prepared Base assets")
     group.add_argument("--h3_turbo_sla_lora", type=str, default=None,

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def resolve(args, backend):
     """Resolve the hardware-specific default without loading CUDA-only operators."""
     requested = getattr(args, 'h3_cuda_precision', 'auto')
-    if requested not in ('auto', 'none', 'fp8-bf16'):
+    if requested not in ('auto', 'none', 'fp8-bf16', 'fp8-sage'):
         raise ValueError('Unknown H3 CUDA precision profile')
     if requested == 'auto':
         legacy = any(getattr(args, name, None) for name in (
@@ -32,7 +32,7 @@ def resolve(args, backend):
     if requested != 'none' and (backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3'):
         raise ValueError('fp8-bf16 requires CUDA MiniMax-H3; use auto or none on NPU and other models')
     args.h3_cuda_precision = requested
-    if requested == 'fp8-bf16':
+    if requested in ('fp8-bf16', 'fp8-sage'):
         if getattr(args, 'phaa_num', 0) == 0:
             args.phaa_num = 2
         args.h3_cuda_vae_sp = True
@@ -51,7 +51,7 @@ def validate(args, backend):
                  'fsdp', 'inf_vram_blocks_num', 'cache_dit')
     if any(getattr(args, name, None) for name in conflicts) or args.atten != 'none' or args.matmul_quant != 'none':
         raise ValueError('fp8-bf16 cannot combine with packed weights, LoRA, caches or other attention/quantization recipes; use --h3_cuda_precision none')
-    if os.environ.get('XGEN_PHAA_FP8') == '1':
+    if args.h3_cuda_precision == 'fp8-bf16' and os.environ.get('XGEN_PHAA_FP8') == '1':
         raise ValueError('fp8-bf16 requires BF16 communication; unset XGEN_PHAA_FP8')
     if type(args.phaa_num) is not int or args.phaa_num < 1:
         raise ValueError('fp8-bf16 requires PHAA; the recommended value is 2')
@@ -63,7 +63,7 @@ def validate_manager(manager, args, backend):
     """A resident HTTP worker cannot silently change its precision recipe."""
     profile = resolve(args, backend)
     previous = getattr(manager, '_h3_cuda_precision_key', None)
-    if manager.pipe is not None and previous != profile and (previous == 'fp8-bf16' or profile == 'fp8-bf16'):
+    if manager.pipe is not None and previous != profile and (previous in ('fp8-bf16', 'fp8-sage') or profile in ('fp8-bf16', 'fp8-sage')):
         raise ValueError('Restart the service to change h3_cuda_precision')
     if profile != 'none':
         validate(args, backend)
@@ -76,7 +76,12 @@ def prepare_transformer(pipe, args, device):
     from x_base.operator.h3_fp8 import H3FP8Linear
 
     model = pipe.transformer
-    dense = H3DenseCUDA()
+    if args.h3_cuda_precision == 'fp8-sage':
+        from x_base.operator.h3_sage_cuda import H3SageCUDA
+
+        dense = H3SageCUDA()
+    else:
+        dense = H3DenseCUDA()
     converted = 0
     for index, block in enumerate(model.transformer_blocks):
         attn = block.attn
@@ -110,7 +115,10 @@ def prepare_transformer(pipe, args, device):
         raise ValueError('fp8-bf16 expects the complete 50-block H3 Base checkpoint')
     model.to(device)
     model._h3_cuda_precision = args.h3_cuda_precision
-    model._h3_dense_cuda = dense
+    if args.h3_cuda_precision == 'fp8-sage':
+        model._h3_sage_cuda = dense
+    else:
+        model._h3_dense_cuda = dense
     model._h3_cuda_resident_blocks = resident
     logger.info('H3 CUDA precision=%s FP8_main_projections=%d resident_blocks=%d AdaLN=rank-owner exact_cache=%s GEMM=torch._scaled_mm',
                 args.h3_cuda_precision, converted, resident, True)

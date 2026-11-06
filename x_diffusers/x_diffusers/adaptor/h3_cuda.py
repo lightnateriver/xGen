@@ -81,7 +81,7 @@ def install_dit_fusions(transformer, enabled):
 
 def configure_parallelism(pipe, args):
     cuda_vae_tiles = os.environ.get("XGEN_H3_CUDA_VAE_TILES") == "1"
-    if getattr(args, "h3_cuda_precision", "none") == "fp8-bf16":
+    if getattr(args, "h3_cuda_precision", "none") in ("fp8-bf16", "fp8-sage"):
         cuda_vae_tiles = True
     if cuda_vae_tiles and not getattr(args, "h3_cuda_vae_sp", False):
         raise ValueError("XGEN_H3_CUDA_VAE_TILES requires --h3_cuda_vae_sp")

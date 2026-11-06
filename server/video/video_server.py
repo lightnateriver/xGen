@@ -419,7 +419,7 @@ class VideoInferenceManager:
 
     def initialize_pipe(self, args):
         if (getattr(args, "h3_cuda_precision", "auto") != "none"
-                or getattr(self, "_h3_cuda_precision_key", None) == "fp8-bf16"):
+                or getattr(self, "_h3_cuda_precision_key", None) in ("fp8-bf16", "fp8-sage")):
             from x_diffusers.adaptor.h3_cuda_precision import validate_manager
 
             validate_manager(self, args, device_type())
@@ -2938,7 +2938,7 @@ class VideoGenerationService:
                "-s", f"{width}x{height}", "-r", str(fps), "-i", "pipe:0"]
         if audio_path:
             cmd += ["-i", audio_path]
-        preset = "veryfast" if getattr(args, "h3_cuda_precision", "none") == "fp8-bf16" else "fast"
+        preset = "veryfast" if getattr(args, "h3_cuda_precision", "none") in ("fp8-bf16", "fp8-sage") else "fast"
         cmd += ["-c:v", "libx264", "-preset", preset, "-crf", "10", "-pix_fmt", "yuv420p"]
         if audio_path:
             cmd += ["-c:a", "aac", "-shortest"]
@@ -3567,7 +3567,7 @@ def main():
     parser.add_argument('--service-mode', type=str, default=None,
                         choices=['t2va', 'fl2va', 'ref2va'],
                         help='Service mode: t2va (allows t2va+fl2va) or ref2va (allows ref2va only)')
-    parser.add_argument('--h3_cuda_precision', choices=['auto', 'none', 'fp8-bf16'], default=None,
+    parser.add_argument('--h3_cuda_precision', choices=['auto', 'none', 'fp8-bf16', 'fp8-sage'], default=None,
                         help='CUDA H3 Base defaults to fp8-bf16; none selects legacy; NPU auto stays unchanged')
     parser.add_argument('--adaln_cache_file', type=str, default=None,
                         help='Path to precomputed AdaLN cache file (MiniMax-H3)')

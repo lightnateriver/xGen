@@ -102,6 +102,8 @@ def prepare_transformer(pipe, args, device):
     from .h3_cuda import install_dit_fusions
 
     flags = frozenset(('XGEN_H3_FUSED_INDEXED_AFFINE','XGEN_H3_FUSED_PARTIAL_ROPE','XGEN_H3_FUSED_QK_RMS'))
+    if os.environ.get('XGEN_H3_FUSED_OUTPUT_ADALN') == '1':
+        flags |= {'XGEN_H3_FUSED_OUTPUT_ADALN'}
     install_dit_fusions(model, flags)
     resident = len(model.transformer_blocks)
     if resident != 50:

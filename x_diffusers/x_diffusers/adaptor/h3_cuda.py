@@ -29,6 +29,9 @@ def get_dit_fusions(packed_resident, packed_compile):
 
 
 def install_dit_fusions(transformer, enabled):
+    if "XGEN_H3_FUSED_OUTPUT_ADALN" in enabled:
+        transformer.norm_out._h3_fused_indexed_affine = True
+        logger.info("Experimental CUDA H3 output AdaLN indexed affine fusion enabled")
     if "XGEN_H3_FUSED_INDEXED_AFFINE" in enabled:
         from x_base.operator.h3_indexed_affine import fused_h3_block_forward
 

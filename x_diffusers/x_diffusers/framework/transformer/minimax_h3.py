@@ -618,6 +618,11 @@ def _patched_adaln_out_forward(self, hidden_states, temb, timestep_indices):
             modulation = self.linear(nn.functional.silu(temb).to(out_dtype))
         shift, scale = modulation.chunk(2, dim=-1)
     hidden_states = self.norm(hidden_states)
+    if (getattr(self, '_h3_fused_indexed_affine', False)
+            and hidden_states.is_cuda and not torch.is_grad_enabled()):
+        from x_base.operator.h3_indexed_affine import _apply
+
+        return _apply(hidden_states, scale, shift, timestep_indices, modulation=True)
     return hidden_states * (1.0 + scale.index_select(0, timestep_indices)) + shift.index_select(0, timestep_indices)
 
 

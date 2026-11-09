@@ -36,7 +36,7 @@ from maas_artifacts import StorageError, publish_obs, publish_video, validate_me
 
 from x_diffusers import init_env, parse_args
 from x_base.device import device_type
-from x_diffusers.adaptor.h3_refiner_config import H3_BASE_MAX_DURATION_S, base_temporal_padding
+from x_diffusers.adaptor.h3_refiner_config import H3_BASE_MAX_DURATION_S, H3_MAX_PROMPT_LENGTH, base_temporal_padding, h3_prompt_length
 from x_diffusers.adaptor.h3_schedule import cache_steps, schedule_points
 from x_diffusers.adaptor.h3_references import LIMITS, MAX_FILES, reference_conditioning
 from x_diffusers.adaptor.load_pipe import load_pipe, load_v2v_pipe, update_pipe, pipe_to_device, load_seedvr2_pipe, update_lora
@@ -1231,14 +1231,19 @@ class VideoGenerationService:
 
     def _validate_prompt(self, data: Dict[str, Any], errors: List[str]) -> Optional[str]:
         prompt = data.get('prompt')
+        model = data.get('model', self.default_config.get('model', ''))
+        h3 = 'minimax-h3' in model.lower()
+        max_length = H3_MAX_PROMPT_LENGTH if h3 else 2000
+        length = h3_prompt_length if h3 else len
         if not prompt:
             errors.append("prompt is required and cannot be empty")
         elif not isinstance(prompt, str):
             errors.append("prompt must be a string")
         elif len(prompt.strip()) == 0:
             errors.append("prompt cannot be blank")
-        elif len(prompt) > 2000:
-            errors.append("prompt length cannot exceed 2000 characters")
+        elif length(prompt) > max_length:
+            unit = 'UTF-16 code units' if h3 else 'characters'
+            errors.append(f"prompt length cannot exceed {max_length} {unit}")
         return prompt
 
     def _get_resolution_key(self, width: int, height: int) -> Optional[str]:
@@ -2163,7 +2168,8 @@ class VideoGenerationService:
                         "type": "string",
                         "required": True,
                         "description": "Text prompt for video generation",
-                        "constraints": {"min_length": 1, "max_length": 2000}
+                        "constraints": {"min_length": 1, "max_length": H3_MAX_PROMPT_LENGTH if h3_base else 2000},
+                        **({"length_unit": "utf16_code_units"} if h3_base else {})
                     },
                     "negative_prompt": {
                         "type": "string",

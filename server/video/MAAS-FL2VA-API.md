@@ -59,7 +59,7 @@ curl -fS -o result.mp4 "$BASE_URL/download/fl2va-0001"
 |---|---|---|
 | `id` | 字符串，必填 | 1 至 128 个 ASCII 字母、数字、下划线或连字符，首字符须为字母或数字 |
 | `created_at` | 整数，可选 | 客户端 Unix 毫秒时间戳，须大于 0 且早于 2100 年。排队和总耗时从服务实际受理时计算 |
-| `input.prompt` | 字符串，必填 | 最多 2,000 个 Unicode 码点，允许中文和换行，须含非空白内容，禁止 NUL |
+| `input.prompt` | 字符串，必填 | 最多 7,000 个 UTF-16 码元，与官方 CLI 的 JavaScript `text.length` 一致；允许中文和换行，须含非空白内容，禁止 NUL |
 | `input.first_frame` | 字符串，必填 | 单帧 JPEG 或 PNG。前缀为 `data:image/jpeg;base64,` 或 `data:image/png;base64,`。解码后的文件最多 4 MiB，图像最多 8,388,608 像素，每边 32 至 4096 像素，长短边比例最大 4:1 |
 | `input.seed` | 整数，可选 | 0 至 2,147,483,647，默认 42 |
 | `input.enable_audio` | 布尔值，可选 | 默认 `true`。开启时，成片必须有包含数据的音轨 |
@@ -77,7 +77,9 @@ curl -fS -o result.mp4 "$BASE_URL/download/fl2va-0001"
 }
 ```
 
-完整请求体上限为 **5,625,176 字节**，包含 JSON 和 Base64。远程图片 URL、本地文件路径、未知字段、重复 JSON 字段和非有限数值会被拒绝。
+文本长度在 JSON 解码后、分词和入队前按原文的 UTF-16 码元数检查，空格和换行也计入；常见汉字、英文字母各计 1，`🙂` 计 2，组合 emoji 按组成它的码元累计。7,000 码元可接受，7,001 码元返回 `400 invalid_input`，`field=prompt`，不会截断原文。`/params` 的 `prompt.length_unit` 为 `utf16_code_units`。这不是 7,000 token，图片等媒体 token 不计入文本长度。当前接口使用单个 `prompt` 字段，不接受官方 API 的 `content[]` 请求结构。
+
+完整请求体上限为 **5,667,176 字节**，包含 JSON 和 Base64，并为最长文本的 JSON Unicode 转义预留空间。远程图片 URL、本地文件路径、未知字段、重复 JSON 字段和非有限数值会被拒绝。
 
 相同 ID 和相同的规范化输入返回已有任务。规范化会补全默认值。相同 ID 携带不同输入返回 `409 task_conflict`。去重仅在单个实例且记录仍保留时生效，轮询和同 ID 重提交应路由到持有任务的实例。
 

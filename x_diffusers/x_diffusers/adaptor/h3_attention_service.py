@@ -1,5 +1,6 @@
 """Optional validation/configuration for the original HTTP service; no routes."""
 from .h3_attention_config import key, validate
+from .h3_refiner_config import H3_MAX_PROMPT_LENGTH
 
 
 def apply_startup_settings(config, args, argv):
@@ -51,7 +52,7 @@ def validate_manager(manager, args):
 
 def parameter_spec(config):
     return dict(experimental=True,backend=config['h3_attention'],scope='Base DiT only',parameters={
-        'prompt':dict(type='string',required=True),
+        'prompt':dict(type='string',required=True,max_length=H3_MAX_PROMPT_LENGTH,length_unit='utf16_code_units'),
         'task_type':dict(type='string',allowed_values=['t2va']),
         'duration':dict(type='integer',allowed_values=[5],default=5),
         'resolution':dict(type='string',allowed_values=['2k' if config.get('h3_refiner',False) else '768p']),

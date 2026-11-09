@@ -14,6 +14,8 @@ CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage atte
 
 v0.4 提供面向八卡 RTX 5090 R2VA 的优选 [Sage-FP8 全并行配置](docs/H3-CUDA-COMPOSABLE.md)：用 `cuda-5090 r2va` 显式选择，加入 SAP、本地输入、请求内条件复用、组件并行和去 BF16 临时副本，DiT 全程常驻。每项可单独关闭；原 `cuda`／`npu` 命令不自动开启。当前范围为八卡 Ref2VA 768P；组合正确性、显存容量和人工精度以各自实测记录为准。
 
+v0.4 的 H3 在线接口将提示词上限从 2,000 放宽到 **7,000 个 UTF-16 码元**，按官方 CLI 的 JavaScript `text.length` 计数：常见汉字或英文字母各计 1，`🙂` 计 2。Base、Refiner、MaaS 共用该限制，在入队前拒绝超长文本，保留原文；这不是 tokenizer 的 token 上限。计数规则、错误响应和请求体上限见 [在线服务指南](docs/H3-ONLINE.md) 与 [MaaS API](server/video/MAAS-FL2VA-API.md)。
+
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
 | [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用、Token Refiner / 视觉 / VAE / 音频分工及 PHAA 直接打包，DiT 全程常驻；各项可独立关闭。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [在线启动](docs/H3-ONLINE.md) |

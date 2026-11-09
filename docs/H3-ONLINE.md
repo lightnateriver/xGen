@@ -16,6 +16,10 @@
 
 Base 服务生成 15 秒视频时，在请求里设 `"duration":15`。模型按 VAE 要求生成 362 帧，服务保存 360 帧和对应的音频。历史性能表里的 15 秒在线 768P 来自独立批测程序。
 
+所有 H3 在线入口的 `prompt` 最多 7,000 个 UTF-16 码元，包括 Base、Refiner 和 MaaS 模式。计数与 [MiniMax 官方 CLI](https://github.com/MiniMax-AI/cli/blob/main/src/video/v2.ts) 的 JavaScript `text.length` 一致：常见中文、英文字母、空格或换行各计 1，`🙂` 计 2。因此 7,000 个常见汉字或 3,500 个 `🙂` 达到上限，再加一个英文字母就超限。服务在 JSON 解码后、分词和入队前检查原文，超长拒绝，不截断；`/params` 用 `length_unit=utf16_code_units` 标明口径。这不是 7,000 token，也不包含图片、视频、音频产生的 token。
+
+MaaS 返回 HTTP 400、`error=invalid_input`、`field=prompt`；普通 `/generate` 返回 HTTP 400，原 `/v1/tasks` 保留 HTTP 200、任务 `failed` 的错误契约。Wan 的 2,000 字符限制及计数方式保持不变。
+
 原 Base 服务的5/10秒保存保留原生padding，例如本轮5秒请求保存124帧；v0.4保持这一行为。功能测试按各接口实际帧数契约检查，不把所有视频一律断言为时长×24帧。
 
 每条 H3 视频完成保存后，各 rank 会释放请求输出引用，同步设备并通过 PyTorch 回收空闲显存；常驻模型保留。日志 `H3_REQUEST_MEMORY_RELEASE` 给出耗时和前后 allocated/reserved。该清理也用于离线入口，不能代替单条请求内部的峰值显存验证。

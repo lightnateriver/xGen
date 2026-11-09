@@ -8,14 +8,16 @@ import re
 
 from PIL import Image
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
+from x_diffusers.adaptor.h3_refiner_config import H3_MAX_PROMPT_LENGTH, h3_prompt_length
 
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_PIXELS = 4096 * 2048
-MAX_PROMPT_LENGTH = 2000
+MAX_PROMPT_LENGTH = H3_MAX_PROMPT_LENGTH
 MAX_SEED = 2**31 - 1
 MAX_ENCODED_IMAGE_BYTES = 4 * ((MAX_IMAGE_BYTES + 2) // 3)
-MAX_BODY_BYTES = MAX_ENCODED_IMAGE_BYTES + 32 * 1024
+# A UTF-16 code unit can occupy six bytes as a JSON Unicode escape.
+MAX_BODY_BYTES = MAX_ENCODED_IMAGE_BYTES + MAX_PROMPT_LENGTH * 6 + 32 * 1024
 FIXED_FIELDS = {
     "model": "MiniMax-H3", "task_type": "fl2va", "resolution": "768p",
     "aspect_ratio": "16:9", "duration": 5, "num_inference_steps": 50,
@@ -111,8 +113,8 @@ def _validate_input(value):
         if type(actual) is not type(expected) or actual != expected:
             raise InvalidInput(field, f"Expected {expected}")
     prompt = value.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT_LENGTH or "\x00" in prompt:
-        raise InvalidInput("prompt", "Expected 1 to 2000 characters of non-blank text without NUL")
+    if not isinstance(prompt, str) or not prompt.strip() or h3_prompt_length(prompt) > MAX_PROMPT_LENGTH or "\x00" in prompt:
+        raise InvalidInput("prompt", f"Expected 1 to {MAX_PROMPT_LENGTH} UTF-16 code units of non-blank text without NUL")
     try:
         prompt.encode("utf-8")
     except UnicodeEncodeError:
@@ -158,7 +160,8 @@ def parameter_spec():
         for key, value in FIXED_FIELDS.items()
     }
     fields.update(
-        prompt={"type": "string", "required": True, "max_length": MAX_PROMPT_LENGTH},
+        prompt={"type": "string", "required": True, "max_length": MAX_PROMPT_LENGTH,
+                "length_unit": "utf16_code_units"},
         first_frame={"type": "string", "required": True, "mime_types": ["image/jpeg", "image/png"],
                      "max_bytes": MAX_IMAGE_BYTES, "max_pixels": MAX_IMAGE_PIXELS,
                      "min_edge": 32, "max_edge": 4096, "max_aspect_ratio": 4},

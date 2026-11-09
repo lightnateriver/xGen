@@ -5,6 +5,12 @@ import os
 
 
 H3_BASE_MAX_DURATION_S = 15
+H3_MAX_PROMPT_LENGTH = 7000  # UTF-16 code units, matching the official CLI's string.length.
+
+
+def h3_prompt_length(text):
+    """Match JavaScript string.length, including surrogate pairs and lone surrogates."""
+    return len(text.encode('utf-16-le', errors='surrogatepass')) // 2
 
 
 @contextmanager

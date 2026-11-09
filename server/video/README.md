@@ -12,7 +12,7 @@ MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](
 
 `POST /v1/tasks` 接受 JSON 对象 `{"id":"job-1","input":{...}}`，可选 `created_at` 使用 Unix 毫秒。`POST /generate` 直接接收 `input` 对象的内容。`prompt` 和 `first_frame` 必填，`seed` 默认为 42，`enable_audio` 默认为 `true`。固定字段可以省略，显式传入时必须匹配 `/params`。
 
-- `prompt` 最多 2000 个 Unicode 码点，允许中文和换行。`seed` 为 0 至 2147483647 的 JSON 整数，`enable_audio` 为 JSON 布尔值。
+- `prompt` 最多 7000 个 UTF-16 码元，与官方 CLI 的 JavaScript `text.length` 一致；常见中文、英文字母、空格和换行各计 1，`🙂` 计 2。在分词和入队前按原文检查，超长拒绝，不截断。这不是 token 限制，`/params` 用 `length_unit=utf16_code_units` 标明口径。`seed` 为 0 至 2147483647 的 JSON 整数，`enable_audio` 为 JSON 布尔值。
 - `first_frame` 使用单帧 JPEG 或 PNG 的 Base64 data URI。解码前文件最多 4 MiB，图像最多 8388608 像素，每边 32 至 4096 像素，长边与短边的比值最多 4。调用方可先从平台素材库取图并调整到限额内，再传给 xGen。
 - 非法 JSON、字段类型、组合或坏图返回 `400`，超过请求体或素材资源上限返回 `413`，非 JSON 内容类型返回 `415`。错误响应包含 `error`、`field` 和 `message`。
 
@@ -391,7 +391,7 @@ curl -s http://127.0.0.1:5001/metrics | python -m json.tool
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| prompt | string | **必填** | 文本提示词 (≤2000字符) |
+| prompt | string | **必填** | 文本提示词（Wan ≤2000 字符；MiniMax-H3 ≤7000 UTF-16 码元） |
 | negative_prompt | string | "" | 负向提示词 (≤2000字符) |
 | width | int | 832 | 视频宽度 (64-2048, **必须为偶数**) |
 | height | int | 480 | 视频高度 (64-2048, **必须为偶数**) |

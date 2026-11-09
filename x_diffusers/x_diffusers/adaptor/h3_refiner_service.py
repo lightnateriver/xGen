@@ -1,5 +1,5 @@
 """Small H3 additions to the existing service validation/configuration; no routes."""
-from .h3_refiner_config import profile
+from .h3_refiner_config import H3_MAX_PROMPT_LENGTH, profile
 from .h3_references import LIMITS, MAX_FILES, MAX_SECONDS, MIN_SECONDS
 
 
@@ -14,7 +14,7 @@ def apply_startup_settings(config, args, argv):
 
 def parameter_spec(config):
     return dict(experimental=True,backend='h3_regenerate',parameters={
-        'prompt':dict(type='string',required=True),
+        'prompt':dict(type='string',required=True,max_length=H3_MAX_PROMPT_LENGTH,length_unit='utf16_code_units'),
         'task_type':dict(type='string',allowed_values=[config.get('task_type','t2va')]),
         'duration':dict(type='integer',allowed_values=[5,10,15],default=config.get('h3_refiner_seconds',5)),
         'resolution':dict(type='string',allowed_values=['2k'],default='2k'),

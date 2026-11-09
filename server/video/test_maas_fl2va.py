@@ -77,7 +77,7 @@ class MaaSInputTests(unittest.TestCase):
 
     def test_text_and_forbidden_fields_on_both_routes(self):
         for route in ("/generate", "/v1/tasks"):
-            for value in (None, "", " \n", [], "a" * 2001, "a\0b", "\ud800"):
+            for value in (None, "", " \n", [], "a" * 7001, "🙂" * 3501, "a\0b", "\ud800"):
                 with self.subTest(route=route, value=repr(value)[:30]):
                     self.assert_rejected(self.post(route, dict(self.good, prompt=value)), field="prompt")
             for field in ("width", "height", "frames", "save_fps", "ref_path", "last_frame", "save_path",
@@ -120,8 +120,8 @@ class MaaSInputTests(unittest.TestCase):
                 self.assert_rejected(self.post("/v1/tasks", dict(self.good, first_frame=image)), status, "first_frame")
 
     def test_inclusive_boundaries_and_normalized_queue_data(self):
-        cases = (("/v1/tasks", "中" * 1999, 0, data_uri(padded_png(MAX_IMAGE_BYTES - 1))),
-                 ("/generate", "🙂" * 2000, 2**31 - 1, data_uri(padded_png(MAX_IMAGE_BYTES))),
+        cases = (("/v1/tasks", "中" * 6999, 0, data_uri(padded_png(MAX_IMAGE_BYTES - 1))),
+                 ("/generate", "🙂" * 3500, 2**31 - 1, data_uri(padded_png(MAX_IMAGE_BYTES))),
                  ("/generate", "--valid-leading-option-text", 42, data_uri(image_bytes(4096, 2048))),
                  ("/generate", "test", 42, data_uri(image_bytes(4096, 2047))),
                  ("/generate", "test", 42, data_uri(image_bytes(128, 32, "JPEG"), "jpeg")),
@@ -134,6 +134,24 @@ class MaaSInputTests(unittest.TestCase):
                 self.assertEqual(job["data"], dict(FIXED_FIELDS, prompt=prompt, seed=seed,
                                                    first_frame=first_frame, enable_audio=True))
                 self.assertIn(f"--prompt={prompt}", self.service._config_to_arg_list({"prompt": prompt}))
+
+    def test_prompt_character_limits_on_both_routes(self):
+        self.assertEqual(self.client.get('/params').json['parameters']['prompt']['max_length'], 7000)
+        self.assertEqual(self.client.get('/params').json['parameters']['prompt']['length_unit'], 'utf16_code_units')
+        for route in ('/generate', '/v1/tasks'):
+            for character, units in (('a', 1), ('中', 1), ('🙂', 2)):
+                for length in (2001, 6999, 7000, 7001):
+                    with self.subTest(route=route, character=character, length=length):
+                        prompt = character * (length // units) + 'a' * (length % units)
+                        response = self.post(route, dict(self.good, prompt=prompt))
+                        if length > 7000:
+                            self.assert_rejected(response, field='prompt')
+                            self.assertIn('7000', response.json['message'])
+                        else:
+                            self.assertEqual(response.status_code, 200, response.json)
+                            job, _ = self.service._claim_maas_task()
+                            self.assertEqual(job['data']['prompt'], prompt)
+                            self.service.tasks.clear()
 
     def test_body_limit_and_read_only_profile_config(self):
         body = json.dumps(self.good).encode("utf-8")
@@ -174,6 +192,75 @@ class MaaSInputTests(unittest.TestCase):
         response = legacy.app.test_client().post("/generate", json=dict(self.good, seed="42"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(legacy.task_queue.get_nowait()["data"]["seed"], 42)
+
+
+class H3PromptLengthTests(unittest.TestCase):
+    def setUp(self):
+        config = Path(__file__).resolve().parents[2] / 'example/diffusers/configs/h3_npu_base.example.json'
+        self.service = VideoGenerationService(str(config))
+        self.service.default_config['adaln_cache_file'] = None
+        self.service.is_initialized = True
+        self.client = self.service.app.test_client()
+
+    def test_utf16_length_matches_javascript_string_length(self):
+        from x_diffusers.adaptor.h3_refiner_config import h3_prompt_length
+
+        for text, expected in (('', 0), ('中a\n', 3), ('🙂', 2), ('e\u0301', 2),
+                               ('\ud800', 1), ('\ud83d\ude42', 2),
+                               ('🙂' * 3500, 7000), ('🙂' * 3500 + 'a', 7001)):
+            with self.subTest(text=repr(text)[:30]):
+                self.assertEqual(h3_prompt_length(text), expected)
+
+    def test_h3_routes_accept_full_prompt_and_reject_over_limit_before_queue(self):
+        for route in ('/generate', '/v1/tasks'):
+            for character, units in (('a', 1), ('中', 1), ('🙂', 2)):
+                for length in (2001, 6999, 7000, 7001):
+                    with self.subTest(route=route, character=character, length=length):
+                        prompt = character * (length // units) + 'a' * (length % units)
+                        payload = {'prompt': prompt, 'task_type': 't2va', 'duration': 5}
+                        body = {'id': 'prompt-boundary', 'input': payload} if route == '/v1/tasks' else payload
+                        response = self.client.post(route, json=body)
+                        if length > 7000:
+                            # The legacy platform route reports rejected tasks as HTTP 200/failed.
+                            self.assertEqual(response.status_code, 200 if route == '/v1/tasks' else 400)
+                            if route == '/v1/tasks':
+                                self.assertEqual(response.json['status'], 'failed')
+                            self.assertIn('7000', json.dumps(response.json))
+                            self.assertTrue(self.service.task_queue.empty())
+                        else:
+                            self.assertEqual(response.status_code, 200, response.json)
+                            self.assertEqual(self.service.task_queue.get_nowait()['data']['prompt'], prompt)
+                        self.service.tasks.clear()
+
+    def test_h3_parameter_specs_and_wan_limit(self):
+        from x_diffusers.adaptor.h3_attention_service import parameter_spec as attention_spec
+        from x_diffusers.adaptor.h3_refiner_service import parameter_spec as refiner_spec
+
+        self.assertEqual(self.client.get('/params').json['parameters']['prompt']['constraints']['max_length'], 7000)
+        self.assertEqual(self.client.get('/params').json['parameters']['prompt']['length_unit'], 'utf16_code_units')
+        config = dict(self.service.default_config, h3_attention='veda')
+        self.assertEqual(attention_spec(config)['parameters']['prompt']['max_length'], 7000)
+        self.assertEqual(refiner_spec(config)['parameters']['prompt']['max_length'], 7000)
+        for refiner in (False, True):
+            self.service.default_config['h3_refiner'] = refiner
+            for task in ('t2va', 'fl2va', 'ref2va'):
+                self.service.default_config['task_type'] = task
+                data = dict(prompt='中' * 7000, task_type=task,
+                            first_frame=data_uri(image_bytes()) if task == 'fl2va' else '',
+                            ref_path=[data_uri(image_bytes())] if task == 'ref2va' else [],
+                            resolution='2k' if refiner else '768p')
+                with self.subTest(refiner=refiner, task=task):
+                    ok, result = self.service._validate_generate_params(data)
+                    self.assertTrue(ok, result)
+                    self.assertEqual(result['data']['prompt'], data['prompt'])
+                    ok, _ = self.service._validate_generate_params(dict(data, prompt='中' * 7001))
+                    self.assertFalse(ok)
+        wan = VideoGenerationService()
+        self.assertEqual(wan.app.test_client().get('/params').json['parameters']['prompt']['constraints']['max_length'], 2000)
+        for length in (2000, 2001):
+            errors = []
+            wan._validate_prompt({'prompt': 'a' * length}, errors)
+            self.assertEqual(bool(errors), length > 2000)
 
 
 class H3BaseDurationTests(unittest.TestCase):

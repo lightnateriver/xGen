@@ -212,6 +212,12 @@ def load_minimax_h3_pipe(args):
         logger.info("building minimax-h3 t2va/fl2va modular pipeline...")
         pipe = ModularPipeline.from_pretrained(args.pretrained_model_name_or_path)
 
+    # Keep automatic T2VA/FL2VA routing, but do not load the unused Ref2VA DiT
+    # from a combined repository into a resident CUDA precision pipeline.
+    component_options = ({"workflow": "fl2va"} if task_type in ("t2va", "fl2va")
+                         and not getattr(args, "h3_refiner", False)
+                         and getattr(args, "h3_cuda_precision", "none") != "none" else {})
+
     # Load transformer from a custom checkpoint directory (full or pre-stripped).
     # from_pretrained is effectively strict=False: missing keys (e.g. adaln in
     # pre-stripped checkpoints) only produce warnings, and with low_cpu_mem_usage
@@ -226,12 +232,14 @@ def load_minimax_h3_pipe(args):
         logger.info("Loading experimental H3 FL2VA NVFP4 transformer")
         transformer = load_packed_h3(MiniMaxH3Transformer3DModel, config, packed_checkpoint)
         pipe.update_components(transformer=transformer)
-        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path)
+        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+                             **component_options)
     elif transformer_path:
         logger.info(f"Loading transformer from: {transformer_path}")
         transformer_key = "transformer_ref" if task_type == "ref2va" else "transformer"
         pipe.load_components(
             dtype=dtype,
+            **component_options,
             pretrained_model_name_or_path={
                 transformer_key: transformer_path,
                 "default": args.pretrained_model_name_or_path,
@@ -241,7 +249,8 @@ def load_minimax_h3_pipe(args):
             },
         )
     else:
-        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path)
+        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+                             **component_options)
 
     # origin/main: workflow="ref2va" only loads transformer_ref, pipe.transformer is None.
     # Set alias so operator_ability / pipe_to_device / install_adaln_cache etc. can use

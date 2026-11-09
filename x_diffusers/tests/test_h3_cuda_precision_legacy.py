@@ -50,9 +50,14 @@ class DisabledPrecision(ast.NodeTransformer):
             return ast.copy_location(ast.Constant(False),node)
         node.keywords=[kw for kw in node.keywords if not (
             kw.arg=='pad_key' and isinstance(kw.value,ast.Constant) and kw.value.value=='pad')]
+        # Selective component loading contributes no kwargs when precision is off.
+        node.keywords=[kw for kw in node.keywords if not (
+            kw.arg is None and isinstance(kw.value,ast.Dict) and not kw.value.keys)]
         return node
 
     def visit_Name(self,node):
+        if node.id=='component_options' and isinstance(node.ctx,ast.Load):
+            return ast.copy_location(ast.Dict(keys=[],values=[]),node)
         if node.id=='precision' and isinstance(node.ctx,ast.Load):
             return ast.copy_location(ast.Constant('none'),node)
         if node.id=='bootstrap_environment' and isinstance(node.ctx,ast.Load):
@@ -62,7 +67,7 @@ class DisabledPrecision(ast.NodeTransformer):
         return node
 
     def visit_Assign(self,node):
-        if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('precision','local_io','h3_parallel','shared_exchange'):
+        if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('precision','local_io','h3_parallel','shared_exchange','component_options'):
             return None
         return self.generic_visit(node)
 

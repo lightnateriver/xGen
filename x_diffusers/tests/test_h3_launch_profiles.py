@@ -53,7 +53,7 @@ def test_launcher_profile_contract(launch_env,backend,task,precision):
 
 
 @pytest.mark.parametrize('backend,task,resolution',[
-    ('npu','t2va','768p'),('cuda','r2va','768p'),('cuda','i2va','2k'),
+    ('npu','t2va','768p'),('cuda','i2va','2k'),
 ])
 def test_sage_rejects_unsupported_launcher_routes(launch_env,backend,task,resolution):
     launch_env['H3_CUDA_PRECISION']='fp8-sage'
@@ -67,3 +67,33 @@ def test_sage_rejects_conflicting_allocator(launch_env):
     result=subprocess.run(['bash','example/diffusers/scripts/run_h3.sh','cuda','t2va','5','768p'],
                           cwd=ROOT,env=launch_env,text=True,capture_output=True)
     assert result.returncode==2 and 'PYTORCH_ALLOC_CONF' in result.stderr
+
+
+def test_cuda5090_r2va_preset_and_explicit_overrides(launch_env):
+    command=['bash','example/diffusers/scripts/run_h3.sh','cuda-5090','r2va','5','768p','ref.png',
+             '--','--no-h3_cuda_local_input','--h3_cuda_input_refiner_ffn','bf16']
+    result=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))
+    args=result['args']
+    assert args[args.index('--h3_cuda_preset')+1]=='sage-fp8-full-parallel'
+    assert args[-3:]==['--no-h3_cuda_local_input','--h3_cuda_input_refiner_ffn','bf16']
+    launch_env['H3_CUDA_PRESET']='none'
+    result=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))
+    assert '--h3_cuda_preset' not in result['args']
+
+
+@pytest.mark.parametrize('task',['t2va','i2va'])
+def test_cuda5090_other_tasks_do_not_silently_install_ref2va_features(launch_env,task):
+    result=json.loads(subprocess.check_output(['bash','example/diffusers/scripts/run_h3.sh',
+        'cuda-5090',task,'5','768p'],cwd=ROOT,env=launch_env,text=True))
+    args=result['args']
+    assert '--h3_cuda_preset' not in args
+    assert args[args.index('--h3_cuda_precision')+1]=='fp8-sage'
+
+
+@pytest.mark.parametrize('backend,task,resolution',[
+    ('npu','r2va','768p'),('cuda','t2va','768p'),('cuda','i2va','2k')])
+def test_full_parallel_wrong_route_fails_before_launch(launch_env,backend,task,resolution):
+    launch_env['H3_CUDA_PRESET']='sage-fp8-full-parallel'
+    result=subprocess.run(['bash','example/diffusers/scripts/run_h3.sh',backend,task,'5',resolution],
+        cwd=ROOT,env=launch_env,text=True,capture_output=True)
+    assert result.returncode==2 and 'full-parallel' in result.stderr

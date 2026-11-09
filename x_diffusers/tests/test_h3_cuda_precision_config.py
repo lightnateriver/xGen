@@ -36,7 +36,96 @@ def test_legacy_validation_does_nothing():
     module.validate(SimpleNamespace(),'npu')
 
 
-@pytest.mark.parametrize('field,value',[('task_type','ref2va'),('sp',1),('text_encoder_tp',4),('h3_nvfp4_checkpoint','packed'),('h3_refiner',True)])
+def test_condition_precompute_is_opt_in_cuda_ref2va_sp8_and_resident_immutable():
+    args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_precompute_conditioning=True)
+    assert module.resolve(args,'cuda')=='fp8-sage'
+    for values in (dict(h3_cuda_precision='none'),dict(task_type='t2va'),dict(sp=4)):
+        with pytest.raises(ValueError,match='precompute_conditioning requires'):
+            module.resolve(settings(**(vars(args)|values)),'cuda')
+    with pytest.raises(ValueError,match='precompute_conditioning requires'):
+        module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va',h3_cuda_precompute_conditioning=True),'npu')
+    with pytest.raises(ValueError,match='Restart the service to change h3_cuda_precompute_conditioning'):
+        module.validate_manager(SimpleNamespace(pipe=object()),args,'cuda')
+    tree=ast.parse((ROOT/'config.py').read_text(encoding='utf-8'))
+    calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and n.args
+           and isinstance(n.args[0],ast.Constant) and n.args[0].value=='--h3_cuda_precompute_conditioning']
+    assert len(calls)==1 and ast.unparse(next(k.value for k in calls[0].keywords if k.arg=='action'))=='argparse.BooleanOptionalAction'
+
+
+def test_input_refiner_profiles_are_opt_in_and_reject_other_routes():
+    assert module.resolve(settings(task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')=='fp8-sage'
+    for backend,values in (
+        ('npu',dict(h3_cuda_precision='auto')),
+        ('cuda',dict(h3_cuda_precision='none')),
+        ('cuda',dict(task_type='t2va')),
+        ('cuda',dict(sp=4)),
+    ):
+        args=dict(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_input_refiner='cudnn-sp-fp8')
+        args.update(values)
+        with pytest.raises(ValueError,match='h3_cuda_input_refiner requires'):
+            module.resolve(settings(**args),backend)
+    for profile in ('cudnn-sp','cudnn-sp-fp8'):
+        assert module.resolve(settings(task_type='ref2va',h3_cuda_precision='fp8-sage',
+                                       h3_cuda_input_refiner=profile),'cuda')=='fp8-sage'
+    with pytest.raises(ValueError,match='Unknown h3_cuda_input_refiner'):
+        module.resolve(settings(h3_cuda_input_refiner='invalid'),'cuda')
+
+
+def test_input_refiner_is_immutable_on_a_resident_manager():
+    with pytest.raises(ValueError,match='Restart the service to change h3_cuda_input_refiner'):
+        module.validate_manager(SimpleNamespace(pipe=object()),settings(task_type='ref2va',
+            h3_cuda_precision='fp8-sage',h3_cuda_input_refiner='cudnn-sp-fp8'),'cuda')
+    with pytest.raises(ValueError,match='Restart the service to change h3_cuda_input_refiner'):
+        module.validate_manager(SimpleNamespace(pipe=object(),_h3_cuda_input_refiner_key='cudnn-sp-fp8'),
+            settings(task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')
+
+
+def test_input_refiner_parser_default_preserves_the_original_path():
+    tree=ast.parse((ROOT/'config.py').read_text(encoding='utf-8'))
+    calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and n.args
+           and isinstance(n.args[0],ast.Constant) and n.args[0].value=='--h3_cuda_input_refiner']
+    assert len(calls)==1
+    assert next(k.value.value for k in calls[0].keywords if k.arg=='default') is None
+    args=settings(task_type='ref2va',h3_cuda_input_refiner=None)
+    module.resolve(args,'cuda')
+    assert args.h3_cuda_input_refiner=='none'
+
+
+@pytest.mark.parametrize('chunk',[-1,True,127,129,32769,65536])
+def test_refiner_ff_chunk_invalid_values_fail_early(chunk):
+    with pytest.raises(ValueError,match='refiner_ff_chunk_size'):
+        module.resolve(settings(task_type='ref2va',h3_cuda_refiner_ff_chunk_size=chunk),'cuda')
+
+
+def test_refiner_ff_chunk_is_explicit_ref2va_and_resident_immutable():
+    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va'),'cuda')=='none'
+    for backend,task,profile in [('npu','ref2va','auto'),('cuda','t2va','fp8-sage'),('cuda','ref2va','none')]:
+        with pytest.raises(ValueError,match='refiner_ff_chunk_size requires'):
+            module.resolve(settings(task_type=task,h3_cuda_precision=profile,h3_cuda_refiner_ff_chunk_size=8192),backend)
+    args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_refiner_ff_chunk_size=8192)
+    assert module.resolve(args,'cuda')=='fp8-sage'
+    with pytest.raises(ValueError,match='Restart the service'):
+        module.validate_manager(SimpleNamespace(pipe=object()),args,'cuda')
+
+
+def test_refiner_ff_chunk_parser_default_is_disabled():
+    tree=ast.parse((ROOT/'config.py').read_text(encoding='utf-8'))
+    calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and n.args and isinstance(n.args[0],ast.Constant) and n.args[0].value=='--h3_cuda_refiner_ff_chunk_size']
+    assert len(calls)==1
+    assert next(k.value.value for k in calls[0].keywords if k.arg=='default')==0
+
+
+def test_reference_stage_requires_conditioning_and_restart():
+    for backend,task,profile,conditioning in [('npu','ref2va','auto',True),('cuda','t2va','fp8-sage',True),('cuda','ref2va','fp8-sage',False)]:
+        with pytest.raises(ValueError,match='(reference|conditioning)_offload requires'):
+            module.resolve(settings(task_type=task,h3_cuda_precision=profile,h3_cuda_conditioning_offload=conditioning,h3_cuda_reference_offload=True),backend)
+    args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_conditioning_offload=True,h3_cuda_reference_offload=True)
+    assert module.resolve(args,'cuda')=='fp8-sage'
+    with pytest.raises(ValueError,match='Restart the service to change h3_cuda_reference_offload'):
+        module.validate_manager(SimpleNamespace(pipe=object()),args,'cuda')
+
+
+@pytest.mark.parametrize('field,value',[('task_type','unsupported'),('sp',1),('text_encoder_tp',4),('h3_nvfp4_checkpoint','packed'),('h3_refiner',True)])
 def test_incompatible_profiles_fail_before_loading(field,value):
     with patch.object(module.dist,'is_initialized',return_value=True),patch.object(module.dist,'get_world_size',return_value=8),patch.dict(module.os.environ,{'XGEN_PHAA_FP8':'0'}):
         with pytest.raises(ValueError): module.validate(settings(**{field:value}),'cuda')
@@ -46,6 +135,47 @@ def test_released_profile_requires_sp8():
     with patch.object(module.dist,'is_initialized',return_value=True),patch.object(module.dist,'get_world_size',return_value=4):
         with pytest.raises(ValueError,match='world=SP=text TP=8'):
             module.validate(settings(sp=4,text_encoder_tp=4),'cuda')
+
+
+def test_explicit_sage_ref2va_reuses_sp8_profile():
+    with patch.object(module.dist,'is_initialized',return_value=True),patch.object(module.dist,'get_world_size',return_value=8):
+        module.validate(settings(h3_cuda_precision='fp8-sage',task_type='ref2va'),'cuda')
+        with pytest.raises(ValueError):
+            module.validate(settings(h3_cuda_precision='fp8-sage',task_type='ref2va'),'npu')
+
+
+def test_explicit_bf16_attention_ref2va_control_keeps_auto_legacy():
+    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va'),'cuda')=='none'
+    with patch.object(module.dist,'is_initialized',return_value=True),patch.object(module.dist,'get_world_size',return_value=8),patch.dict(module.os.environ,{'XGEN_PHAA_FP8':'0'}):
+        module.validate(settings(h3_cuda_precision='fp8-bf16',task_type='ref2va'),'cuda')
+
+
+def test_local_output_is_explicit_and_rejects_unsupported_routes():
+    assert not getattr(settings(), 'h3_cuda_local_output', False)
+    with pytest.raises(ValueError, match='requires a CUDA H3 FP8'):
+        module.resolve(settings(h3_cuda_precision='none',h3_cuda_local_output=True),'cuda')
+    with pytest.raises(ValueError, match='requires a CUDA H3 FP8'):
+        module.resolve(settings(h3_cuda_precision='auto',h3_cuda_local_output=True),'npu')
+    manager=SimpleNamespace(pipe=object(),_h3_cuda_precision_key='fp8-sage')
+    with pytest.raises(ValueError, match='Restart the service'):
+        module.validate_manager(manager,settings(h3_cuda_precision='fp8-sage',h3_cuda_local_output=True),'cuda')
+
+
+def test_local_output_parser_default_preserves_original_gather():
+    tree=ast.parse((ROOT/'config.py').read_text(encoding='utf-8'))
+    calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and n.args and isinstance(n.args[0],ast.Constant) and n.args[0].value=='--h3_cuda_local_output']
+    assert len(calls)==1
+    assert ast.unparse(next(k.value for k in calls[0].keywords if k.arg=='action'))=='argparse.BooleanOptionalAction'
+
+
+def test_conditioning_offload_is_only_explicit_ref2va_and_resident_immutable():
+    for backend,task,profile in [('npu','ref2va','auto'),('cuda','t2va','fp8-sage'),('cuda','ref2va','none')]:
+        with pytest.raises(ValueError,match='conditioning_offload requires'):
+            module.resolve(settings(h3_cuda_conditioning_offload=True,task_type=task,h3_cuda_precision=profile),backend)
+    assert module.resolve(settings(h3_cuda_conditioning_offload=True,task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')=='fp8-sage'
+    manager=SimpleNamespace(pipe=object(),_h3_cuda_precision_key='fp8-sage')
+    with pytest.raises(ValueError,match='Restart the service'):
+        module.validate_manager(manager,settings(h3_cuda_conditioning_offload=True,task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')
 
 
 @pytest.mark.parametrize('backend,model,task,expected',[

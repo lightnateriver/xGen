@@ -1,47 +1,32 @@
 # H3 MaaS API（768P）
 
-用 `--init --maas` 启动 CUDA H3 Base 服务。`--maas-fl2va-input` 是弃用的 CLI 别名，行为与 `--maas` 相同。不开这些开关时，普通在线入口的规则保持不变。
+`--init --maas` 开启 CUDA H3 Base 的输入校验、排队、探针和成片发布。旧 CLI 开关 `--maas-fl2va-input` 是弃用别名；不开 MaaS 时普通入口保持原有行为。
 
 ## 与 MiniMax 官网的对齐范围
 
-**结论：部分对齐。已对齐下表中的输入限额和模式约束；xGen MaaS 并非官方 API 的协议兼容实现，也不承诺与官网生成结果、速度、自动选比例算法或服务等级相同。** 以下仅比较标准 `MiniMax-H3`，不包含 Highspeed、Lite、Max、Context-IR 或 Regenerate 接口。核对日期：2026-11-10。
+**部分对齐，不兼容官方请求／响应协议。** 以下比较标准 MiniMax-H3（核对日期：2026-11-10），不包含 Highspeed、Lite、Max、Context-IR 或 Regenerate。
 
-官方依据为 [H3 输入要求](https://platform.minimax.io/docs/guides/video-generation)和[创建视频生成任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)。字符计数与精确字节数分别核对 [CLI 文本校验](https://github.com/MiniMax-AI/cli/blob/main/src/video/v2.ts)和[CLI 素材限额](https://github.com/MiniMax-AI/cli/blob/main/src/utils/media.ts)；官方文档中标作 MB 的这些限额，CLI 使用 `1024*1024` 字节计算。
+| 范围 | 结论 |
+|---|---|
+| 输入限额与模式约束 | 下文的 7000 UTF-16 文本计数、素材格式／大小／数量／尺寸／比例、参考音视频时长、64 MiB 请求体及输入模式互斥已按官方文档／CLI 实现 |
+| 本地收窄或额外限制 | 只开放 768P、5～15 秒整数（官网标准 H3 为 768P/2K、4～15 秒）；保留图片像素乘积上限，只接受静态图片；额外拒绝 NUL、非法 Unicode，并限制下载目标及超时 |
+| 不声明一致的部分 | xGen 路由、字段、错误码、任务响应、模型部署及推理配置；R2VA 自动选比例算法、实际输出尺寸、生成结果、速度和服务等级；不接受 `mm_file://` 或平台文件 ID |
 
-| 项目 | 是否对齐 | xGen MaaS 的规则或差异 |
-|---|---|---|
-| 文本长度 | 是，按官方 CLI 计数 | 非空文本最多 7000 UTF-16 码元，与 JavaScript `text.length` 一致，不按 tokenizer token 数计数；本地额外拒绝 NUL、非法 Unicode |
-| 图片格式 | 是，支持格式集合 | JPEG/PNG/WebP/HEIC/HEIF；HEIC/HEIF 要安装解码依赖；本地只接受静态单图，不支持动画或多帧图片 |
-| 图片大小、每边尺寸、比例 | 是，另有像素乘积上限 | 每张最多 30 MiB；每边 256..5760；宽/高 0.4..2.5；仍须满足下述本地像素上限 |
-| 参考素材数量 | 是 | 最多 9 图、3 视频、3 音频；合计最多 12 个文件，不是允许三类上限同时相加到 15 个 |
-| 视频／音频时长 | 是 | 每段 2..15 秒；视频累计不超过 15 秒，音频独立累计不超过 15 秒 |
-| 视频格式与规格 | 是，按实际探测校验 | MP4/MOV，H.264/H.265，附带音轨 AAC/MP3；最多 50 MiB；每边 256..5760，比例 0.4..2.5，帧率 23.976..60 |
-| 参考音频格式与大小 | 是 | WAV/MP3，最多 15 MiB |
-| HTTP 请求体大小 | 是，按官方 CLI 字节数 | 最多 64 MiB，包含 JSON/Base64；URL 下载内容逐文件检查，不与请求体混算 |
-| 首尾帧与参考输入组合 | 是，校验规则已接入 | 首帧、尾帧各最多 1 张；与 R2VA 参考素材互斥；纯音频参考不接受，需搭配图片或视频 |
-| 输出分辨率 | 否，本地范围收窄 | 官网标准 H3 为 768P/2K；当前 MaaS 只开放 768P，不开放任意 width/height、1080P 或 2K |
-| 生成时长 | 部分对齐 | 官网标准 H3 为 4..15 秒整数；本地暂开放 5..15 秒整数，4 秒尚未开放 |
-| 比例枚举与模式语义 | 部分对齐 | 支持同样的六种显式比例和 adaptive；T2VA 使用具体比例，I2VA 按输入自适应；R2VA 的自动选择规则与 32 对齐尺寸映射是本地实现，不声明与官网算法完全一致 |
-| 图片像素乘积 | 否，本地额外限制 | 每张首尾帧最多 8388608 像素，每张参考图最多 16777216 像素；官网上述页面未单列这两个乘积上限 |
-| 素材输入方式 | 部分对齐 | 支持公网 HTTP(S) URL 和 Base64；不接收 MiniMax 平台文件 ID／`mm_file://`，也不接受服务器本地路径；本地另有公网地址、下载超时及重定向限制 |
-| URL、字段和响应协议 | 否，保留 xGen API | 使用 `/v1/tasks` 或 `/generate`，字段为 prompt/first_frame/last_frame/ref_path/aspect_ratio；不提供官方 `/v2/video_generation` 的 content[]/role/ratio 协议兼容层；错误码和任务响应按本文定义 |
-| 模型选择与推理配置 | 否，本地部署规则 | T2VA/I2VA 与 R2VA 分别部署；权重、步数、量化、attention 和并行策略由启动配置固定；seed、enable_audio 等按本文的本地字段约束处理 |
+依据：[官方输入要求](https://platform.minimax.io/docs/guides/video-generation)、[创建接口](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)、[CLI 文本校验](https://github.com/MiniMax-AI/cli/blob/main/src/video/v2.ts)、[CLI 字节限额](https://github.com/MiniMax-AI/cli/blob/main/src/utils/media.ts)。对齐指输入规则实现，不代表兼容认证或 GPU 精度验收。鉴权、租户配额、限流及内容审核由接入平台另行核验。
 
-“已对齐”在这里表示输入校验实现与列出的官方限制一致，不表示已经通过官网兼容认证。CPU 测试已验证部分成功与错误样例；新组合的真实 GPU 成片、最大输入容量和人工精度仍按本文“验证边界”单独验收。鉴权、租户配额、限流及内容审核不能从本表推定为已实现，需由接入平台另行核验。
+## 启动
 
-安装 `pip install -r server/requirements-maas.txt`，环境还需提供 `ffmpeg`、`ffprobe`。HEIC/HEIF 使用 pillow-heif 解码，缺少插件时启动直接报错，不宣称支持无法解码的格式。
-
-## 部署
-
-从仓库根目录执行，先填写示例配置中的模型路径。
+从仓库根目录执行，先填写配置中的模型路径，并准备 `ffmpeg`、`ffprobe`：
 
 ```bash
+pip install -r server/requirements-maas.txt
+
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   server/video/video_server.py --init --maas --service-mode fl2va \
   --config example/diffusers/configs/h3_maas.example.json
 ```
 
-R2VA 使用独立模型实例，复用现有八卡 5090 配置：
+上例服务 T2VA/I2VA。R2VA 使用 Ref2VA 权重和独立实例：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
@@ -49,220 +34,140 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   --config example/diffusers/configs/h3_cuda5090_ref2va.example.json
 ```
 
-步数、权重、量化、attention 和并行策略由启动配置决定。MaaS 不允许请求覆盖这些配置；步数显式传入时必须匹配启动配置。T2VA/I2VA 与 R2VA 使用不同实例，不在请求间临时切换模型。Refiner、2K、1080P、旧 reduced-step warmup 不在本次开放范围。
+SP 须等于实际 rank 数。步数、权重、量化、attention 和并行策略在启动时固定；请求不得覆盖，显式传入步数须匹配配置。不开放 Refiner、2K、1080P 或旧 reduced-step warmup。HEIC/HEIF 需要依赖中的 pillow-heif，缺失时启动报错。先提交真实预热请求，等 `/ready` 返回 200 再接平台流量。
 
-## 提交
+## 请求与输入限制
 
-`POST /v1/tasks` 使用 `{"id":"job-1","input":{...}}`，可选 `created_at` 为客户端 Unix 毫秒时间戳。`POST /generate` 直接接收 input 对象。请求须为 UTF-8 JSON。
+使用 UTF-8、`Content-Type: application/json`。`POST /v1/tasks` 接收 `{"id":"job-1","input":{...}}`，`POST /generate` 直接接收 input 并生成 ID。
 
-T2VA：
+`id` 为 1～128 个 ASCII 字母、数字、下划线或连字符，首位须为字母或数字。可选 `created_at` 是大于 0、早于 2100 年的 Unix 毫秒时间戳；服务计时仍从实际受理开始。未知字段、重复 JSON 字段及非有限数值会被拒绝。
+
+| 字段 | 规则 |
+|---|---|
+| `prompt` | 必填非空，最多 **7000 UTF-16 码元**，与 JavaScript `string.length` 一致；汉字通常计 1，`🙂` 计 2；禁止 NUL、非法 Unicode，超长拒绝、不截断，不按 tokenizer token 数计数 |
+| `model` / `resolution` | 默认 MiniMax-H3 / 768p；也接受 768P 写法，不接受任意 width/height |
+| `task_type` | t2va / fl2va / ref2va；须符合实例工作流，不能用普通实例临时切换 Ref2VA 权重 |
+| `duration` | 5～15 的 JSON 整数，默认 5；4 秒暂未开放 |
+| `num_inference_steps` | 可省略；显式传入时须匹配启动配置 |
+| `seed` / `enable_audio` | JSON 整数 0～2147483647，默认 42 / JSON 布尔值，默认 true |
+| `first_frame` / `last_frame` | I2VA 至少一个，各最多 1 张，不可与参考素材混用；T2VA 不接受媒体 |
+| `ref_path` | R2VA 必填数组：最多 **9 图、3 视频、3 音频，总计 12 个文件**；音频需搭配图片或视频 |
+| `aspect_ratio` | 21:9、16:9、4:3、1:1、3:4、9:16 或 adaptive；具体规则见下文 |
+
+素材可以使用公网 HTTP(S) URL 或 Base64 data URI，按真实内容识别，保留输入顺序；URL 不必带扩展名。不接受私有 IP、服务器本地路径、`file://` 或平台文件 ID。字段沿用 xGen，不提供官方 content[]/role/ratio 协议层。
+
+| 素材 | 格式及硬限制 |
+|---|---|
+| 图片 | 静态 JPEG/PNG/WebP/HEIC/HEIF；每张 **≤30 MiB**；每边 **256～5760**；宽/高 **0.4～2.5** |
+| 图片像素乘积 | 每张首尾帧 ≤8,388,608；每张参考图 ≤16,777,216，分别检查，不按多图累计 |
+| 视频 | MP4/MOV，H.264/H.265，附带音轨 AAC/MP3；每段 **≤50 MiB**；每边 256～5760，宽/高 0.4～2.5，帧率 23.976～60 |
+| 音频 | WAV/MP3；每段 **≤15 MiB** |
+| 音视频时长 | 每段 **2～15 秒**；**视频合计 ≤15 秒，音频独立合计 ≤15 秒**，以实际探测值为准 |
+| 请求体 | **≤64 MiB**，包含 JSON/Base64；URL 指向的素材另按单文件上限检查 |
+
+1 MiB = 1024×1024 字节，与官方 CLI 的计算相同。所有素材在入队前校验，格式声明或文件名不能替代实际解码／探测。
+
+### 比例
+
+- T2VA：使用具体比例，默认 16:9，拒绝 adaptive。
+- I2VA：按首帧（无首帧时按尾帧）经 EXIF 修正后的比例自适应；首尾帧比例不同仍以首帧为准，管线按目标尺寸处理尾帧。传入其他有效比例也按自适应处理。
+- R2VA：可指定具体比例，默认 adaptive，按素材顺序取第一份图片或视频的显示比例，音频不参与。
+
+R2VA 自动选比例是本地规则，不声明与官网算法一致。输出按 1344×768 像素预算计算并向下对齐到 32；16:9/9:16 保留 1344×768/768×1344，实际比例受对齐影响。这不等于任意分辨率，也不保证短边为 768。
+
+### 三种请求示例
 
 ```json
-{"id":"text-1","input":{"task_type":"t2va","prompt":"两个人交谈后起身。","duration":5,"resolution":"768p","aspect_ratio":"16:9"}}
+{"id":"text-1","input":{"task_type":"t2va","prompt":"两个人交谈后起身。","duration":5,"aspect_ratio":"16:9"}}
 ```
-
-I2VA（仅尾帧）；首帧使用 `first_frame`，同时提供两个字段即首尾帧：
 
 ```json
 {"id":"frame-1","input":{"task_type":"fl2va","prompt":"镜头缓慢接近人物。","last_frame":"https://assets.example.com/end.png","duration":10}}
 ```
 
-R2VA（提交至 ref2va 实例）：
-
 ```json
-{"id":"ref-1","input":{"task_type":"ref2va","prompt":"参考人物外观和视频动作生成对话。","ref_path":["https://assets.example.com/person.webp","https://assets.example.com/motion.mp4","https://assets.example.com/voice.wav"],"duration":15,"aspect_ratio":"adaptive"}}
+{"id":"ref-1","input":{"task_type":"ref2va","prompt":"参考人物外观、动作和声音。","ref_path":["https://assets.example.com/person.webp","https://assets.example.com/motion.mp4","https://assets.example.com/voice.wav"],"duration":15}}
 ```
 
-图片、视频、音频均可使用公网 HTTP(S) URL 或 Base64 data URI，不接受服务器本地路径、`file://`、私有 IP 或平台专有文件 ID。URL 不需带扩展名；下载后按真实内容识别，保留素材顺序。请求结构沿用 xGen 字段，不兼容官方 content[] 协议。
+I2VA 使用 `first_frame` 即首帧，两个字段同时提供即首尾帧。R2VA 示例须提交至 ref2va 实例。
 
-| 输入 | 规则 |
+## 查询与成片
+
+| 方法／路径 | 用途与响应 |
 |---|---|
-| prompt | 必填非空，最多 7000 UTF-16 码元，按 JavaScript string.length 计数；禁止 NUL 和非法 Unicode，不截断 |
-| model | MiniMax-H3，可省略 |
-| resolution | 固定 768p，可省略，也接受 768P 写法；不开放 width/height |
-| duration | 5..15 的 JSON 整数，默认 5；4 秒尚未开放 |
-| seed | 0..2147483647 的 JSON 整数，默认 42 |
-| enable_audio | JSON 布尔值，默认 true |
-| first_frame/last_frame | I2VA 至少一个，每个最多一张；不可与 ref_path 混用 |
-| ref_path | R2VA 必填非空数组，最多 9 图、3 视频、3 音频，总计最多 12；音频需搭配图或视频 |
-| 图片 | JPEG/PNG/WebP/HEIC/HEIF；单文件最多 30 MiB；每边 256..5760；宽/高为 0.4..2.5；仅静态图 |
-| 图片像素乘积 | 每张首尾帧最多 8388608；每张参考图最多 16777216，保留原来的两套上限，不按多图累计 |
-| 视频 | MP4/MOV，H.264/H.265；视频中的音轨 AAC/MP3；单文件最多 50 MiB；每边 256..5760，比例 0.4..2.5，帧率 23.976..60 |
-| 音频 | WAV/MP3，单文件最多 15 MiB |
-| 视频/音频时长 | 每段 2..15 秒；各类分别累计不超过 15 秒，以实际媒体探测结果为准 |
-| HTTP 请求体 | 最多 64 MiB，含 JSON/Base64。URL 指向文件另外按逐文件上限检查，不把下载总字节数误作请求体大小 |
+| `POST /v1/tasks` | 提交；成功返回 200 和任务快照。同 ID、同规范化输入去重，不同输入返回 409 |
+| `GET /v1/tasks/<id>` / `GET /v1/tasks` | 查询一个任务／列出实例保留的任务 |
+| `DELETE /v1/tasks/<id>` | 取消待派发任务；已派发或其他不可取消终态返回 409 |
+| `GET /download/<id>` | 下载成功的 MP4；未成功返回 400，任务或文件不存在返回 404 |
+| `GET /health` / `GET /ready` | 存活始终返回 200；就绪返回 200，其余 503，均附就绪详情 |
+| `GET /params` / `GET /metrics` | 输入规格／当前实例任务数和推理耗时 |
+| `GET /config` | 查看启动配置；写入及 `POST /init` 返回 405 |
 
-文件大小按 1024×1024 字节计算，与官方 CLI 相同。格式和时长按 Pillow/ffprobe 实际识别，文件名及 MIME 声明不能替代内容校验。
+兼容路由：`POST /generate` 返回 `accepted` 和 `task_id`；`GET /status/<id>`、`GET /result/<id>` 查询详情或结果；`POST /cancel/<id>` 取消。兼容路由将成功状态写作 `completed`，`/v1/tasks` 使用 `succeeded`。
 
-## 比例
+任务状态：`pending` 等待派发，`running` 已领取（含加载／编码／交付），`succeeded` 已验收发布，`failed` 失败或过期，`cancelled` 派发前取消。查询返回 200 只代表查询成功，仍需检查任务状态。
 
-T2VA 支持 21:9、16:9、4:3、1:1、3:4、9:16，默认 16:9，不接受 adaptive。I2VA 总是使用首帧（无首帧时取尾帧）经 EXIF 方向修正后的比例；首尾帧比例不同时仍以首帧为准，管线按目标尺寸处理尾帧。R2VA 可显式指定上述比例，默认 adaptive：按输入顺序取第一份图片或视频的比例，音频不参与。
+成功任务的 `output` 是 **JSON 字符串，需再解析一次**：
 
-R2VA 的自动选比例是 xGen 明确规定的本地规则，官网未公开其内部选择算法。长宽按现有 1344×768 的像素预算计算并向下对齐到 32，16:9/9:16 保留 1344×768/768×1344。不是任意分辨率，也不把短边一律设为 768。结果包含实际 width/height；实际宽高比受网格对齐影响。
+```json
+{"id":"ref-1","status":"succeeded","output":"{\"video_path\":\"<server-local-path>/video_example.mp4\",\"infer_time\":50.23,\"width\":1344,\"height\":768,\"resolution\":\"768p\"}","error_code":null,"failure_stage":null,"timings_s":{"queue":0.001,"inference":50.232,"encode":0.836,"delivery":0.0,"total":51.655}}
+```
 
-## 下载与临时素材
+`video_path` 是服务端路径，客户端使用下载接口。设置 `EXTERNAL_BASE_URL` 或 `--external-base-url` 后，结果还包含 `download_url`；启用 OBS 时为签名链接，有效期由 `OBS_URL_EXPIRE_SECONDS` 设置。临时成片须通过本请求的尺寸、帧数、24 fps、包数及所需音轨校验，才原子发布；OBS 还需对象和签名链接可读。示例耗时仅说明字段，不是新 MaaS 性能承诺。
 
-素材在受理入队前下载和校验，最多同时两个 admission 请求。忙时返回 503，不占 GPU；下载耗时发生在任务受理之前，不计入原来的排队时间。只连接经过公网 IP 检查的实际地址，HTTPS 验证原域名证书；每次重定向重新检查目标，最多 3 次。不信任 Content-Length，流式检查真实字节数；下载失败不自动重试。
+## 排队、计时与错误
 
-`XGEN_MAAS_DOWNLOAD_TIMEOUT_S` 设置单文件下载期限，默认 60 秒，允许 (0,3600]；DNS 查询还受系统解析器超时控制。`XGEN_MAAS_MEDIA_ROOT` 指定临时素材目录，须提前创建，八卡进程应可见同一路径。素材由 HTTP 接入阶段准备一次；rank 不重复下载。请求拒绝、去重、取消、排队过期、GPU 失败或完成后清理对应素材；进程被 SIGKILL 或主机掉电时可能留目录，需要运维清理。
+默认最多 **10 条等待任务**，执行中的任务另计；容量由 `--maas-queue-capacity` 设置。待派发任务从实际受理起等待满 **600 秒**过期，由 `--maas-queue-timeout-s` 设置，不限制已派发任务的推理时长。受理、查询、领取和定期清理时检查过期；取消／过期释放槽位。
 
-输入媒体的 ffprobe 探测超时为 30 秒；编码后的输出校验超时为 15 秒。素材在受理之前准备，这段耗时不包含在原来的 `timings_s.queue` 中。
+等待任务包含 `queue_elapsed_s`（已等待秒数）和 `queue_ahead`（前面有效等待任务数，不含执行中任务）；派发或结束后保留实际排队耗时。所有时间用服务端单调时钟计秒、保留三位小数，失败时未完成阶段可缺失。
 
-## 沿用的可靠性接口
+| `timings_s` 字段 | 范围 |
+|---|---|
+| `queue` | 受理到领取；取消／过期时到被服务检测的时刻 |
+| `inference` | 两次设备同步之间的 infer_single，含管线内解码，不含前置模型加载 |
+| `encode` | 本地编码、媒体校验及原子发布 |
+| `delivery` | 本地发布到交付确认，含启用 OBS 后的复制和可读性确认 |
+| `total` | 受理到终态，含派发、加载及阶段间开销；素材受理前处理和客户端下载另计 |
 
-查询 `/v1/tasks/<id>`、取消 `DELETE /v1/tasks/<id>`、探针 `/health` 和 `/ready`、规格 `/params`、指标 `/metrics`、结果 `/download/<id>` 保持原路由。`/config` 只读。先发真实请求预热，通过 `/ready` 后再接平台流量。
+任务记录在实例内存，终态约保留 2 小时，每 5 分钟清理，重启后丢失；去重及查询应路由到持有记录的同一实例。
 
-保留同 ID 去重、默认 10 条等待队列、600 秒排队期限和单调时钟计时。配置参数仍为 `--maas-queue-capacity`、`--maas-queue-timeout-s` 和已有阶段就绪时限。校验错误返回 400，文件/请求体超限返回 413，非 JSON 返回 415；去重输入冲突返回 409。客户端输入校验失败不会改变 worker 就绪状态，不恢复 latent，不自动重试生成。
+| HTTP／错误 | 含义 |
+|---|---|
+| 400 `invalid_input` | JSON、字段、组合、规格或媒体内容无效，响应含 `field`、`message` |
+| 413 `invalid_input` / 415 `invalid_input` | 请求体／素材字节或像素超限 / 非 JSON 内容类型 |
+| 404 | 记录不存在；取消接口为 `task_not_found` |
+| 409 `task_conflict` / `task_not_cancellable` | 同 ID 不同输入 / 任务不可取消 |
+| 429 `too_many_tasks` | 实例记录达到 1000 条，包含终态 |
+| 503 | `queue_full`：队列满；`worker_unavailable`：实例降级；未初始化、关闭中或素材处理入口忙也返回 503，文案不同 |
 
-## 验证边界
+任务失败用 `error_code` / `failure_stage` 表示：`queue_expired`、`cancelled_by_user` 对应 queue；`encode_failed` 对应 encode；`storage_failed` 对应 storage；`worker_lost` 对应故障阶段（等待任务为 queue）；`service_shutdown` 对应 shutdown。输入校验失败不会改变 worker 就绪状态，不恢复 latent、不自动重试生成。
 
-CPU 回归通过 **46 项测试、242 个子用例**，覆盖新旧 CLI 参数、T2VA/I2VA/R2VA 路由、真实 JPEG/PNG/WebP/HEIC/HEIF 解码、音视频探测、受控 HTTP 下载、素材限额、输入去重和临时文件清理，以及原有 MaaS 可靠性测试。本地文档链接检查通过。测试入口为 [test_maas.py](test_maas.py)、[test_maas_fl2va.py](test_maas_fl2va.py) 和 [test_maas_artifacts.py](test_maas_artifacts.py)，在安装服务依赖的 CPU 环境运行：
+## 下载、探针与超时
+
+受理前最多同时处理两份素材请求，忙时返回 503，不占 GPU。只连接校验过的公网 IP，HTTPS 验证原域名证书，每次重定向重新检查目标，最多 3 次；按实际读取字节限额，不信任 Content-Length。素材只准备一次，八卡不重复下载。
+
+| 操作 | 默认值与配置 |
+|---|---|
+| 单文件下载 | 60 秒，`XGEN_MAAS_DOWNLOAD_TIMEOUT_S` 可设 (0,3600]；DNS 仍受系统解析器时限控制 |
+| 输入 ffprobe / 成片 ffprobe | 30 秒 / 15 秒，代码固定 |
+| loading / generating / saving 就绪阈值 | 600 / 1200 / 180 秒，代码固定；超限影响就绪和新受理，当前任务可以继续执行 |
+| OBS 元数据轮询 / 签名链接读取 | 10 秒 / 5 秒，代码固定 |
+
+`idle`、`dispatching`、`confirming_workers` 仅记录状态。正常生成期间可保持就绪；`/ready` 首先要求模型加载、真实预热发布成功且全部 rank 确认。就绪快照包含 `state`、`ready`、`reason`、`phase`、`model_loaded`、`workers.expected/group_state`，`/health` 还含 model/profile/rank/world_size。
+
+- `state`：starting（worker／模型／预热未就绪）、ready、degraded（worker_failed／progress_timeout）、draining（shutdown_requested）。starting 的 reason 为 workers_unverified、model_not_loaded、model_loading 或 warmup_pending。
+- `workers.group_state`：confirmed、unverified 或 failed。
+- `/metrics`：实例保留记录的 tasks.total/completed/running/pending/failed，以及 performance.avg_infer_time/min_infer_time/max_infer_time（秒）。
+
+`XGEN_MAAS_MEDIA_ROOT` 可指定预先创建、各 rank 可见的临时目录。拒绝、去重、取消、过期、失败和完成时清理素材；SIGKILL／掉电可能残留，需运维清理。OBS 使用 `OBS_LOCAL_PATH`；鉴权、租户路由及访问内部配置／指标的权限由平台负责。
+
+## 验证范围
+
+CPU 回归 **46 项、242 个子用例通过**，覆盖 CLI、路由、真实图片解码（含 HEIC/HEIF）、音视频探测、受控下载、输入校验、去重和清理及原可靠性能力。测试文件：[新 MaaS](test_maas.py)、[原 MaaS 回归](test_maas_fl2va.py)、[成片发布](test_maas_artifacts.py)。
 
 ```bash
 CUDA_VISIBLE_DEVICES='' XGEN_DEVICE=cuda python -m pytest -q \
   server/video/test_maas.py server/video/test_maas_fl2va.py server/video/test_maas_artifacts.py
 ```
 
-本次接口与 CPU 媒体探测测试不代表所有比例、首尾帧、9 图或最大混合输入都已在 GPU 完成生成。真实八卡 1 步容量穿刺、完整步数成片和人工画面/音频验收需分别记录；历史 16:9 单首帧或 R2VA 性能不能代替新组合验收。
-
-## 可靠性字段详细说明
-
-以下沿用原有队列、状态、计时和超时语义；输入规格以上文统一 MaaS 规则为准。
-
-## 任务状态、排队与耗时
-
-等待中的任务快照。
-
-```json
-{
-  "id": "fl2va-0001",
-  "status": "pending",
-  "output": "",
-  "error_code": null,
-  "failure_stage": null,
-  "timings_s": {},
-  "queue_elapsed_s": 12.345,
-  "queue_ahead": 2
-}
-```
-
-| 状态 | 含义 |
-|---|---|
-| `pending` | 已受理，等待派发，可取消 |
-| `running` | 派发线程已领取，可能正在派发、加载、推理、编码或交付 |
-| `succeeded` | 成片已通过校验并发布 |
-| `failed` | 任务失败或过期，查看 `error_code` 和 `failure_stage` |
-| `cancelled` | 派发前已取消，重复取消返回当前终态 |
-
-默认每实例最多 **10 条等待任务**，执行中的任务另计。队列满返回 `503 queue_full`。待派发任务自受理起等待满 **600 秒**后过期。服务在受理、查询、领取及定期清理时检查过期。取消释放等待槽位，下一次受理前会清理已过期的项。部署时可通过 `--maas-queue-capacity` 和 `--maas-queue-timeout-s` 配置。
-
-`queue_elapsed_s` 是当前已等待的秒数。`queue_ahead` 是排在前面的有效等待任务数，执行中的任务另计。两个字段仅在 `pending` 时返回。`timings_s` 中的字段随阶段结束填充。
-
-| 字段 | 计时范围 |
-|---|---|
-| `queue` | 服务受理到派发线程领取。取消或过期时，记录到服务检测该状态的时刻 |
-| `inference` | 两次设备同步之间的 `infer_single()`，包含模型推理和管线内解码。首次模型加载发生在此之前 |
-| `encode` | 本地编码、媒体校验和原子发布 |
-| `delivery` | 本地发布到交付确认。启用 OBS 时包含复制和可读性确认 |
-| `total` | 服务受理到终态，包含派发、首次模型加载和阶段间开销。客户端下载另计 |
-
-耗时按服务端单调时钟计秒，保留三位小数。失败时，尚未完成的阶段字段可能缺失。任务记录保存在实例内存，终态约保留 2 小时，每 5 分钟清理。实例重启后无法查询旧记录。
-
-## 成片输出
-
-成功响应中的 `output` 是 **JSON 字符串**，调用方需要再解析一次。
-
-```json
-{
-  "id": "fl2va-0001",
-  "status": "succeeded",
-  "output": "{\"video_path\":\"<server-local-path>/video_example.mp4\",\"infer_time\":50.23}",
-  "error_code": null,
-  "failure_stage": null,
-  "timings_s": {
-    "queue": 0.001,
-    "inference": 50.232,
-    "encode": 0.836,
-    "delivery": 0.0,
-    "total": 51.655
-  }
-}
-```
-
-- `video_path` 是服务端路径。客户端通过 `GET /download/<id>` 取 MP4。未成功的任务下载返回 `400`，任务或文件不存在时返回 `404`。
-- 配置 `EXTERNAL_BASE_URL` 或 `--external-base-url` 时，解析后的结果包含 `download_url`。启用 OBS 时，该字段为签名链接，有效期由 `OBS_URL_EXPIRE_SECONDS` 配置。
-- 服务校验临时成片的分辨率、帧率、帧数、视频包数和所需音轨，通过后才原子发布。启用 OBS 时，还须确认对象和签名链接可读，任务才进入 `succeeded`。
-
-## 错误响应
-
-提交失败时检查 HTTP 状态和 `error`。查询已存在的任务时，HTTP `200` 表示查询成功，任务成败由 `status` 表示。
-
-| HTTP | 错误 | 含义 |
-|---|---|---|
-| `400` | `invalid_input` | JSON、字段类型、规格或图片内容无效 |
-| `413` | `invalid_input` | 请求体或图片大小、像素数、边长超限 |
-| `415` | `invalid_input` | 请求内容类型不是 JSON |
-| `404` | 任务不存在 | 找不到记录。取消接口返回 `task_not_found` |
-| `409` | `task_conflict` | 同 ID 对应不同输入 |
-| `409` | `task_not_cancellable` | 已派发或已进入其他终态 |
-| `429` | `too_many_tasks` | 当前实例的任务记录已达 1,000 条，包含终态记录 |
-| `503` | `queue_full` | 无空余等待槽位 |
-| `503` | `worker_unavailable` | 实例降级。未初始化或关闭中也可返回 `503`，响应文案不同 |
-
-输入校验失败示例。
-
-```json
-{"error":"invalid_input","field":"duration","message":"Expected 5"}
-```
-
-| 任务 `error_code` | `failure_stage` | 含义 |
-|---|---|---|
-| `queue_expired` | `queue` | 待派发时达到等待上限 |
-| `cancelled_by_user` | `queue` | 待派发时被调用方取消 |
-| `encode_failed` | `encode` | 本地编码、校验或发布失败 |
-| `storage_failed` | `storage` | OBS 复制或可读性验证失败 |
-| `worker_lost` | 当前阶段，等待任务为 `queue` | 服务捕获到派发或推理链路故障 |
-| `service_shutdown` | `shutdown` | 退出清理标记未结束的任务。进程退出后记录不可查询 |
-
-排队过期后的任务查询示例，HTTP 状态为 `200`。
-
-```json
-{
-  "id": "fl2va-0002",
-  "status": "failed",
-  "output": "",
-  "error_code": "queue_expired",
-  "failure_stage": "queue",
-  "timings_s": {"queue": 600.041, "total": 600.041}
-}
-```
-
-## 探针、超时与实例指标
-
-`/health` 以 HTTP `200` 表示服务进程可达，同时附带就绪快照以及 `model`、`profile`、`rank`、`world_size` 等字段。`/ready` 返回就绪快照，并按 `ready` 返回 `200` 或 `503`。正常推理期间可以保持就绪。
-
-```json
-{
-  "state": "ready",
-  "ready": true,
-  "reason": null,
-  "phase": "generating",
-  "model_loaded": true,
-  "workers": {"expected": 8, "group_state": "confirmed"}
-}
-```
-
-| `state` | 可能的 `reason` | 含义 |
-|---|---|---|
-| `starting` | `workers_unverified`、`model_not_loaded`、`model_loading`、`warmup_pending` | 等待 worker 确认、模型加载或首单预热 |
-| `ready` | `null` | 已完成预热，worker 组已确认 |
-| `degraded` | `worker_failed`、`progress_timeout` | 捕获 worker 故障或当前阶段超时 |
-| `draining` | `shutdown_requested` | 收到关闭信号 |
-
-`workers.group_state` 为 `confirmed`、`unverified` 或 `failed`。`loading`、`generating`、`saving` 的就绪阈值分别为 **600、1,200、180 秒**，到点会影响就绪和新任务受理，当前任务可以继续执行。`idle`、`dispatching`、`confirming_workers` 仅记录阶段。排队的 600 秒限制只影响尚未派发的任务。
-
-编码后校验的 `ffprobe` 子进程超时为 **15 秒**。启用 OBS 时，元数据轮询预算为 **10 秒**，签名链接探测的读取超时为 **5 秒**。完整的成功交付耗时由 `timings_s.delivery` 记录。
-
-排队时限由启动参数 `--maas-queue-timeout-s` 配置。三个阶段就绪阈值、FFprobe 校验时限和 OBS 两个操作时限当前为代码固定值。OBS 签名链接有效期由 `OBS_URL_EXPIRE_SECONDS` 单独配置。
-
-`GET /metrics` 返回 `tasks.total`、`tasks.completed`、`tasks.running`、`tasks.pending`、`tasks.failed`，以及 `performance.avg_infer_time`、`min_infer_time`、`max_infer_time`，耗时单位为秒。统计范围为实例内仍保留的任务。
+新比例、首尾帧、9 图及最大混合输入的 **GPU 容量、完整步数成片和人工画面／音频验收仍待完成**；历史 16:9 离线性能不能代替新 MaaS 组合的验收。

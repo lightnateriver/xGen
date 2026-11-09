@@ -2,6 +2,33 @@
 
 用 `--init --maas` 启动 CUDA H3 Base 服务。`--maas-fl2va-input` 是弃用的 CLI 别名，行为与 `--maas` 相同。不开这些开关时，普通在线入口的规则保持不变。
 
+## 与 MiniMax 官网的对齐范围
+
+**结论：部分对齐。已对齐下表中的输入限额和模式约束；xGen MaaS 并非官方 API 的协议兼容实现，也不承诺与官网生成结果、速度、自动选比例算法或服务等级相同。** 以下仅比较标准 `MiniMax-H3`，不包含 Highspeed、Lite、Max、Context-IR 或 Regenerate 接口。核对日期：2026-11-10。
+
+官方依据为 [H3 输入要求](https://platform.minimax.io/docs/guides/video-generation)和[创建视频生成任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)。字符计数与精确字节数分别核对 [CLI 文本校验](https://github.com/MiniMax-AI/cli/blob/main/src/video/v2.ts)和[CLI 素材限额](https://github.com/MiniMax-AI/cli/blob/main/src/utils/media.ts)；官方文档中标作 MB 的这些限额，CLI 使用 `1024*1024` 字节计算。
+
+| 项目 | 是否对齐 | xGen MaaS 的规则或差异 |
+|---|---|---|
+| 文本长度 | 是，按官方 CLI 计数 | 非空文本最多 7000 UTF-16 码元，与 JavaScript `text.length` 一致，不按 tokenizer token 数计数；本地额外拒绝 NUL、非法 Unicode |
+| 图片格式 | 是，支持格式集合 | JPEG/PNG/WebP/HEIC/HEIF；HEIC/HEIF 要安装解码依赖；本地只接受静态单图，不支持动画或多帧图片 |
+| 图片大小、每边尺寸、比例 | 是，另有像素乘积上限 | 每张最多 30 MiB；每边 256..5760；宽/高 0.4..2.5；仍须满足下述本地像素上限 |
+| 参考素材数量 | 是 | 最多 9 图、3 视频、3 音频；合计最多 12 个文件，不是允许三类上限同时相加到 15 个 |
+| 视频／音频时长 | 是 | 每段 2..15 秒；视频累计不超过 15 秒，音频独立累计不超过 15 秒 |
+| 视频格式与规格 | 是，按实际探测校验 | MP4/MOV，H.264/H.265，附带音轨 AAC/MP3；最多 50 MiB；每边 256..5760，比例 0.4..2.5，帧率 23.976..60 |
+| 参考音频格式与大小 | 是 | WAV/MP3，最多 15 MiB |
+| HTTP 请求体大小 | 是，按官方 CLI 字节数 | 最多 64 MiB，包含 JSON/Base64；URL 下载内容逐文件检查，不与请求体混算 |
+| 首尾帧与参考输入组合 | 是，校验规则已接入 | 首帧、尾帧各最多 1 张；与 R2VA 参考素材互斥；纯音频参考不接受，需搭配图片或视频 |
+| 输出分辨率 | 否，本地范围收窄 | 官网标准 H3 为 768P/2K；当前 MaaS 只开放 768P，不开放任意 width/height、1080P 或 2K |
+| 生成时长 | 部分对齐 | 官网标准 H3 为 4..15 秒整数；本地暂开放 5..15 秒整数，4 秒尚未开放 |
+| 比例枚举与模式语义 | 部分对齐 | 支持同样的六种显式比例和 adaptive；T2VA 使用具体比例，I2VA 按输入自适应；R2VA 的自动选择规则与 32 对齐尺寸映射是本地实现，不声明与官网算法完全一致 |
+| 图片像素乘积 | 否，本地额外限制 | 每张首尾帧最多 8388608 像素，每张参考图最多 16777216 像素；官网上述页面未单列这两个乘积上限 |
+| 素材输入方式 | 部分对齐 | 支持公网 HTTP(S) URL 和 Base64；不接收 MiniMax 平台文件 ID／`mm_file://`，也不接受服务器本地路径；本地另有公网地址、下载超时及重定向限制 |
+| URL、字段和响应协议 | 否，保留 xGen API | 使用 `/v1/tasks` 或 `/generate`，字段为 prompt/first_frame/last_frame/ref_path/aspect_ratio；不提供官方 `/v2/video_generation` 的 content[]/role/ratio 协议兼容层；错误码和任务响应按本文定义 |
+| 模型选择与推理配置 | 否，本地部署规则 | T2VA/I2VA 与 R2VA 分别部署；权重、步数、量化、attention 和并行策略由启动配置固定；seed、enable_audio 等按本文的本地字段约束处理 |
+
+“已对齐”在这里表示输入校验实现与列出的官方限制一致，不表示已经通过官网兼容认证。CPU 测试已验证部分成功与错误样例；新组合的真实 GPU 成片、最大输入容量和人工精度仍按本文“验证边界”单独验收。鉴权、租户配额、限流及内容审核不能从本表推定为已实现，需由接入平台另行核验。
+
 安装 `pip install -r server/requirements-maas.txt`，环境还需提供 `ffmpeg`、`ffprobe`。HEIC/HEIF 使用 pillow-heif 解码，缺少插件时启动直接报错，不宣称支持无法解码的格式。
 
 ## 部署

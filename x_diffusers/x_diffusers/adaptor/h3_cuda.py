@@ -86,7 +86,7 @@ def configure_parallelism(pipe, args):
     if cuda_vae_tiles and not getattr(args, "h3_cuda_vae_sp", False):
         raise ValueError("XGEN_H3_CUDA_VAE_TILES requires --h3_cuda_vae_sp")
     if getattr(args, "h3_cuda_vae_sp", False):
-        manager = pipe.transformer.parallel_manager
+        manager = getattr(pipe, '_h3_vae_parallel_manager', pipe.transformer.parallel_manager)
         heads = pipe.vae.decoder.transformer_blocks[0].attn.heads
         if heads % manager.sp_size:
             raise ValueError("CUDA H3 VAE attention heads must divide evenly across SP ranks")
@@ -101,6 +101,13 @@ def configure_parallelism(pipe, args):
         logger.info("Experimental CUDA H3 VAE SP enabled, sp_size=%s", manager.sp_size)
 
     fp8_phaa = os.environ.get("XGEN_PHAA_FP8") == "1"
+    h3_parallel = getattr(pipe.transformer, '_h3_parallel_config', None)
+    if getattr(h3_parallel, 'mode', None) == 'tp_cp_shared':
+        logger.info('H3 shared TP8/CP8 %s sequence exchange; QKV all-to-all fused with TP head layout; no standalone PHAA transport',
+                    h3_parallel.tp_comm)
+        return
+    if h3_parallel is not None:
+        fp8_phaa = h3_parallel.cp_comm == 'fp8'
     async_exchange = os.environ.get("XGEN_PHAA_ASYNC_EXCHANGE") == "1"
     direct_return = os.environ.get("XGEN_PHAA_DIRECT_RETURN") == "1"
     fp8_row_tiling = os.environ.get("XGEN_PHAA_FP8_ROW_TILING") == "1"
@@ -117,7 +124,8 @@ def configure_parallelism(pipe, args):
     if async_exchange and not fp8_phaa:
         raise ValueError("XGEN_PHAA_ASYNC_EXCHANGE requires CUDA and XGEN_PHAA_FP8=1")
     if fp8_phaa:
-        local_heads = pipe.transformer.config.num_attention_heads // args.sp
+        local_heads = (pipe.transformer.transformer_blocks[0].attn.heads if h3_parallel is not None
+                       else pipe.transformer.config.num_attention_heads) // args.sp
         if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
             raise ValueError("XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num")
         chunk_order = os.environ.get("XGEN_PHAA_CHUNK_ORDER", "natural")

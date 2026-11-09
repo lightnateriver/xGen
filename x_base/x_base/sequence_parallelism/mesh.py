@@ -191,7 +191,9 @@ class ParallelManager:
         tp_size: int = 1,
         sp_ulysses_size: Optional[int] = None,
         sp_ring_size: Optional[int] = None,
+        register_tp_global: bool = True,
     ) -> None:
+        self._register_tp_global = register_tp_global
         self._config = ParallelConfig(dp_size, cp_size, sp_size, tp_size, sp_ulysses_size, sp_ring_size)
         self._config.validate(dist.get_world_size())
         self._mesh = ProcessGroupMesh(dp_size, cp_size, sp_size, tp_size)
@@ -227,12 +229,13 @@ class ParallelManager:
             self.tp_group = self._mesh.get_group_along_axis(3)
             self.tp_rank = dist.get_rank(self.tp_group)
             # 同步到 TP 全局状态 (供 ColumnParallelLinear / RowParallelLinear 使用)
-            from ..tensor_parallelism.state import set_tp_group
-            set_tp_group(
-                group=self.tp_group,
-                world_size=self.tp_size,
-                rank=self.tp_rank,
-            )
+            if self._register_tp_global:
+                from ..tensor_parallelism.state import set_tp_group
+                set_tp_group(
+                    group=self.tp_group,
+                    world_size=self.tp_size,
+                    rank=self.tp_rank,
+                )
         else:
             self.tp_group = None
             self.tp_rank = None

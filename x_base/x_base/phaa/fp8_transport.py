@@ -1,16 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
 """Per-head FP8 transport for CUDA PHAA all-to-all."""
 
+import logging
+import os
+
 import torch
 import torch.distributed as dist
 import triton
 import triton.language as tl
 
+_mixed_stride_metrics = dict(calls=0, avoided_contiguous_bytes=0)
+
+
+def mixed_stride_metrics():
+    """Scalar diagnostics only; no tensor or communication-buffer cache."""
+    return dict(_mixed_stride_metrics)
+
 
 @triton.jit
 def _encode(q, k, v, payload, scale_ptr, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
             PEER_ROWS: tl.constexpr, STREAMS: tl.constexpr,
-            SHAPE: tl.constexpr, STRIDES: tl.constexpr, STRIDED: tl.constexpr):
+            SHAPE: tl.constexpr, STRIDES: tl.constexpr, STRIDED: tl.constexpr,
+            MIXED_STRIDES: tl.constexpr = False):
     row = tl.program_id(0)
     slot = tl.program_id(1)
     src = tl.where(slot == 0, q, tl.where(slot == 1, k, v)) if STREAMS == 3 else q
@@ -21,7 +32,14 @@ def _encode(q, k, v, payload, scale_ptr, WIDTH: tl.constexpr, BLOCK: tl.constexp
         batch = row // SHAPE[3] % SHAPE[2]
         seq = row // (SHAPE[3] * SHAPE[2]) % SHAPE[1]
         peer = row // PEER_ROWS
-        src_row = peer * STRIDES[0] + seq * STRIDES[1] + batch * STRIDES[2] + head * STRIDES[3]
+        if MIXED_STRIDES:
+            s0 = tl.where(slot == 0, STRIDES[0][0], tl.where(slot == 1, STRIDES[1][0], STRIDES[2][0]))
+            s1 = tl.where(slot == 0, STRIDES[0][1], tl.where(slot == 1, STRIDES[1][1], STRIDES[2][1]))
+            s2 = tl.where(slot == 0, STRIDES[0][2], tl.where(slot == 1, STRIDES[1][2], STRIDES[2][2]))
+            s3 = tl.where(slot == 0, STRIDES[0][3], tl.where(slot == 1, STRIDES[1][3], STRIDES[2][3]))
+            src_row = peer * s0 + seq * s1 + batch * s2 + head * s3
+        else:
+            src_row = peer * STRIDES[0] + seq * STRIDES[1] + batch * STRIDES[2] + head * STRIDES[3]
     else:
         src_row = row * WIDTH
     values = tl.load(src + src_row + col, col < WIDTH, other=0).to(tl.float32)
@@ -70,15 +88,31 @@ def fp8_all_to_all_many(outputs, tensors, head_dim, group):
     send = torch.empty((streams * rows, head_dim + 4), dtype=torch.uint8, device=tensors[0].device)
     recv = torch.empty_like(send)
     strides = tensors[0].stride()
+    mixed_strides = False
     if (streams == 3 and len(shape) == 5 and shape[0] == peers and shape[-1] == head_dim
             and strides[-1] == 1 and all(x.stride() == strides for x in tensors)):
         inputs = tensors
+    elif (os.environ.get("XGEN_PHAA_FP8_MIXED_STRIDES", "0") == "1"
+          and streams == 3 and len(shape) == 5 and shape[0] == peers
+          and shape[-1] == head_dim and all(x.stride(-1) == 1 for x in tensors)):
+        inputs = tensors
+        strides = tuple(x.stride() for x in tensors)
+        mixed_strides = True
+        if _mixed_stride_metrics['calls'] == 0:
+            logging.getLogger(__name__).info(
+                "PHAA FP8 mixed-stride packing enabled: shape=%s strides=%s", tuple(shape), strides,
+            )
+        _mixed_stride_metrics['calls'] += 1
+        _mixed_stride_metrics['avoided_contiguous_bytes'] += sum(
+            x.numel() * x.element_size() for x in tensors if not x.is_contiguous()
+        )
     else:
         inputs = tuple(tensor.contiguous() for tensor in tensors)
         strides = ()
     _encode[(rows, streams)](*(inputs if streams == 3 else inputs * 3),
                              send.view(torch.float8_e4m3fn), send.view(torch.float32),
-                             head_dim, block, peer_rows, streams, tuple(shape), strides, bool(strides))
+                             head_dim, block, peer_rows, streams, tuple(shape), strides, bool(strides),
+                             mixed_strides)
     dist.all_to_all_single(recv, send, group=group)
     _decode[(rows, streams)](recv, recv.view(torch.float32),
                              *(outputs if streams == 3 else outputs * 3),

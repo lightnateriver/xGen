@@ -1,7 +1,7 @@
 import argparse
 
 
-def parse_args(namespace=None, mode="infer"):
+def parse_args(namespace=None, mode="infer", *, bootstrap_environment=True):
     parser = argparse.ArgumentParser(description="AscendX-Video inference script")
 
     parser = add_network_args(parser)
@@ -17,6 +17,11 @@ def parse_args(namespace=None, mode="infer"):
         parser = add_benchmark_args(parser)
 
     args = parser.parse_args(namespace=namespace)
+    if bootstrap_environment and getattr(args, 'h3_cuda_preset', None) not in (None, 'none'):
+        from x_base.device import device_type
+        from .h3_cuda_options import resolve_options, commit_environment
+        resolve_options(args, device_type())
+        commit_environment(args)  # Allocator/NCCL options precede init_env().
 
     return args
 
@@ -92,9 +97,35 @@ def add_wan_vace_args(parser: argparse.ArgumentParser):
 
 
 def add_minimax_h3_args(parser: argparse.ArgumentParser):
+    from .h3_cuda_options import add_arguments as add_cuda_options
+    add_cuda_options(parser)
+    from .h3_parallel_config import add_arguments
+    add_arguments(parser)
     group = parser.add_argument_group(title="MiniMax-H3 args")
     group.add_argument("--h3_cuda_precision", choices=["auto", "none", "fp8-bf16", "fp8-sage"], default="auto",
                        help="CUDA H3 Base defaults to FP8 Linear/BF16 attention and communication; fp8-sage selects CUDA recipe 2 (visual quality review pending). Auto preserves NPU, other models and explicit legacy recipes. Use none for the legacy CUDA path.")
+    group.add_argument("--h3_cuda_linear_tp", type=int, choices=(1, 2), default=1,
+                       help="Experimental CUDA H3: TP2 linear projections with unchanged SP8 attention; BF16 pair communication")
+    group.add_argument("--h3_cuda_local_output", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA FP8 SP8 memory option: project each sequence shard before gathering FP32 predictions. Default keeps the original full-hidden gather. TP+CP already uses local output.")
+    group.add_argument("--h3_cuda_conditioning_offload", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA FP8 Ref2VA memory option: stage DiT on CPU during text/vision conditioning, then restore unchanged weights before DiT. Default off; incurs D2H/H2D transfers.")
+    group.add_argument("--h3_cuda_refiner_ff_chunk_size", type=int, default=0,
+                       help="Experimental CUDA FP8 Ref2VA input-refiner FFN token chunk size (128..32768, multiple of 128). Zero preserves the original FFN; 8192 bounds temporaries without changing attention or weights.")
+    group.add_argument("--h3_cuda_input_refiner", choices=["none", "cudnn-sp", "cudnn-sp-fp8"], default=None,
+                       help="Experimental CUDA FP8 Ref2VA SP8 input Token Refiner: BF16 cuDNN attention and Ulysses; optional FP8 FFN. Default preserves the replicated original refiner. Does not alter main DiT attention or communication.")
+    group.add_argument("--h3_cuda_precompute_conditioning", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA FP8 Ref2VA SP8: reuse context projection and Token Refiner output within one managed request; release before VAE and on errors. Default off, no cross-request cache.")
+    group.add_argument("--h3_cuda_vision_sp", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA Ref2VA SP8 BF16 Qwen3-VL visual blocks; preserves image boundaries and DeepStack outputs. Default off.")
+    group.add_argument("--h3_cuda_vae_encoder_parallel", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA Ref2VA SP8 native spatial encoder tile distribution. Default off; encoder weights staged per encode call.")
+    group.add_argument("--h3_cuda_audio_encoder_parallel", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA Ref2VA SP8 FP32 audio convolution partition with full native causal projection. Default off.")
+    group.add_argument("--h3_cuda_audio_decoder_parallel", choices=("none", "long"), default=None,
+                       help="Experimental CUDA Ref2VA SP8 FP32 audio decode: long enables validated 10/15 second latent shapes; other shapes retain original decode.")
+    group.add_argument("--h3_cuda_reference_offload", action=argparse.BooleanOptionalAction, default=None,
+                       help="Experimental CUDA FP8 Ref2VA: keep DiT on CPU through reference VAE encoding, restore before first DiT. Requires conditioning_offload; default keeps its original restore-after-Qwen boundary.")
     group.add_argument("--h3_turbo8", action="store_true",
                        help="Experimental LightX2V 768p preset with prepared Base assets")
     group.add_argument("--h3_turbo_sla_lora", type=str, default=None,

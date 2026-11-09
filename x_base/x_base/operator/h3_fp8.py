@@ -26,6 +26,22 @@ class H3FP8Linear(nn.Module):
         self.register_buffer('bias', bias.detach().clone() if bias is not None else None)
         self.calls = 0
 
+    @classmethod
+    def from_packed(cls, weight, scale, bias=None):
+        """Reuse already quantized bytes and their original scale without requantization."""
+        if weight.dtype != torch.float8_e4m3fn or weight.ndim != 2 or any(n % 16 for n in weight.shape):
+            raise ValueError('Packed H3 FP8 projection requires an aligned E4M3 matrix')
+        if scale.numel() != 1 or scale.dtype != torch.float32:
+            raise ValueError('Packed H3 FP8 projection requires one FP32 weight scale')
+        result = cls.__new__(cls)
+        nn.Module.__init__(result)
+        result.out_features, result.in_features = weight.shape
+        result.register_buffer('weight', weight.contiguous())
+        result.register_buffer('weight_scale', scale.detach().clone())
+        result.register_buffer('bias', bias.detach().clone() if bias is not None else None)
+        result.calls = 0
+        return result
+
     def forward(self, x):
         return self._local_forward(x, self.bias)
 
@@ -41,7 +57,9 @@ class H3FP8Linear(nn.Module):
 
         padding=(-matrix.shape[0]) % 16
         padded = F.pad(matrix, (0, 0, 0, padding)) if padding else matrix.contiguous()
-        packed, scale = quantize_activation(padded)
+        activation_group = getattr(self, 'activation_group', None)
+        packed, scale = (quantize_activation(padded) if activation_group is None
+                         else quantize_activation(padded, group=activation_group))
         output = torch._scaled_mm(
             packed.contiguous(), self.weight.t(), scale_a=scale, scale_b=self.weight_scale,
             bias=bias, out_dtype=x.dtype, use_fast_accum=False,
@@ -60,22 +78,31 @@ class H3FP8TPLinear(H3FP8Linear):
         self.column_parallel = isinstance(original, ColumnParallelLinear)
         self.gather_output = getattr(original, 'gather_output', False)
         self.input_is_parallel = getattr(original, 'input_is_parallel', True)
+        self.tp_group = getattr(original, 'tp_group', None)
+        self.reduce_fn = getattr(original, 'reduce_fn', None)
 
     def forward(self, x):
         import torch.distributed as dist
         from x_base.tensor_parallelism.state import get_tp_group, get_tp_rank, get_tp_world_size
 
-        world = get_tp_world_size()
+        group = self.tp_group
+        world = dist.get_world_size(group) if self.tp_group is not None else get_tp_world_size()
+        if world > 1 and group is None:
+            group = get_tp_group()
         if not self.column_parallel and not self.input_is_parallel and world > 1:
-            x = x.chunk(world, dim=-1)[get_tp_rank()]
+            rank = dist.get_rank(group) if self.tp_group is not None else get_tp_rank()
+            x = x.chunk(world, dim=-1)[rank]
         # Row bias belongs after the reduction, as in RowParallelLinear.
         bias = self.bias
         output = self._local_forward(x, bias if self.column_parallel else None)
         if world > 1:
             if self.column_parallel and self.gather_output:
                 values = [torch.empty_like(output) for _ in range(world)]
-                dist.all_gather(values, output, group=get_tp_group())
+                dist.all_gather(values, output, group=group)
                 output = torch.cat(values, dim=-1)
             elif not self.column_parallel:
-                dist.all_reduce(output, group=get_tp_group())
+                if self.reduce_fn is None:
+                    dist.all_reduce(output, group=group)
+                else:
+                    output = self.reduce_fn(output, group)
         return output + bias if not self.column_parallel and bias is not None else output

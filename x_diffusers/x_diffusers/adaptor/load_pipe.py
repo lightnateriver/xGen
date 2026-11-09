@@ -436,6 +436,10 @@ def to_dtype(name: str):
 
 def load_pipe(args):
     backend = device_type()
+    from .h3_parallel_config import H3ParallelConfig
+    from .h3_cuda_precision import resolve
+    resolve(args, backend)
+    H3ParallelConfig.from_args(args, backend, dist.get_world_size() if dist.is_initialized() else 1)
     precision = getattr(args, "h3_cuda_precision", "auto")
     if precision != "none":
         from .h3_cuda_precision import resolve, validate
@@ -443,6 +447,8 @@ def load_pipe(args):
         precision = resolve(args, backend)
         if precision != "none":
             validate(args, backend)
+    from .h3_cuda_options import commit_environment
+    commit_environment(args)
     if (backend != "cuda" or args.model != "MiniMax-H3") and any((
         getattr(args, "h3_nvfp4_checkpoint", None),
         getattr(args, "h3_nvfp4_resident", False),
@@ -601,7 +607,12 @@ def parallelism_ability(pipe, args):
     is_minimax_h3 = "MiniMax-H3" in args.model
 
     # SP for DIT (transformer) — independent of TP
-    if args.sp > 1:
+    if getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp'):
+        from .h3_parallel import attach_pipeline
+        attach_pipeline(pipe, args)
+        if args.sp > 1 and args.phaa_num > 0:
+            phaa_on_pipe(pipe, phaa_split_num=args.phaa_num)
+    elif args.sp > 1:
         pipe.enable_sp(args.sp, args.ulysses_degree, args.ring_degree,
                        enable_transformer_2=is_contain_transformer_2,
                        enable_transformer_3=args.joint)

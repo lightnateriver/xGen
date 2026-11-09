@@ -69,6 +69,10 @@ class InferenceManager(object):
             "h3_nvfp4_compile",
             "h3_cuda_vae_sp",
             "h3_cuda_precision",
+            "h3_parallel_mode",
+            "h3_dit_tp",
+            "h3_tp_comm",
+            "h3_cp_comm",
         ]
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.rank = dist.get_rank() if dist.is_initialized() else 0
@@ -76,6 +80,14 @@ class InferenceManager(object):
     def check_abilities_args_consistent(self, args):
         if self.init_args is None:
             return False
+        if (getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp')
+                or getattr(self.init_args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp')):
+            # T2VA/I2VA share FL2VA weights; Ref2VA is a separate workflow.
+            if ((getattr(args, 'task_type', None) == 'ref2va') !=
+                    (getattr(self.init_args, 'task_type', None) == 'ref2va') or any(
+                        getattr(args, name, None) != getattr(self.init_args, name, None)
+                        for name in ('model', 'pretrained_model_name_or_path'))):
+                return False
         if getattr(args, "h3_turbo_sla_lora", None) or getattr(self.init_args, "h3_turbo_sla_lora", None):
             if args.model != self.init_args.model or args.task_type != self.init_args.task_type:
                 return False
@@ -529,7 +541,12 @@ class InferenceManager(object):
             self.pipe.transformer._h3_attention_session.begin(args)
         from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
         with base_temporal_padding(self.pipe, infer_params["num_frames"]):
-            result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
+            if getattr(args, 'h3_cuda_precompute_conditioning', False):
+                from .h3_conditioning import request_conditioning
+                with request_conditioning(self.pipe.transformer):
+                    result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
+            else:
+                result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
 
         videos = result.get("videos")
         audio = result.get("audio")
@@ -828,10 +845,15 @@ class InferenceManager(object):
 
     def _prepare_pipeline(self, args):
         """抽离出的公共逻辑：处理 pipeline 重建、LoRA 更新和设备分配"""
-        if getattr(args, "h3_cuda_precision", "auto") != "none":
-            from .h3_cuda_precision import resolve
+        from .h3_cuda_options import needs_resolution
+        if needs_resolution(args) or getattr(self, '_h3_cuda_precision_key', None) in ('fp8-bf16', 'fp8-sage'):
+            from .h3_cuda_precision import validate_manager
 
-            resolve(args, device_type())
+            validate_manager(self, args, device_type())
+        if (getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp')
+                or getattr(self.init_args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp')):
+            from .h3_parallel_config import validate_resident_args
+            validate_resident_args(self.init_args, args)
         if getattr(args, "h3_refiner", False):
             from .h3_refiner import prepare
             return prepare(self, args)

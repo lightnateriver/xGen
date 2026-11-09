@@ -158,6 +158,16 @@ class AscendMiniMaxH3AttnProcessor:
             query, key = rotated if rotated is not None else _rope_minimax_h3(query, key, *rotary_emb)
         parallel_manager = getattr(attn, "parallel_manager", None)
         sp_size = parallel_manager.sp_size if parallel_manager is not None else 1
+        if getattr(attn, '_h3_tp_cp', False) and sp_size > 1:
+            stats = getattr(attn, '_h3_cp_metrics', None)
+            if stats is None:
+                stats = attn._h3_cp_metrics = dict(calls=0, logical_payload_bytes=0)
+            stats['calls'] += 1
+            # Includes self exchange, Q/K/V plus returning attention output;
+            # excludes topology/protocol overhead and is not NIC traffic.
+            fp8_wire = getattr(attn, '_h3_phaa_fp8', False)
+            stats['logical_payload_bytes'] += 4 * (query.numel() // query.shape[-1]) * (
+                query.shape[-1]+4 if fp8_wire else query.shape[-1]*query.element_size())
 
         if sp_size > 1:
             if is_phaa_enabled():
@@ -176,7 +186,8 @@ class AscendMiniMaxH3AttnProcessor:
             attn_heads = attn.heads // sp_size
             query, key, value = map(
                 lambda x: all_to_all_before_attn(
-                    x, parallel_manager.sp_group, scatter_dim=2, gather_dim=1
+                    x, parallel_manager.sp_group, scatter_dim=2, gather_dim=1,
+                    pad_key='mmh3_seq' if getattr(attn, '_h3_tp_cp', False) else 'pad',
                 ),
                 [query, key, value],
             )
@@ -215,6 +226,7 @@ class AscendMiniMaxH3AttnProcessor:
                 parallel_manager.sp_group,
                 scatter_dim=1,
                 gather_dim=2,
+                pad_key='mmh3_seq' if getattr(attn, '_h3_tp_cp', False) else 'pad',
             )
 
         hidden_states = attn.to_out[0](hidden_states)
@@ -291,8 +303,8 @@ def _set_parallel_manager(self, parallel_manager):
     for block in getattr(self, "transformer_blocks", []):
         if hasattr(block, "attn"):
             block.attn.parallel_manager = parallel_manager
-    # Token refiner operates on text embeddings before sequence splitting —
-    # it must NOT use SP, so we leave its attention without a parallel_manager.
+    # The default input refiner runs before packed-sequence splitting. Its
+    # optional CUDA adapter installs a separate SP processor and padding key.
 
 
 MiniMaxH3Transformer3DModel = transformer_minimax_h3.MiniMaxH3Transformer3DModel
@@ -400,6 +412,17 @@ def _gather_and_output(
     return_dict: bool,
 ) -> MiniMaxH3TransformerOutput | tuple[torch.Tensor, torch.Tensor]:
     """Gather sequence and compute output heads."""
+    if getattr(self, '_h3_cuda_local_output', False):
+        from .h3_local_io import LocalSpan, gather_local_output
+        manager = self.parallel_manager
+        span = LocalSpan.for_rank(len(timestep_indices), manager.sp_size, manager.sp_rank)
+        if hidden_states.shape[1] != span.length:
+            raise ValueError('H3 SP local output received an incompatible sequence shard')
+        video, audio = gather_local_output(self, hidden_states, temb, span,
+                                          timestep_indices, video_indices, audio_indices)
+        if not return_dict:
+            return video, audio
+        return MiniMaxH3TransformerOutput(sample=video, audio_sample=audio)
     if sp_group is not None:
         hidden_states = gather_sequence(hidden_states, sp_group, dim=1, pad=pad)
 
@@ -427,10 +450,14 @@ def _project_modalities(
     encoder_hidden_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Project video, audio, and text modalities. Returns (video_embeds, audio_embeds, text_embeds)."""
+    if getattr(self, '_h3_precompute_conditioning', False):
+        from .h3_conditioning import project_conditioning
+        text_embeds = project_conditioning(self, encoder_hidden_states)
     video_embeds = self.proj_in(hidden_states.to(self.proj_in.weight.dtype))
     audio_embeds = self.audio_proj_in(audio_hidden_states.to(self.audio_proj_in.weight.dtype))
-    text_embeds = self.context_embedder(encoder_hidden_states.to(self.context_embedder.weight.dtype))
-    text_embeds = self.token_refiner(text_embeds)
+    if not getattr(self, '_h3_precompute_conditioning', False):
+        text_embeds = self.context_embedder(encoder_hidden_states.to(self.context_embedder.weight.dtype))
+        text_embeds = self.token_refiner(text_embeds)
     return video_embeds, audio_embeds, text_embeds
 
 
@@ -492,7 +519,8 @@ def _mmh3_forward_with_sp(
         _adaln_cache.maybe_install(timestep)
 
     # --- No SP: delegate to the original forward (undecorated, LoRA already handled) ---
-    if sp_size < 2 and not hasattr(self, '_h3_packed_adaln_table'):
+    local_io = getattr(self, '_h3_cuda_local_input', getattr(self, '_h3_parallel_config', None) is not None)
+    if sp_size < 2 and not hasattr(self, '_h3_packed_adaln_table') and not local_io:
         return _original_mmh3_forward.__wrapped__(
             self,
             hidden_states,
@@ -521,16 +549,25 @@ def _mmh3_forward_with_sp(
         )
 
     # RoPE table cache: reuse across denoise steps when position_ids unchanged
-    rotary_emb = _compute_rope(self, position_ids)
-
-    # 1. Project each modality and scatter into the packed sequence buffer.
-    video_embeds, audio_embeds, text_embeds = _project_modalities(
-        self, hidden_states, audio_hidden_states, encoder_hidden_states
-    )
-
-    hidden_states = _build_packed_sequence(
-        text_embeds, video_embeds, audio_embeds, text_indices, video_indices, audio_indices, sequence_length
-    )
+    if local_io:
+        from .h3_local_io import prepare_local
+        hidden_states, rotary_emb, local_span = prepare_local(
+            self, hidden_states, audio_hidden_states, encoder_hidden_states, position_ids,
+            text_indices, video_indices, audio_indices,
+        )
+    else:
+        rotary_emb = _compute_rope(self, position_ids)
+        shared_exchange = getattr(self, '_h3_shared_sequence_exchange', None)
+        if shared_exchange is not None:
+            shared_exchange.set_tokens(sequence_length)
+            shared_rotary = rotary_emb
+        # 1. Project each modality and scatter into the packed sequence buffer.
+        video_embeds, audio_embeds, text_embeds = _project_modalities(
+            self, hidden_states, audio_hidden_states, encoder_hidden_states
+        )
+        hidden_states = _build_packed_sequence(
+            text_embeds, video_embeds, audio_embeds, text_indices, video_indices, audio_indices, sequence_length
+        )
 
     # 2. Timestep embedding, AdaLN indices, and padding mask.
     temb, adaln_indices, attention_mask = _prepare_timestep_adaln_mask(
@@ -538,9 +575,16 @@ def _mmh3_forward_with_sp(
     )
 
     # --- Split sequence across SP group before the block loop ---
-    sp_group, _pad, hidden_states, rotary_emb, adaln_indices, attention_mask = _split_sequence_for_sp(
-        parallel_manager, hidden_states, rotary_emb, adaln_indices, attention_mask
-    )
+    if local_io:
+        # PHAA strips only CP tail padding. Existing padding masks retain the
+        # complete real-token document on every attention rank.
+        adaln_indices = local_span.slice_padded(adaln_indices)
+    else:
+        sp_group, _pad, hidden_states, rotary_emb, adaln_indices, attention_mask = _split_sequence_for_sp(
+            parallel_manager, hidden_states, rotary_emb, adaln_indices, attention_mask
+        )
+        if getattr(self, '_h3_shared_sequence_exchange', None) is not None:
+            rotary_emb = shared_rotary
     # Publish the meaningful sequence length (without SP padding) so that
     # RainFusion sparse attention can slice off the zero-padding rows before
     # dispatching to the rf_v2 kernel and pad the output back afterwards.
@@ -556,6 +600,14 @@ def _mmh3_forward_with_sp(
         self, hidden_states, temb, adaln_indices, rotary_emb, attention_mask
     )
 
+    if local_io and getattr(self, '_h3_cuda_local_output', True):
+        from .h3_local_io import gather_local_output
+        video, audio = gather_local_output(self, hidden_states, temb, local_span,
+                                          timestep_indices, video_indices, audio_indices)
+        return MiniMaxH3TransformerOutput(sample=video, audio_sample=audio) if return_dict else (video, audio)
+    if local_io:
+        sp_group = parallel_manager.sp_group
+        _pad = local_span.length * parallel_manager.sp_size - sequence_length
     return _gather_and_output(
         self, hidden_states, temb, sp_group, _pad,
         timestep_indices, video_indices, audio_indices, return_dict,

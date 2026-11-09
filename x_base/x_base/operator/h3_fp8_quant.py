@@ -15,8 +15,11 @@ def _pack(x,out,scale,N:tl.constexpr,BLOCK:tl.constexpr):
     tl.store(out+offset,value.to(out.dtype.element_ty),offset<N)
 
 
-def quantize_activation(x):
+def quantize_activation(x, group=None):
     scale=(activation_abs_peak(x)/448.0).clamp_min(torch.finfo(torch.float32).tiny)
+    if group is not None:
+        import torch.distributed as dist
+        dist.all_reduce(scale, op=dist.ReduceOp.MAX, group=group)
     output=torch.empty_like(x,dtype=torch.float8_e4m3fn)
     _pack[(triton.cdiv(x.numel(),4096),)](x,output,scale,x.numel(),4096)
     return output,scale

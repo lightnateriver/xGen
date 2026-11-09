@@ -418,7 +418,8 @@ class VideoInferenceManager:
         self.current_model = None
 
     def initialize_pipe(self, args):
-        if (getattr(args, "h3_cuda_precision", "auto") != "none"
+        from x_diffusers.adaptor.h3_cuda_options import needs_resolution
+        if (needs_resolution(args)
                 or getattr(self, "_h3_cuda_precision_key", None) in ("fp8-bf16", "fp8-sage")):
             from x_diffusers.adaptor.h3_cuda_precision import validate_manager
 
@@ -812,7 +813,12 @@ class VideoInferenceManager:
             if getattr(args, 'h3_attention', 'legacy') != 'legacy':
                 self.pipe.transformer._h3_attention_session.begin(args)
             with base_temporal_padding(self.pipe, infer_params["num_frames"]):
-                result = self.pipe(output=output_keys, **infer_params)
+                if getattr(args, 'h3_cuda_precompute_conditioning', False):
+                    from x_diffusers.adaptor.h3_conditioning import request_conditioning
+                    with request_conditioning(transformer):
+                        result = self.pipe(output=output_keys, **infer_params)
+                else:
+                    result = self.pipe(output=output_keys, **infer_params)
         finally:
             self._mmh3_cleanup(transformer, denoiser_patched, orig_denoiser_call)
 
@@ -2704,6 +2710,7 @@ class VideoGenerationService:
             config['frame_model_path'] = data.get('frame_model_path', TEN_SECOND_CONFIG['frame_model_path'])
 
     def _config_to_arg_list(self, config: Dict[str, Any]) -> List[str]:
+        from x_diffusers.adaptor.h3_cuda_options import BOOL_OPTIONS
         excluded_keys = {'external_base_url'}
         arg_list = []
         for key, value in config.items():
@@ -2714,6 +2721,8 @@ class VideoGenerationService:
             elif isinstance(value, bool):
                 if value:
                     arg_list.append(f'--{key}')
+                elif key in BOOL_OPTIONS:
+                    arg_list.append(f'--no-{key}')
             elif isinstance(value, list):
                 arg_list.append(f'--{key}')
                 arg_list.extend([str(v) for v in value])
@@ -2788,7 +2797,7 @@ class VideoGenerationService:
             old_argv = sys.argv
             sys.argv = ['video_server.py'] + arg_list
             try:
-                args = parse_args()
+                args = parse_args(bootstrap_environment=False)
             finally:
                 sys.argv = old_argv
             # Server-level params not in argparse — set manually after parse_args
@@ -3426,6 +3435,12 @@ def _apply_ten_second_config_args(args) -> None:
 
 def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None:
     """Apply MiniMax-H3 specific command line arguments."""
+    from x_diffusers.adaptor.h3_cuda_options import STARTUP_OPTIONS
+    for name in STARTUP_OPTIONS + ('h3_parallel_mode', 'h3_dit_tp', 'h3_tp_comm', 'h3_cp_comm',
+                                   'h3_tp_comm_chunk_elements', 'h3_parallel_warmup_mib'):
+        value = getattr(args, name, None)
+        if value is not None:
+            service.default_config[name] = value
     if getattr(args, 'h3_cuda_precision', None) is not None:
         service.default_config['h3_cuda_precision'] = args.h3_cuda_precision
     if getattr(args, 'text_encoder_tp', None):
@@ -3530,6 +3545,8 @@ def main():
     add_arguments(parser)
     from x_diffusers.adaptor.h3_attention_config import add_arguments as add_h3_attention_arguments
     add_h3_attention_arguments(parser, offline=False)
+    from x_diffusers.adaptor.h3_cuda_options import add_arguments as add_cuda_arguments
+    add_cuda_arguments(parser, service=True)
 
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Service host')
     parser.add_argument('--port', type=int, default=5001, help='Service port')
@@ -3569,6 +3586,13 @@ def main():
                         help='Service mode: t2va (allows t2va+fl2va) or ref2va (allows ref2va only)')
     parser.add_argument('--h3_cuda_precision', choices=['auto', 'none', 'fp8-bf16', 'fp8-sage'], default=None,
                         help='CUDA H3 Base defaults to fp8-bf16; none selects legacy; NPU auto stays unchanged')
+    parser.add_argument('--h3_parallel_mode', choices=['sp', 'tp_cp', 'tp_cp_shared', 'tp_sp'], default=None,
+                        help='Experimental CUDA H3 TP + pure-Ulysses; default preserves SP')
+    parser.add_argument('--h3_dit_tp', type=int, default=None)
+    parser.add_argument('--h3_tp_comm', choices=['bf16', 'fp8'], default=None)
+    parser.add_argument('--h3_cp_comm', choices=['auto', 'bf16', 'fp8'], default=None)
+    parser.add_argument('--h3_tp_comm_chunk_elements', type=int, default=None)
+    parser.add_argument('--h3_parallel_warmup_mib', type=int, default=None)
     parser.add_argument('--adaln_cache_file', type=str, default=None,
                         help='Path to precomputed AdaLN cache file (MiniMax-H3)')
     parser.add_argument('--transformer_path', type=str, default=None,
@@ -3616,6 +3640,16 @@ def main():
         parser.error('MaaS queue capacity and timeout must be positive')
     
     _apply_ten_second_config_args(args)
+
+    # Only process startup may set allocator/NCCL defaults. _build_args does
+    # not mutate the environment while validating a live worker's request.
+    preset = args.h3_cuda_preset
+    if preset is None and args.config and os.path.isfile(args.config):
+        with open(args.config, encoding='utf-8') as config_file:
+            preset = json.load(config_file).get('h3_cuda_preset')
+    if preset not in (None, 'none'):
+        from x_diffusers.adaptor.h3_cuda_options import bootstrap_preset_environment
+        bootstrap_preset_environment(preset)
 
     if args.init:
         init_env()

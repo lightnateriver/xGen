@@ -5,14 +5,29 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$root"
 
 usage() {
-  echo "Usage: bash example/diffusers/scripts/run_h3.sh <npu|cuda> <t2va|i2va|r2va> <5|10|15> <768p|2k> [images...]" >&2
+  echo "Usage: bash example/diffusers/scripts/run_h3.sh <npu|cuda|cuda-5090> <t2va|i2va|r2va> <5|10|15> <768p|2k> [images...] [-- extra-options]" >&2
   exit 2
 }
 
 [[ $# -ge 4 ]] || usage
 backend=$1 task=$2 duration=$3 resolution=$4
 shift 4
+hardware=$backend
+if [[ $backend == cuda-5090 ]]; then
+  backend=cuda
+fi
 case "$backend" in npu|cuda) ;; *) usage ;; esac
+media_args=() extra_args=()
+while [[ $# -gt 0 ]]; do
+  if [[ $1 == -- ]]; then
+    shift
+    extra_args=("$@")
+    break
+  fi
+  media_args+=("$1")
+  shift
+done
+set -- "${media_args[@]}"
 case "$resolution" in 768p|2k) ;; *) usage ;; esac
 case "$duration" in
   5) frames=124 ;;
@@ -20,6 +35,22 @@ case "$duration" in
   15) frames=362 ;;
   *) usage ;;
 esac
+
+preset=${H3_CUDA_PRESET:-none}
+precision=${H3_CUDA_PRECISION:-auto}
+if [[ $hardware == cuda-5090 && $resolution == 768p ]]; then
+  precision=${H3_CUDA_PRECISION:-fp8-sage}
+  if [[ $task == ref2va || $task == r2va ]]; then
+    preset=${H3_CUDA_PRESET:-sage-fp8-full-parallel}
+  fi
+fi
+if [[ $preset != none ]]; then
+  if [[ $backend != cuda || ( $task != ref2va && $task != r2va ) || $resolution != 768p || ${H3_FAST:-0} == 1 ]]; then
+    echo "The full-parallel preset currently requires CUDA Ref2VA 768p without H3_FAST." >&2
+    exit 2
+  fi
+  precision=${H3_CUDA_PRECISION:-fp8-sage}
+fi
 
 base_transformer=${BASE_TRANSFORMER:-model-cache/base-t2va}
 base_adaln=${BASE_ADALN:-model-cache/t2va-51step.safetensors}
@@ -54,8 +85,8 @@ if [[ ${H3_FAST:-0} == 1 && $backend/$task/$duration/$resolution != cuda/fl2va/5
   echo "H3_FAST=1 selects the measured CUDA FL2VA 5-second 768p profile." >&2
   exit 2
 fi
-if [[ ${H3_CUDA_PRECISION:-auto} == fp8-sage && ( $backend != cuda || $resolution != 768p || $task == ref2va || ${H3_FAST:-0} == 1 ) ]]; then
-  echo "fp8-sage is CUDA standard recipe 2 for T2VA/I2VA 768p; it cannot combine with H3_FAST, R2VA or Refiner." >&2
+if [[ $precision == fp8-sage && ( $backend != cuda || $resolution != 768p || ${H3_FAST:-0} == 1 ) ]]; then
+  echo "fp8-sage requires CUDA Base 768p without H3_FAST or Refiner." >&2
   exit 2
 fi
 
@@ -104,13 +135,16 @@ else
   launch=(--standalone)
   profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
     --text_encoder_tp 8 --phaa_num 4 --h3_cuda_vae_sp)
-  if [[ $resolution == 768p && $task != ref2va ]]; then
+  if [[ $resolution == 768p && ( $task != ref2va || $precision != auto || $preset != none ) ]]; then
+    if [[ $precision == auto ]]; then
+      precision=fp8-bf16
+    fi
     profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
-      --text_encoder_tp 8 --phaa_num 2 --h3_cuda_vae_sp --h3_cuda_precision "${H3_CUDA_PRECISION:-fp8-bf16}")
-    if [[ ${H3_CUDA_PRECISION:-fp8-bf16} != none ]]; then
+      --text_encoder_tp 8 --phaa_num 2 --h3_cuda_vae_sp --h3_cuda_precision "$precision")
+    if [[ $precision != none ]]; then
       export NCCL_MAX_CTAS=2
     fi
-    if [[ ${H3_CUDA_PRECISION:-fp8-bf16} == fp8-sage ]]; then
+    if [[ $precision == fp8-sage ]]; then
       if [[ -n ${PYTORCH_ALLOC_CONF:-} && $PYTORCH_ALLOC_CONF != expandable_segments:True ]]; then
         echo "fp8-sage standard recipe requires expandable_segments:True; unset conflicting PYTORCH_ALLOC_CONF." >&2
         exit 2
@@ -129,6 +163,10 @@ else
   fi
 fi
 
+if [[ $preset != none ]]; then
+  profile+=(--h3_cuda_preset "$preset")
+fi
+
 width=1344 height=768
 if [[ $resolution == 2k ]]; then
   width=2560 height=1440
@@ -137,4 +175,4 @@ exec torchrun "${launch[@]}" --nproc_per_node=8 --max_restarts=0 "${XGEN_H3_BENC
   --model MiniMax-H3 --pretrained_model_name_or_path "$base_model" --task_type "$task" \
   --dtype bf16 --sp 8 --width "$width" --height "$height" --frames "$frames" --save_fps 24 \
   --num_inference_steps "${H3_BASE_STEPS:-50}" --seed "${H3_SEED:-42}" --prompt="$prompt" --save_path "$output" \
-  "${profile[@]}" "${input_args[@]}"
+  "${profile[@]}" "${input_args[@]}" "${extra_args[@]}"

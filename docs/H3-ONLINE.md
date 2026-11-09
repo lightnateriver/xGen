@@ -12,7 +12,7 @@
 | CUDA Base fp8-sage | T2VA、I2VA；在线端到端待实测 | 768P | 接口沿用 5 至 15 秒，离线已测 5/10/15 秒 |
 | CUDA 5090 R2VA 全并行 | R2VA，原 Base API | 768P | 5 至15秒；参考输入和时长的真实HTTP测试单独记录 |
 | CUDA Refiner | I2VA | 2K | 接口接受 5、10 或 15 秒，已有 5 和 10 秒结果 |
-| CUDA MaaS | I2VA，单首帧 | 768P、16:9 | 固定 5 秒 |
+| CUDA MaaS | T2VA、首尾帧 I2VA、独立 R2VA | 768P，可选比例／adaptive | 5 至 15 秒整数 |
 
 Base 服务生成 15 秒视频时，在请求里设 `"duration":15`。模型按 VAE 要求生成 362 帧，服务保存 360 帧和对应的音频。历史性能表里的 15 秒在线 768P 来自独立批测程序。
 
@@ -57,7 +57,7 @@ torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --s
   --config example/diffusers/configs/h3_cuda_sage.example.json --host 127.0.0.1 --port 5001
 ```
 
-这是尚未完成在线端到端实测的部署示例；离线六项成片与性能见 [方案二教程](H3-CUDA-SAGE.md)。precision 只能在启动时选择，切换后须重启。MaaS 可复用此 JSON 和环境变量，将服务模式参数换为 `--maas-fl2va-input`；固定 5 秒、50 步等输入限制保持原样，不能将离线 20 步性能当作 MaaS 性能。
+这是尚未完成在线端到端实测的部署示例；离线六项成片与性能见 [方案二教程](H3-CUDA-SAGE.md)。precision 只能在启动时选择，切换后须重启。MaaS 可复用此 JSON 和环境变量，将服务模式参数换为 `--maas`；输入和素材限制见 MaaS API，不能将历史离线 20 步性能当作新 MaaS 组合的性能。
 
 ### RTX 5090 R2VA 全并行
 
@@ -145,8 +145,8 @@ curl -fsS -o result.mp4 "http://127.0.0.1:5001/download/$TASK_ID"
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
-  server/video/video_server.py --init --maas-fl2va-input \
+  server/video/video_server.py --init --maas \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-MaaS 使用 `POST /v1/tasks`，首帧要放在 JSON 的 `input.first_frame` 中，格式为 JPEG 或 PNG 的 Base64 data URI。先直连实例提交一条预热请求，等 `/ready` 返回 HTTP 200 再接入平台流量。任务状态通过 `GET /v1/tasks/<id>` 查询，成功状态为 `succeeded`。 [预热和高性能开关](H3-CUDA.md#maas-在线服务) · [MaaS API](../server/video/MAAS-FL2VA-API.md)
+MaaS 使用 `POST /v1/tasks`，首帧要放在 JSON 的 `input.first_frame` 中，格式为 JPEG 或 PNG 的 Base64 data URI。先直连实例提交一条预热请求，等 `/ready` 返回 HTTP 200 再接入平台流量。任务状态通过 `GET /v1/tasks/<id>` 查询，成功状态为 `succeeded`。 [预热和高性能开关](H3-CUDA.md#maas-在线服务) · [MaaS API](../server/video/MAAS-API.md)

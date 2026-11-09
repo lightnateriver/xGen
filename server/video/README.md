@@ -6,17 +6,11 @@ MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](
 
 ## CUDA H3 的 MaaS 输入校验
 
-平台对接所需的请求、响应、错误码、计时和探针语义见 [MaaS FL2VA 接口文档](MAAS-FL2VA-API.md)。
+平台对接所需的请求、响应、错误码、计时和探针语义见 [MaaS FL2VA 接口文档](MAAS-API.md)。
 
-在已有的 H3 CUDA FL2VA 服务启动命令上添加 `--maas-fl2va-input`。模型配置使用 `MiniMax-H3`、`task_type=fl2va` 和 `num_inference_steps=50`，并按 [CUDA 部署教程](../../docs/H3-CUDA.md) 准备权重。这个模式固定使用 H3 Base、768P 横屏、5 秒、24 fps、50 次实际 DiT。省略开关时使用原有接口校验。启用后 `/params` 返回这套规格，`/config` 保持只读。
+在现有 CUDA H3 Base 启动命令上添加 `--maas`。支持 T2VA、首帧、尾帧、首尾帧及独立部署的 R2VA，输出限定 768P、5～15 秒；步数在启动配置中确定。先安装 `server/requirements-maas.txt`，详细的图片／音视频限额、比例和公网下载规则见 [MaaS API](MAAS-API.md)。不开 MaaS 时普通入口保持原有行为。
 
-`POST /v1/tasks` 接受 JSON 对象 `{"id":"job-1","input":{...}}`，可选 `created_at` 使用 Unix 毫秒。`POST /generate` 直接接收 `input` 对象的内容。`prompt` 和 `first_frame` 必填，`seed` 默认为 42，`enable_audio` 默认为 `true`。固定字段可以省略，显式传入时必须匹配 `/params`。
-
-- `prompt` 最多 7000 个 UTF-16 码元，与官方 CLI 的 JavaScript `text.length` 一致；常见中文、英文字母、空格和换行各计 1，`🙂` 计 2。在分词和入队前按原文检查，超长拒绝，不截断。这不是 token 限制，`/params` 用 `length_unit=utf16_code_units` 标明口径。`seed` 为 0 至 2147483647 的 JSON 整数，`enable_audio` 为 JSON 布尔值。
-- `first_frame` 使用单帧 JPEG 或 PNG 的 Base64 data URI。解码前文件最多 4 MiB，图像最多 8388608 像素，每边 32 至 4096 像素，长边与短边的比值最多 4。调用方可先从平台素材库取图并调整到限额内，再传给 xGen。
-- 非法 JSON、字段类型、组合或坏图返回 `400`，超过请求体或素材资源上限返回 `413`，非 JSON 内容类型返回 `415`。错误响应包含 `error`、`field` 和 `message`。
-
-启用该模式时，用 `--init` 启动并保持 SP 与实际 rank 数一致。`/health` 保留原有存活字段，增加 `state`、`ready`、`reason`、`phase`、`model_loaded` 和 `workers`。`/ready` 返回同一份就绪状态，只有 `ready=true` 时返回 `200`，其余返回 `503`。省略 `--maas-fl2va-input` 时，沿用原 `/health` 响应。
+启用该模式时，用 `--init` 启动并保持 SP 与实际 rank 数一致。`/health` 保留原有存活字段，增加 `state`、`ready`、`reason`、`phase`、`model_loaded` 和 `workers`。`/ready` 返回同一份就绪状态，只有 `ready=true` 时返回 `200`，其余返回 `503`。省略 `--maas` 时，沿用原 `/health` 响应。
 
 首次启动后，从内网直接提交一条符合规格的预热请求。首条视频保存成功，且各 rank 通过现有心跳确认后，`/ready` 才通过。正常生成中保持就绪。摘流、已捕获的 worker 错误、或单阶段达到时限会使就绪失败。加载、生成与保存的就绪时限分别为 600、1200、180 秒。空闲、派发与确认阶段仅记录状态。探针只读状态，超时不会由探针直接终止进程。
 
@@ -24,7 +18,7 @@ MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](
 
 待派发任务的查询结果包含 `queue_elapsed_s`（自受理以来已等待的秒数）和 `queue_ahead`（排在前面的有效等待任务数，执行中的任务另计）。派发、取消或过期后，查询结果保留在 `timings_s.queue` 中的实际排队耗时。
 
-配置 `FFPROBE_PATH` 或在 `PATH` 提供 `ffprobe`。服务将编码结果写入同目录的 `.pending-*.mp4`，核对 1344×768、24 fps、124 帧元数据及实际视频包数，并检查所需音轨包含数据包后，原子替换到最终路径。配置 `OBS_LOCAL_PATH` 时，还要确认对象可访问并用签名链接读到数据后，任务才成功。消费输出目录时只读最终的 `video_*.mp4`。
+配置 `FFPROBE_PATH` 或在 `PATH` 提供 `ffprobe`。服务将编码结果写入同目录的 `.pending-*.mp4`，核对本请求的输出尺寸、24 fps、H3 原生帧数及实际视频包数，并检查所需音轨包含数据包后，原子替换到最终路径。配置 `OBS_LOCAL_PATH` 时，还要确认对象可访问并用签名链接读到数据后，任务才成功。消费输出目录时只读最终的 `video_*.mp4`。
 
 任务查询增加 `error_code`、`failure_stage` 和 `timings_s`。耗时使用秒，分别记录 `queue`、`inference`、`encode`、`delivery` 和 `total`。尚未完成的阶段可能缺失。常见终态原因包括 `queue_expired`、`cancelled_by_user`、`encode_failed`、`storage_failed`、`worker_lost` 和 `service_shutdown`。终态任务记录在实例内存中约保留 2 小时。
 
@@ -517,10 +511,10 @@ CUDA H3 Base 的 T2VA / I2VA 默认采用 `fp8-bf16`：FP8 Linear、BF16 cuDNN a
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
-  server/video/video_server.py --init --maas-fl2va-input \
+  server/video/video_server.py --init --maas \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-先填写 JSON 中的模型路径。普通 Base HTTP 使用 `h3_cuda_base.example.json` 并去掉 MaaS 开关。通过配置或启动参数 `--h3_cuda_precision none` 可选择旧 CUDA 路径，服务启动后不能在请求之间切换 precision。MaaS 仍固定 I2VA、5 秒、768P 和 50 次实际 DiT；排队、超时、健康探针及原子发布接口不变。
+先填写 JSON 中的模型路径。普通 Base HTTP 使用 `h3_cuda_base.example.json` 并去掉 MaaS 开关。通过配置或启动参数 `--h3_cuda_precision none` 可选择旧 CUDA 路径，服务启动后不能在请求之间切换 precision。MaaS 支持 768P、5～15 秒及各自部署的 T2VA/I2VA/R2VA，步数由启动配置决定；排队、超时、健康探针及原子发布接口不变。
 
 详细的精度、锁页内存成本、验证范围及历史性能见 [CUDA 默认配方](../../docs/H3-CUDA-PRECISION.md)。当前只将 5 秒、20 步 T2VA / I2VA 的人工审核结论记录为该组样例通过，不将解码成功等同于所有素材的精度通过。

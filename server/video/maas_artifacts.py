@@ -31,7 +31,7 @@ def _atomic_file(destination, write):
         temporary.unlink(missing_ok=True)
 
 
-def _validate_video(path, require_audio):
+def _validate_video(path, require_audio, expected=(1344, 768, 124)):
     result = subprocess.run(
         [os.getenv("FFPROBE_PATH", "ffprobe"), "-v", "error", "-count_packets", "-show_entries",
          "stream=codec_type,width,height,r_frame_rate,nb_frames,nb_read_packets", "-of", "json", path],
@@ -41,20 +41,21 @@ def _validate_video(path, require_audio):
         raise ValueError("ffprobe reported damaged media packets")
     streams = json.loads(result.stdout)["streams"]
     video = [stream for stream in streams if stream.get("codec_type") == "video"]
-    if len(video) != 1 or (video[0].get("width"), video[0].get("height")) != (1344, 768):
-        raise ValueError("Expected one 1344x768 video stream")
-    if (Fraction(video[0]["r_frame_rate"]) != 24 or int(video[0]["nb_frames"]) != 124
-            or int(video[0]["nb_read_packets"]) != 124):
-        raise ValueError("Expected 124 video frames at 24 fps")
+    width, height, frames = expected
+    if len(video) != 1 or (video[0].get("width"), video[0].get("height")) != (width, height):
+        raise ValueError(f"Expected one {width}x{height} video stream")
+    if (Fraction(video[0]["r_frame_rate"]) != 24 or int(video[0]["nb_frames"]) != frames
+            or int(video[0]["nb_read_packets"]) != frames):
+        raise ValueError(f"Expected {frames} video frames at 24 fps")
     if require_audio and not any(stream.get("codec_type") == "audio" and int(stream.get("nb_read_packets", 0)) > 0
                                  for stream in streams):
         raise ValueError("Expected an audio stream with data packets")
 
 
-def publish_video(path, encode, *, require_audio):
+def publish_video(path, encode, *, require_audio, expected=(1344, 768, 124)):
     def write(temporary):
         encode(temporary)
-        _validate_video(temporary, require_audio)
+        _validate_video(temporary, require_audio, expected)
 
     _atomic_file(path, write)
 

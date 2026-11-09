@@ -72,7 +72,7 @@ torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --s
   --config example/diffusers/configs/h3_cuda_sage.example.json --host 127.0.0.1 --port 5001
 ```
 
-该 Base 模式允许 T2VA / I2VA，参数及提交示例见 [在线教程](H3-ONLINE.md#提交原服务请求)。若部署 MaaS，将 `--service-mode t2va` 换为 `--maas-fl2va-input`；MaaS 仍固定 I2VA、5 秒、768P、50 步，不会因切换 Sage 放宽请求约束。在线首次部署必须先用真实请求检查成片和就绪状态，离线数据不能当作 HTTP SLA。
+该 Base 模式允许 T2VA / I2VA，参数及提交示例见 [在线教程](H3-ONLINE.md#提交原服务请求)。若部署 MaaS，将 `--service-mode t2va` 换为 `--maas`；MaaS 输入范围及 768P 素材限额见 [接口文档](../server/video/MAAS-API.md)，步数由启动配置决定。在线首次部署必须先用真实请求检查成片和就绪状态，离线数据不能当作 HTTP SLA。
 
 ## 性能与验证
 

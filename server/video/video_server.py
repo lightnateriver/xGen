@@ -1057,10 +1057,13 @@ class VideoInferenceManager:
 
 
 class VideoGenerationService:
-    def __init__(self, config_path: Optional[str] = None, *, maas_fl2va_input=False,
+    def __init__(self, config_path: Optional[str] = None, *, maas=False, maas_fl2va_input=False,
                  maas_queue_capacity=MAAS_QUEUE_CAPACITY, maas_queue_timeout_s=MAAS_QUEUE_TIMEOUT_S):
         self.app = Flask(__name__)
+        self.maas = maas
+        maas_fl2va_input = maas_fl2va_input or maas
         self.maas_fl2va_input = maas_fl2va_input
+        self.maas_admission = threading.BoundedSemaphore(2)
         self.maas_health = MaaSHealth() if maas_fl2va_input else None
         if CORS_AVAILABLE:
             CORS(self.app)
@@ -1862,7 +1865,7 @@ class VideoGenerationService:
             }
             if self.maas_fl2va_input:
                 result.update(self._maas_readiness(), model=self.default_config.get('model'),
-                              profile="maas-fl2va-768p-5s")
+                              profile="maas-h3-base-768p" if self.maas else "maas-fl2va-768p-5s")
             return jsonify(result)
 
         @self.app.route('/models', methods=['GET'])
@@ -1903,6 +1906,9 @@ class VideoGenerationService:
             elapsed = now - task.queued_at
             if elapsed < self.maas_queue_timeout_s:
                 break
+            if self.maas:
+                from maas_media import cleanup
+                cleanup(self.maas_pending[task_id]['data'])
             del self.maas_pending[task_id]
             task.timings_s['queue'] = round(elapsed, 3)
             task.finish('failed', code='queue_expired', stage='queue')
@@ -1914,8 +1920,28 @@ class VideoGenerationService:
             result['queue_ahead'] = list(self.maas_pending).index(task.task_id)
         return result
 
+    def _read_maas_submission(self, *, internal=False):
+        if not self.maas:
+            return read_submission(request, internal=internal)
+        from maas import read_submission as read_h3_submission
+        if not self.maas_admission.acquire(blocking=False):
+            raise InvalidInput('body', 'Media admission is busy; retry later', 503)
+        try:
+            return read_h3_submission(request, self.default_config, internal=internal)
+        finally:
+            self.maas_admission.release()
+
     def _submit_maas_task(self, task_id, data, created_at_ms=None):
-        key = hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8')).digest()
+        try:
+            return self._accept_maas_task(task_id, data, created_at_ms)
+        finally:
+            if self.maas and not data.get('_maas_adopted'):
+                from maas_media import cleanup
+                cleanup(data)
+
+    def _accept_maas_task(self, task_id, data, created_at_ms=None):
+        key = (bytes.fromhex(data['_maas_fingerprint']) if self.maas else
+               hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8')).digest())
         with self.maas_queue_changed:
             self._expire_maas_pending(time.monotonic())
             previous = self.tasks.get(task_id)
@@ -1932,6 +1958,8 @@ class VideoGenerationService:
             task = MaaSTask(task_id, key, created_at_ms)
             save_path = f"/tmp/generated_videos/video_{uuid.uuid4().hex}.mp4"
             self.tasks[task_id] = task
+            if self.maas:
+                data['_maas_adopted'] = True
             self.maas_pending[task_id] = {'task_id': task_id, 'data': data, 'save_path': save_path}
             self.maas_queue_changed.notify()
             return jsonify(self._maas_task_snapshot(task, task.queued_at)), 200
@@ -1944,6 +1972,9 @@ class VideoGenerationService:
             now = time.monotonic()
             self._expire_maas_pending(now)
             if task.status == 'pending':
+                if self.maas:
+                    from maas_media import cleanup
+                    cleanup(self.maas_pending[task_id]['data'])
                 del self.maas_pending[task_id]
                 task.timings_s['queue'] = round(now - task.queued_at, 3)
                 task.finish('cancelled', code='cancelled_by_user', stage='queue')
@@ -1968,6 +1999,10 @@ class VideoGenerationService:
 
     def _fail_maas_jobs(self, phase):
         with self.tasks_lock:
+            if self.maas:
+                from maas_media import cleanup
+                for job in self.maas_pending.values():
+                    cleanup(job['data'])
             self.maas_pending.clear()
             for task in self.tasks.values():
                 task.finish('failed', code='worker_lost', stage=phase if task.status == 'running' else 'queue')
@@ -1996,7 +2031,7 @@ class VideoGenerationService:
 
                 if self.maas_fl2va_input:
                     task_id = str(uuid.uuid4())
-                    response, status = self._submit_maas_task(task_id, read_submission(request))
+                    response, status = self._submit_maas_task(task_id, self._read_maas_submission())
                     if status == 200:
                         return jsonify({"status": "accepted", "task_id": task_id}), 200
                     return response, status
@@ -2145,6 +2180,9 @@ class VideoGenerationService:
         @self.app.route('/params', methods=['GET'])
         def get_param_spec():
             if self.maas_fl2va_input:
+                if self.maas:
+                    from maas import parameter_spec
+                    return jsonify(parameter_spec(self.default_config))
                 return jsonify(maas_parameter_spec())
             if self.default_config.get('h3_attention', 'legacy') != 'legacy':
                 from x_diffusers.adaptor.h3_attention_service import parameter_spec as sparse_parameter_spec
@@ -2472,7 +2510,7 @@ class VideoGenerationService:
                     return jsonify({"error": "worker_unavailable"}), 503
 
                 if self.maas_fl2va_input:
-                    task_id, created_at_ms, validated_data = read_submission(request, internal=True)
+                    task_id, created_at_ms, validated_data = self._read_maas_submission(internal=True)
                     return self._submit_maas_task(task_id, validated_data, created_at_ms)
                 else:
                     data = request.get_data()
@@ -2751,6 +2789,9 @@ class VideoGenerationService:
             # MiniMax-H3 specific params from request
             if data.get('task_type'):
                 config['task_type'] = data['task_type']
+            if self.maas:
+                config.update(keyframe_image='', keyframe_last_image='')
+                config.pop('reference_paths', None)
             # Resolve input files (base64/http/local → local path) and map to argparse names
             if data.get('first_frame'):
                 config['keyframe_image'] = _resolve_input_file(data['first_frame'])
@@ -2776,6 +2817,8 @@ class VideoGenerationService:
                 config['width'], config['height'] = MMH3_RESOLUTION_MAP[resolution][aspect_ratio]
             else:
                 config['width'], config['height'] = MMH3_RESOLUTION_MAP['768p']['16:9']
+            if self.maas and data.get('_maas_size'):
+                config['width'], config['height'] = data['_maas_size']
 
             # Pop Wan2.2-specific keys that MiniMax-H3 doesn't use
             # (they leak from the Wan2.2 default config and cause argparse errors)
@@ -3110,12 +3153,18 @@ class VideoGenerationService:
         with self.tasks_lock:
             task.timings_s['inference'] = round(infer_time, 3)
         started = time.monotonic()
+        publish_options = {}
+        if self.maas:
+            frames = args.frames if args.frames == 360 else ((args.frames-5+16)//17)*17+5
+            publish_options['expected'] = (args.width, args.height, frames)
         publish_video(save_path, lambda path: self._save_video(output, path, args),
-                      require_audio=args.enable_audio)
+                      require_audio=args.enable_audio, **publish_options)
         encoded = time.monotonic()
         with self.tasks_lock:
             task.timings_s['encode'] = round(encoded - started, 3)
         result = {'video_path': save_path, 'infer_time': round(infer_time, 2)}
+        if self.maas:
+            result.update(width=args.width, height=args.height, resolution='768p')
         base_url = self.default_config.get('external_base_url')
         if base_url:
             result['download_url'] = f"{base_url.rstrip('/')}/download/{task.task_id}"
@@ -3208,6 +3257,9 @@ class VideoGenerationService:
                     os._exit(1)
         finally:
             _cleanup_temp_files()
+            if self.maas:
+                from maas_media import cleanup
+                cleanup(data)
 
     def _worker_loop(self):
         logger.info(f"[Rank {self.rank}] Worker ready, entering request loop...")
@@ -3558,8 +3610,8 @@ def main():
     parser.add_argument('--port', type=int, default=5001, help='Service port')
     parser.add_argument('--config', type=str, default=None, help='Config file path')
     parser.add_argument('--init', action='store_true', help='Initialize service on startup')
-    parser.add_argument('--maas-fl2va-input', action='store_true',
-                        help='Enforce the fixed CUDA H3 768P FL2VA MaaS request contract')
+    parser.add_argument('--maas', '--maas-fl2va-input', dest='maas', action='store_true',
+                        help='Enable H3 Base 768P MaaS validation, media admission and reliability APIs')
     parser.add_argument('--maas-queue-capacity', type=int, default=MAAS_QUEUE_CAPACITY,
                         help='Maximum number of waiting MaaS requests (default: %(default)s)')
     parser.add_argument('--maas-queue-timeout-s', type=int, default=MAAS_QUEUE_TIMEOUT_S,
@@ -3642,7 +3694,7 @@ def main():
                        help="Use different turbo mode inference.")
 
     args = parser.parse_args()
-    if args.maas_fl2va_input and (args.maas_queue_capacity < 1 or args.maas_queue_timeout_s < 1):
+    if args.maas and (args.maas_queue_capacity < 1 or args.maas_queue_timeout_s < 1):
         parser.error('MaaS queue capacity and timeout must be positive')
     
     _apply_ten_second_config_args(args)
@@ -3663,7 +3715,7 @@ def main():
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    service = VideoGenerationService(config_path=args.config, maas_fl2va_input=args.maas_fl2va_input,
+    service = VideoGenerationService(config_path=args.config, maas=args.maas,
                                      maas_queue_capacity=args.maas_queue_capacity,
                                      maas_queue_timeout_s=args.maas_queue_timeout_s)
     
@@ -3677,10 +3729,13 @@ def main():
     if args.h3_refiner:
         from x_diffusers.adaptor.h3_refiner_service import apply_startup_settings
         apply_startup_settings(service.default_config, args, sys.argv[1:])
-    if args.maas_fl2va_input:
+    if args.maas:
+        if '--maas-fl2va-input' in sys.argv:
+            logger.warning('--maas-fl2va-input is deprecated; use --maas')
         if not args.init or service.default_config.get('sp') != world_size:
-            parser.error('--maas-fl2va-input requires --init and SP equal to the distributed world size')
-        validate_maas_startup(service.default_config, device_type(), args.warmup)
+            parser.error('--maas requires --init and SP equal to the distributed world size')
+        from maas import validate_startup
+        validate_startup(service.default_config, device_type(), args.warmup)
         validate_media_tools()
     if service.default_config.get('h3_refiner', False):
         if args.warmup:

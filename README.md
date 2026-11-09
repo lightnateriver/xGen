@@ -2,7 +2,7 @@
 
 xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用命令行生成视频，也可以启动 HTTP 服务。MiniMax-H3 支持文字、首帧及图片、视频、音频参考输入，输出带声音的视频。
 
-三种任务分别是文生视频（T2VA）、首帧图生视频（I2VA，接口名 `fl2va`）和多媒体参考生视频（R2VA，接口名 `ref2va`）。xGen 支持 768P 生成和可选 2K 超分。CUDA MaaS 模式另外提供输入校验、排队、健康检查和成片校验。
+三种任务分别是文生视频（T2VA）、首尾帧图生视频（I2VA，接口名 `fl2va`）和多媒体参考生视频（R2VA，接口名 `ref2va`）。xGen 支持 768P 生成和可选 2K 超分。CUDA MaaS 模式另外提供输入校验、排队、健康检查和成片校验。
 
 [快速开始](#快速开始) · [权重下载](#h3-权重下载) · [离线生成](#离线生成) · [在线服务](#在线服务) · [B2/B3 性能](#b2b3-性能) · [GPU 性能](#gpu-性能) · [Agent 指南](#agent-使用指南) · [版本](#版本)
 
@@ -14,12 +14,14 @@ CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage atte
 
 v0.4 提供面向八卡 RTX 5090 R2VA 的优选 [Sage-FP8 全并行配置](docs/H3-CUDA-COMPOSABLE.md)：用 `cuda-5090 r2va` 显式选择，加入 SAP、本地输入、请求内条件复用、组件并行和去 BF16 临时副本，DiT 全程常驻。每项可单独关闭；原 `cuda`／`npu` 命令不自动开启。当前范围为八卡 Ref2VA 768P；组合正确性、显存容量和人工精度以各自实测记录为准。
 
-v0.4 的 H3 在线接口将提示词上限从 2,000 放宽到 **7,000 个 UTF-16 码元**，按官方 CLI 的 JavaScript `text.length` 计数：常见汉字或英文字母各计 1，`🙂` 计 2。Base、Refiner、MaaS 共用该限制，在入队前拒绝超长文本，保留原文；这不是 tokenizer 的 token 上限。计数规则、错误响应和请求体上限见 [在线服务指南](docs/H3-ONLINE.md) 与 [MaaS API](server/video/MAAS-FL2VA-API.md)。
+v0.4 的 H3 在线接口将提示词上限从 2,000 放宽到 **7,000 个 UTF-16 码元**，按官方 CLI 的 JavaScript `text.length` 计数：常见汉字或英文字母各计 1，`🙂` 计 2。Base、Refiner、MaaS 共用该限制，在入队前拒绝超长文本，保留原文；这不是 tokenizer 的 token 上限。计数规则、错误响应和请求体上限见 [在线服务指南](docs/H3-ONLINE.md) 与 [MaaS API](server/video/MAAS-API.md)。
+
+v0.4 统一使用 `--maas` 开启 H3 在线输入校验和可靠性接口，旧 `--maas-fl2va-input` 保留为弃用别名。MaaS 开放 768P、5～15 秒的 T2VA、首帧／尾帧／首尾帧 I2VA，以及独立部署的 R2VA，增加自适应比例和受控公网素材下载。R2VA 在入队前强制限制为最多 9 图、3 视频、3 音频，总计不超过 12 个文件；视频和音频各自累计不超过 15 秒。CPU 回归为 46 项测试、242 个子用例通过；这些新增组合的 GPU 成片与精度仍待实测。不开 MaaS 时普通服务入口保持原有行为。
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用、Token Refiner / 视觉 / VAE / 音频分工及 PHAA 直接打包，DiT 全程常驻；各项可独立关闭。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [在线启动](docs/H3-ONLINE.md) |
-| [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
+| [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用及组件并行，DiT 全程常驻；各项可独立关闭。新增统一 `--maas`、多模态输入校验、首尾帧、768P 自适应比例和公网素材下载。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [MaaS API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) |
+| [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
 | [v0.3-cuda](../../tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](docs/H3-CUDA.md) |
 | [v0.3](../../tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](docs/H3-ATTENTION.md) · [实测](docs/H3-ATTENTION-VALIDATION.md) |
@@ -279,15 +281,27 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
 
 ### MaaS 在线服务
 
-MaaS 固定为 CUDA I2VA、5 秒、768P 横屏、50 步。默认采用 fp8-bf16；准备好完整 FL2VA/Base 模块权重后启动：
+MaaS 支持 CUDA H3 Base T2VA/I2VA 和独立部署的 R2VA，输出 768P、5～15 秒，可使用自适应比例；步数以启动配置为准。默认采用 fp8-bf16；准备好完整 FL2VA/Base 模块权重后启动：
 
 ```bash
+pip install -r server/requirements-maas.txt
+
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
-  server/video/video_server.py --init --maas-fl2va-input \
+  server/video/video_server.py --init --maas \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-通过 `POST /v1/tasks` 提交首条预热请求。预热成功后，等 `/ready` 返回 HTTP 200 再接流量。默认可排队 10 条，等待上限 600 秒。 [预热与高性能开关](docs/H3-CUDA.md#maas-在线服务) · [MaaS 接口](server/video/MAAS-FL2VA-API.md)
+通过 `POST /v1/tasks` 提交首条预热请求。预热成功后，等 `/ready` 返回 HTTP 200 再接流量。默认可排队 10 条，等待上限 600 秒。 [预热与高性能开关](docs/H3-CUDA.md#maas-在线服务) · [MaaS 接口](server/video/MAAS-API.md)
+
+R2VA 要使用 Ref2VA 权重和独立实例：
+
+```bash
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
+  server/video/video_server.py --init --maas --service-mode ref2va \
+  --config example/diffusers/configs/h3_cuda5090_ref2va.example.json --host 127.0.0.1 --port 5001
+```
+
+请求中的 `ref_path` 接收公网 HTTP(S) URL 或 Base64 data URI。图片、视频、音频单文件分别最多 30、50、15 MiB；请求体最多 64 MiB。数量、时长、格式、尺寸及比例在入队前校验，超限拒绝，不截断、不自动重试生成。部署前还需完成所选输入组合的真实 GPU 生成与成片验收，不能将历史离线性能当作新 MaaS 接口的性能。
 
 ## Agent 使用指南
 

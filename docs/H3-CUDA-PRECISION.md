@@ -47,11 +47,11 @@ H3_CUDA_PRECISION=none bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
-  server/video/video_server.py --init --maas-fl2va-input \
+  server/video/video_server.py --init --maas \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-普通 Base HTTP 去掉 `--maas-fl2va-input`，并使用 Base 示例配置。MaaS 请求仍固定为 I2VA、5 秒、768P 横屏和 50 次实际 DiT；原队列、超时、健康探针、原子发布和请求结构不变。precision 只能作为启动配置；常驻 worker 不允许在请求间静默切换配方，改变时须重启服务。
+普通 Base HTTP 去掉 `--maas`，并使用 Base 示例配置。MaaS 接受 768P、5～15 秒的 T2VA/I2VA 和独立部署的 R2VA，步数由启动配置决定；原队列、超时、健康探针、原子发布和请求结构不变。precision 只能作为启动配置；常驻 worker 不允许在请求间静默切换配方，改变时须重启服务。
 
 使用干净的启动终端，清除旧配方的 `XGEN_PHAA_FP8=1` 等环境变量。新配方要求 BF16 通信，会拒绝该冲突，不会悄悄改成 FP8 通信。服务也采用同样的 RGB8 / veryfast 保存策略。接口和预热见 [在线教程](H3-ONLINE.md#cuda-maas)。
 

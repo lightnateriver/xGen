@@ -46,18 +46,18 @@ def _reject_constant(_value):
     raise InvalidInput("body", "Non-finite JSON number")
 
 
-def _read_json(request):
+def _read_json(request, max_body_bytes=MAX_BODY_BYTES):
     if not request.is_json:
         raise InvalidInput("body", "Expected a JSON content type", 415)
-    if request.content_length is not None and request.content_length > MAX_BODY_BYTES:
+    if request.content_length is not None and request.content_length > max_body_bytes:
         raise InvalidInput("body", "Request body exceeds the byte limit", 413)
     try:
-        body = request.stream.read(MAX_BODY_BYTES + 1)
+        body = request.stream.read(max_body_bytes + 1)
     except RequestEntityTooLarge:
         raise InvalidInput("body", "Request body exceeds the byte limit", 413) from None
     except BadRequest:
         raise InvalidInput("body", "Could not read the request body") from None
-    if len(body) > MAX_BODY_BYTES:
+    if len(body) > max_body_bytes:
         raise InvalidInput("body", "Request body exceeds the byte limit", 413)
     try:
         return json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)

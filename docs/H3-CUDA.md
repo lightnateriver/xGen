@@ -104,11 +104,11 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 --max_restarts=0 \
-  server/video/video_server.py --init --maas-fl2va-input \
+  server/video/video_server.py --init --maas \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-MaaS 仍固定 5 秒、768P 横屏、50 次实际 DiT。队列容量默认 10，排队上限 600 秒。服务先通过一条真实请求预热，再将流量接入 `/ready`。新的 precision 是启动配置，不属于请求字段。历史 NVFP4 配置另存为 [显式旧配方](../example/diffusers/configs/h3_cuda_nvfp4_legacy.example.json)，不作为本轮人工认可配方。
+MaaS 输出限定为 768P，接受 5～15 秒整数和首尾帧／参考素材；步数由启动配置固定。队列容量默认 10，排队上限 600 秒。服务先通过一条真实请求预热，再将流量接入 `/ready`。新的 precision 是启动配置，不属于请求字段。历史 NVFP4 配置另存为 [显式旧配方](../example/diffusers/configs/h3_cuda_nvfp4_legacy.example.json)，不作为本轮人工认可配方。
 
 在另一个终端准备一条预热请求。示例使用自备 PNG，提示词保存在 UTF-8 文本文件。
 
@@ -138,7 +138,7 @@ curl --fail-with-body -sS "$BASE_URL/ready"
 curl --fail-with-body -sS -o warmup.mp4 "$BASE_URL/download/warmup-001"
 ```
 
-关掉 `--maas-fl2va-input` 即回到原服务 API。探针、错误码、客户端计时和网关部署边界见 [MaaS API](../server/video/MAAS-FL2VA-API.md)。
+关掉 `--maas` 即回到原服务 API。探针、错误码、客户端计时和网关部署边界见 [MaaS API](../server/video/MAAS-API.md)。
 
 ### 实验性 CUDA 2K Refiner
 

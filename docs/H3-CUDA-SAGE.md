@@ -7,7 +7,7 @@
 ## 范围与依赖
 
 - 已测：8×RTX 5090、SP8、文本 TP8、1344×768、24 FPS、20 次实际 DiT；T2VA / I2VA，5、10、15 秒。
-- Sage 的 R2VA、2K、四卡和在线端到端尚未验证，本方案的启动脚本会拒绝未支持的任务组合。
+- 本页性能表是原 T2VA/I2VA 配方。R2VA 请使用 v0.4 的 [5090全并行优选方案](H3-CUDA-COMPOSABLE.md)，并查看它独立的性能和验证范围；不要沿用本页的成片结论。2K、四卡和在线端到端仍需分别验证。
 - 使用与方案一相同的完整 FL2VA/Base 模块权重，包含 Transformer、文本编码器、音视频 VAE、处理器和调度器。无需 NVFP4、Veda 预测器或额外 LoRA。
 - 除原 PyTorch CUDA、Triton、Diffusers、Transformers、FFmpeg / FFprobe 外，需要安装支持 RTX 5090 的 [SageAttention CUDA 扩展](https://github.com/thu-ml/SageAttention)。不增加全局强制依赖；未安装时请选方案一。
 - 视频 decoder 的 CPU 锁页副本约 4.52 GiB/rank，八卡约 36.1 GiB；还需考虑模型加载、文本编码器和其他 CPU 权重，不能把此数作为整机内存需求。

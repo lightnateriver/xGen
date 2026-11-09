@@ -10,10 +10,13 @@
 | NPU Refiner | T2VA、I2VA、R2VA | 2K | 5、10 或 15 秒 |
 | CUDA Base fp8-bf16 | T2VA、I2VA；R2VA 保留独立旧路线 | 768P | 5 至 15 秒，接受整数 |
 | CUDA Base fp8-sage | T2VA、I2VA；在线端到端待实测 | 768P | 接口沿用 5 至 15 秒，离线已测 5/10/15 秒 |
+| CUDA 5090 R2VA 全并行 | R2VA，原 Base API | 768P | 5 至15秒；参考输入和时长的真实HTTP测试单独记录 |
 | CUDA Refiner | I2VA | 2K | 接口接受 5、10 或 15 秒，已有 5 和 10 秒结果 |
 | CUDA MaaS | I2VA，单首帧 | 768P、16:9 | 固定 5 秒 |
 
 Base 服务生成 15 秒视频时，在请求里设 `"duration":15`。模型按 VAE 要求生成 362 帧，服务保存 360 帧和对应的音频。历史性能表里的 15 秒在线 768P 来自独立批测程序。
+
+原 Base 服务的5/10秒保存保留原生padding，例如本轮5秒请求保存124帧；v0.4保持这一行为。功能测试按各接口实际帧数契约检查，不把所有视频一律断言为时长×24帧。
 
 每条 H3 视频完成保存后，各 rank 会释放请求输出引用，同步设备并通过 PyTorch 回收空闲显存；常驻模型保留。日志 `H3_REQUEST_MEMORY_RELEASE` 给出耗时和前后 allocated/reserved。该清理也用于离线入口，不能代替单条请求内部的峰值显存验证。
 
@@ -51,6 +54,18 @@ torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --s
 ```
 
 这是尚未完成在线端到端实测的部署示例；离线六项成片与性能见 [方案二教程](H3-CUDA-SAGE.md)。precision 只能在启动时选择，切换后须重启。MaaS 可复用此 JSON 和环境变量，将服务模式参数换为 `--maas-fl2va-input`；固定 5 秒、50 步等输入限制保持原样，不能将离线 20 步性能当作 MaaS 性能。
+
+### RTX 5090 R2VA 全并行
+
+此方案复用原 Base HTTP 服务，面向八卡 RTX 5090；不改变 MaaS 的 FL2VA 输入契约。CPU配置、HTTP路由/队列和推理入口作用域已回归，真实八卡HTTP成片与连续请求仍待部署验证。先修改 JSON 中的模型路径，再启动：
+
+```bash
+XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --service-mode ref2va --config example/diffusers/configs/h3_cuda5090_ref2va.example.json --host 127.0.0.1 --port 5001
+```
+
+使用下文 R2VA 的 `/generate` 请求。`duration` 可填5至15的整数，`ref_path` 使用服务能够访问的参考文件，`num_inference_steps`填实际DiT步数。单项优化、并行布局和精度由服务启动时确定，生成请求不能更改；更改启动配置后重启服务。常驻请求可以更换prompt、时长和参考素材，请求内条件结果不会跨请求复用。
+
+初始化、生成请求和HTTP下载是不同计时边界；离线表的生成保存耗时不能作为HTTP端到端延迟。[配置与回退](H3-CUDA-COMPOSABLE.md) · [功能测试和性能](performance/h3-cuda5090-full-parallel.md)
 
 ### 历史 NVFP4 的 15 秒 I2VA
 

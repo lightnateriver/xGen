@@ -1,6 +1,17 @@
-# H3 步数、参考输入与显存回收升级说明
+# 升级到 v0.4
 
-本次更新继续使用 `v3.2-maas` 分支。在 `6d462df` 的基础上增加 CUDA 标准方案二 Sage-FP8 和可选输出 AdaLN 融合，保留默认方案一及 NPU 行为。此前相对 `ef1a321` 增加的 NPU benchmark、R2VA 多媒体输入处理和请求结束后的显存回收继续保留。
+v0.4 新增显式 `cuda-5090 r2va` 优选全并行方案；原 CUDA/NPU 命令和默认精度保持不变。旧 `v3.2-maas` 分支更名为 `v0.3.2-maas`，代码基线不变。已有克隆执行 `git fetch --prune` 后可切换新名称；本地未提交工作请先自行保存。
+
+新预设面向八卡 RTX5090、Ref2VA、768P。所有50层DiT在条件编码和VAE期间常驻；关闭整个预设使用 `H3_CUDA_PRESET=none`，单项关闭见 [配置表](H3-CUDA-COMPOSABLE.md)。此前显式 offload、TP/CP 或混合通信配方继续使用独立参数，互斥组合在模型加载前报错，不会自动降精度或裁输入。
+
+在线使用 [新增JSON示例](../example/diffusers/configs/h3_cuda5090_ref2va.example.json)，复用 `/generate` / `/status` / `/download`。本次没有增加MaaS R2VA接口。
+
+提交包含运行代码、独立测试工具、公开示例及脱敏的性能/功能说明；不包含模型、AdaLN资产、私有部署脚本、机器清单、原始请求、生成素材或原始日志。TP/CP实验路径保持默认关闭，其结果与全并行SP8分开。
+
+## v0.3.2-maas 历史升级说明
+
+
+本次更新继续使用 `v0.3.2-maas` 分支。在 `6d462df` 的基础上增加 CUDA 标准方案二 Sage-FP8 和可选输出 AdaLN 融合，保留默认方案一及 NPU 行为。此前相对 `ef1a321` 增加的 NPU benchmark、R2VA 多媒体输入处理和请求结束后的显存回收继续保留。
 
 ## CUDA Base 默认配方更新
 

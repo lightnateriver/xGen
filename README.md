@@ -12,9 +12,12 @@ CUDA H3 Base 的 T2VA / I2VA 默认采用 [fp8-bf16 配方](docs/H3-CUDA-PRECISI
 
 CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage attention、FP8 双向通信、输出 AdaLN 调制融合和 `expandable_segments`。八卡 5090 的 5/10/15 秒、20 步 T2VA / I2VA 实测更快，六条成片均完整解码通过；人工画面、口型和听音审核仍待完成。原精度认可方案继续保留为默认。
 
+v0.4 提供面向八卡 RTX 5090 R2VA 的优选 [Sage-FP8 全并行配置](docs/H3-CUDA-COMPOSABLE.md)：用 `cuda-5090 r2va` 显式选择，加入 SAP、本地输入、请求内条件复用、组件并行和去 BF16 临时副本，DiT 全程常驻。每项可单独关闭；原 `cuda`／`npu` 命令不自动开启。当前范围为八卡 Ref2VA 768P；组合正确性、显存容量和人工精度以各自实测记录为准。
+
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v3.2-maas](../../tree/v3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
+| [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用、Token Refiner / 视觉 / VAE / 音频分工及 PHAA 直接打包，DiT 全程常驻；各项可独立关闭。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [在线启动](docs/H3-ONLINE.md) |
+| [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-FL2VA-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
 | [v0.3-cuda](../../tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](docs/H3-CUDA.md) |
 | [v0.3](../../tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](docs/H3-ATTENTION.md) · [实测](docs/H3-ATTENTION-VALIDATION.md) |
@@ -73,6 +76,31 @@ bash example/diffusers/scripts/run_h3.sh npu r2va 15 2k
 
 ### NVIDIA CUDA 启动
 
+#### RTX 5090 R2VA 优选：Sage-FP8 全并行
+
+适用于八卡 RTX 5090、R2VA、768P。使用完整 Ref2VA 权重；不需要 NVFP4、稀疏权重或离线 AdaLN 表。先设置模型目录和自己的 H3 prompt：
+
+```bash
+export BASE_MODEL=weights/h3-ref2va
+export PROMPT_FILE=inputs/prompt.txt
+export H3_BASE_STEPS=20
+bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
+```
+
+生成五图参考的 15 秒视频：
+
+```bash
+bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 15 768p inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
+```
+
+`cuda-5090` 是脚本的位置参数，不是 `--cuda-5090`。R2VA 时自动启用 `sage-fp8-full-parallel`；主干仍为 SP8，DiT 全程常驻。全部单项开关、关闭预设、内存代价和在线 JSON 见 [完整教程](docs/H3-CUDA-COMPOSABLE.md)。原 `cuda`、`npu` 命令不会自动启用新预设。
+
+已测 768P、20 步：单图 5/10 秒 55.97/97.54s，五图 5/10/15 秒 139.67/224.81/316.49s；峰值 allocated 27.93–28.33 GiB/卡。耗时含生成保存，不含初始化和预热；技术检查与抽帧通过，完整动态、口型和人工听音仍待复核。[性能表及口径](docs/performance/h3-cuda5090-full-parallel.md)
+
+全并行预设当前只面向 R2VA 768P。T2VA/I2VA、其他 CUDA 设备及 NPU 请使用下面各自的方案；不能套用 R2VA 的性能与精度结论。
+
+#### 原 CUDA 路线和 T2VA / I2VA
+
 先准备 [完整 FL2VA 权重和依赖](docs/H3-CUDA-PRECISION.md#模型与环境)。CUDA 768P 的 T2VA / I2VA 默认使用 **FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻**，八卡启动。5 秒、20 步样例已获人工精度认可；R2VA 保留原路线，精度仍待验证。建议先从 5 秒试跑。
 
 | 标准方案 | 选择方式 | 适用范围与审核状态 |
@@ -95,7 +123,11 @@ H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h
 H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
 ```
 
-两套方案均使用 FP8 Linear 和文本 TP8、50 层常驻及 VAE 空间 tile。方案二需安装 SageAttention CUDA 扩展；不是 NVFP4 或稀疏方案。本次未验证 Sage 的 R2VA、2K、四卡及在线端到端，范围见 [方案二教程](docs/H3-CUDA-SAGE.md)。
+两套方案均使用 FP8 Linear 和文本 TP8、50 层常驻及 VAE 空间 tile。方案二需安装 SageAttention CUDA 扩展；不是 NVFP4 或稀疏方案。本段是 T2VA/I2VA 的原 Sage 配方；R2VA 全并行另见上文。2K、四卡及在线端到端的验证范围分别记录，不能复用离线结果。范围见 [方案二教程](docs/H3-CUDA-SAGE.md)。
+
+开发中的 [TP2 + Ulysses CP4 备选路线](docs/H3-CUDA-TP-CP.md) 使用独立开关，默认仍为原 SP。它复用现有推理链路，分别配置 TP/CP 的 BF16 或 FP8 传输；合成单层验证与完整视频性能、人工精度验收分开记录，不能沿用上表的成片结论。
+
+实验性 [输入 Token Refiner SP8 / cuDNN / FP8 FFN](docs/H3-INPUT-TOKEN-REFINER.md) 通过独立参数开启，默认关闭。单图 5 秒 R2VA 的 20 步预热后实测中，该模块快 3.35 倍、稳态 DiT 耗时减少约 2.07%，但本次 E2E 没有改善；完整画面、口型和听音审核仍待完成。
 
 CUDA 2K 目前走 I2VA，需要打包 NVFP4 和 [CUDA Refiner 资产](docs/H3-CUDA.md#实验性-cuda-2k-refiner)。接口接受 5、10、15 秒，已有 5 和 10 秒结果。
 

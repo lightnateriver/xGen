@@ -60,6 +60,26 @@ def publish_video(path, encode, *, require_audio, expected=(1344, 768, 124)):
     _atomic_file(path, write)
 
 
+def watermark_converter(convert, width, height):
+    """Overlay a visible AIGC label before encoding; no extra encoding pass."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    label = Image.new('RGB', (72, 24), '#c7000b')
+    ImageDraw.Draw(label).text((18, 7), 'AIGC', fill='white')
+    scale = max(2, height // 384)
+    label = np.asarray(label.resize((72*scale, 24*scale), Image.Resampling.NEAREST))
+    rows, columns = label.shape[:2]
+    top, left = max(0, height-rows-16), max(0, width-columns-16)
+
+    def marked(frame):
+        array = convert(frame).copy()
+        array[top:top+rows, left:left+columns, :3] = label
+        return array
+
+    return marked
+
+
 def publish_obs(path, directory):
     """Publish to the existing OBS-mounted directory and confirm object metadata."""
     try:

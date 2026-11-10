@@ -6,19 +6,19 @@
 
 | 服务 | 任务 | 分辨率 | 请求时长 |
 |---|---|---|---|
-| NPU Base | T2VA、I2VA、R2VA | 768P | 5 至 15 秒，接受整数 |
+| NPU Base | T2VA、I2VA、R2VA | 768P | 4 至 15 秒，接受整数 |
 | NPU Refiner | T2VA、I2VA、R2VA | 2K | 5、10 或 15 秒 |
-| CUDA Base fp8-bf16 | T2VA、I2VA；R2VA 保留独立旧路线 | 768P | 5 至 15 秒，接受整数 |
-| CUDA Base fp8-sage | T2VA、I2VA；在线端到端待实测 | 768P | 接口沿用 5 至 15 秒，离线已测 5/10/15 秒 |
-| CUDA 5090 R2VA 全并行 | R2VA，原 Base API | 768P | 5 至15秒；参考输入和时长的真实HTTP测试单独记录 |
+| CUDA Base fp8-bf16 | T2VA、I2VA；R2VA 保留独立旧路线 | 768P | 4 至 15 秒，接受整数 |
+| CUDA Base fp8-sage | T2VA、I2VA；在线端到端待实测 | 768P | 接口接受 4 至 15 秒，离线已测 5/10/15 秒 |
+| CUDA 5090 R2VA 全并行 | R2VA，原 Base API | 768P | 4 至15秒；参考输入和时长的真实HTTP测试单独记录 |
 | CUDA Refiner | I2VA | 2K | 接口接受 5、10 或 15 秒，已有 5 和 10 秒结果 |
-| CUDA MaaS | T2VA、首尾帧 I2VA、独立 R2VA | 768P，可选比例／adaptive | 5 至 15 秒整数 |
+| CUDA MaaS V2 | T2VA、首尾帧 I2VA、独立 R2VA | 真实 768P；2K 仅模拟 | 4 至 15 秒整数 |
 
 Base 服务生成 15 秒视频时，在请求里设 `"duration":15`。模型按 VAE 要求生成 362 帧，服务保存 360 帧和对应的音频。历史性能表里的 15 秒在线 768P 来自独立批测程序。
 
 所有 H3 在线入口的 `prompt` 最多 7,000 个 UTF-16 码元，包括 Base、Refiner 和 MaaS 模式。计数与 [MiniMax 官方 CLI](https://github.com/MiniMax-AI/cli/blob/main/src/video/v2.ts) 的 JavaScript `text.length` 一致：常见中文、英文字母、空格或换行各计 1，`🙂` 计 2。因此 7,000 个常见汉字或 3,500 个 `🙂` 达到上限，再加一个英文字母就超限。服务在 JSON 解码后、分词和入队前检查原文，超长拒绝，不截断；`/params` 用 `length_unit=utf16_code_units` 标明口径。这不是 7,000 token，也不包含图片、视频、音频产生的 token。
 
-MaaS 返回 HTTP 400、`error=invalid_input`、`field=prompt`；普通 `/generate` 返回 HTTP 400，原 `/v1/tasks` 保留 HTTP 200、任务 `failed` 的错误契约。Wan 的 2,000 字符限制及计数方式保持不变。
+MaaS V2 使用官网错误信封，旧 MaaS 接口返回 HTTP 400、`error=invalid_input`、`field=prompt`；普通 `/generate` 返回 HTTP 400，原 `/v1/tasks` 保留 HTTP 200、任务 `failed` 的错误契约。Wan 的 2,000 字符限制及计数方式保持不变。
 
 原 Base 服务的5/10秒保存保留原生padding，例如本轮5秒请求保存124帧；v0.4保持这一行为。功能测试按各接口实际帧数契约检查，不把所有视频一律断言为时长×24帧。
 
@@ -67,7 +67,7 @@ torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --s
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --service-mode ref2va --config example/diffusers/configs/h3_cuda5090_ref2va.example.json --host 127.0.0.1 --port 5001
 ```
 
-使用下文 R2VA 的 `/generate` 请求。`duration` 可填5至15的整数，`ref_path` 使用服务能够访问的参考文件，`num_inference_steps`填实际DiT步数。单项优化、并行布局和精度由服务启动时确定，生成请求不能更改；更改启动配置后重启服务。常驻请求可以更换prompt、时长和参考素材，请求内条件结果不会跨请求复用。
+使用下文 R2VA 的 `/generate` 请求。`duration` 可填4至15的整数，`ref_path` 使用服务能够访问的参考文件，`num_inference_steps`填实际DiT步数。单项优化、并行布局和精度由服务启动时确定，生成请求不能更改；更改启动配置后重启服务。常驻请求可以更换prompt、时长和参考素材，请求内条件结果不会跨请求复用。
 
 初始化、生成请求和HTTP下载是不同计时边界；离线表的生成保存耗时不能作为HTTP端到端延迟。[配置与回退](H3-CUDA-COMPOSABLE.md) · [功能测试和性能](performance/h3-cuda5090-full-parallel.md)
 
@@ -155,6 +155,8 @@ curl -fsS -o result.mp4 "http://127.0.0.1:5001/download/$TASK_ID"
 
 ## CUDA MaaS
 
+MaaS 是平台层，V2 是 HTTP 协议，`--maas` 是 xGen 的服务能力开关，CUDA/NPU 是计算后端。当前只有 CUDA 启动路径开放了 `--maas`；V2 协议本身不绑定 CUDA。NPU 仍使用上文旧 HTTP/离线入口，尚未接入本节 V2 服务。详见 [分层与启用范围](H3-MAAS-V2.md#接口平台与计算后端)。
+
 准备 [完整 FL2VA 模块与 fp8-bf16 环境](H3-CUDA-PRECISION.md#模型与环境)，然后启动：
 
 ```bash
@@ -163,4 +165,4 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-MaaS 使用 `POST /v1/tasks`，首帧要放在 JSON 的 `input.first_frame` 中，格式为 JPEG 或 PNG 的 Base64 data URI。先直连实例提交一条预热请求，等 `/ready` 返回 HTTP 200 再接入平台流量。任务状态通过 `GET /v1/tasks/<id>` 查询，成功状态为 `succeeded`。 [预热和高性能开关](H3-CUDA.md#maas-在线服务) · [MaaS API](../server/video/MAAS-API.md)
+MaaS 推荐使用官网格式的 `POST /v2/video_generation`、`content[]/role/ratio` 和 `GET /v2/query/video_generation/<task_id>`。旧 `/v1/tasks` 及 `/generate` 保持兼容。每副本配置独立 `--maas-state-dir`，先提交一条真实预热请求，等 `/ready` 返回 HTTP 200 再接流量。IR/2K 默认关闭，仅可通过 `--maas-mock-backends` 启用模拟联调。 [预热和高性能开关](H3-CUDA.md#maas-在线服务) · [MaaS API](../server/video/MAAS-API.md)

@@ -273,7 +273,7 @@ class H3BaseDurationTests(unittest.TestCase):
 
     def test_base_duration_spec(self):
         spec = self.client.get("/params").json["parameters"]["duration"]
-        self.assertEqual(spec["constraints"], {"min": 5, "max": 15})
+        self.assertEqual(spec["constraints"], {"min": 4, "max": 15})
         wan_spec = VideoGenerationService().app.test_client().get("/params").json["parameters"]["duration"]
         self.assertEqual(wan_spec["constraints"], {"allowed_values": [5, 10]})
 
@@ -293,7 +293,7 @@ class H3BaseDurationTests(unittest.TestCase):
                 self.assertEqual(task["num_inference_steps"], 50)
 
     def test_base_duration_outside_range_or_fractional_is_rejected(self):
-        for duration in (4, 15.5, 16):
+        for duration in (3, 15.5, 16):
             with self.subTest(duration=duration):
                 response = self.client.post("/generate", json={"prompt": "test", "duration": duration})
                 self.assertEqual(response.status_code, 400)

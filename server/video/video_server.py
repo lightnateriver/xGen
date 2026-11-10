@@ -397,6 +397,8 @@ class MaaSTask(AsyncTask):
             self.progress = 100.0
             self.infer_time = result['infer_time']
         self.status = status
+        if getattr(self, 'on_change', None):
+            self.on_change(self)
         return True
 
     def _details(self):
@@ -1059,7 +1061,8 @@ class VideoInferenceManager:
 
 class VideoGenerationService:
     def __init__(self, config_path: Optional[str] = None, *, maas=False, maas_fl2va_input=False,
-                 maas_queue_capacity=MAAS_QUEUE_CAPACITY, maas_queue_timeout_s=MAAS_QUEUE_TIMEOUT_S):
+                 maas_queue_capacity=MAAS_QUEUE_CAPACITY, maas_queue_timeout_s=MAAS_QUEUE_TIMEOUT_S,
+                 maas_state_dir=None, maas_mock_backends=False):
         self.app = Flask(__name__)
         self.maas = maas
         maas_fl2va_input = maas_fl2va_input or maas
@@ -1100,6 +1103,9 @@ class VideoGenerationService:
         self._setup_config_routes()
         self._setup_internal_task_routes()
         self._setup_internal_query_routes()
+        if self.maas:
+            from maas_v2 import MaaSV2
+            self.maas_v2 = MaaSV2(self, directory=maas_state_dir, mock_backends=maas_mock_backends)
 
     def _setup_signal_handlers(self):
         def signal_handler(signum, frame):
@@ -1127,6 +1133,8 @@ class VideoGenerationService:
                 elif task.status in ["pending", "running"]:
                     task.status = "cancelled"
                     task.error = "Service shutdown"
+        if getattr(self, 'maas_v2', None):
+            self.maas_v2.close(wait=False)
 
     def _cleanup_completed_tasks(self):
         now = datetime.now()
@@ -1704,9 +1712,9 @@ class VideoGenerationService:
 
         duration_raw = data.get('duration')
         if isinstance(duration_raw, float) and duration_raw != int(duration_raw):
-            errors.append(f"duration must be an integer (5-{H3_BASE_MAX_DURATION_S}), got {duration_raw}")
+            errors.append(f"duration must be an integer (4-{H3_BASE_MAX_DURATION_S}), got {duration_raw}")
         duration, err = self._validate_and_convert_param(
-            duration_raw, 'duration', int, 5, 5, H3_BASE_MAX_DURATION_S
+            duration_raw, 'duration', int, 5, 4, H3_BASE_MAX_DURATION_S
         )
         if err:
             errors.append(err)
@@ -1957,6 +1965,10 @@ class VideoGenerationService:
             if len(self.maas_pending) >= self.maas_queue_capacity:
                 return jsonify({'id': task_id, 'error': 'queue_full'}), 503
             task = MaaSTask(task_id, key, created_at_ms)
+            if metadata := data.pop('_maas_v2_metadata', None):
+                task.v2_metadata = metadata
+                task.on_change = self.maas_v2.task_changed
+                task.on_change(task)
             save_path = f"/tmp/generated_videos/video_{uuid.uuid4().hex}.mp4"
             self.tasks[task_id] = task
             if self.maas:
@@ -1991,11 +2003,14 @@ class VideoGenerationService:
             if not self.maas_pending or self.shutdown:
                 raise queue.Empty
             task_id = next(iter(self.maas_pending))
-            task_info = self.maas_pending.pop(task_id)
+            task_info = self.maas_pending[task_id]
             task = self.tasks[task_id]
             task.status = 'running'
             task.started_at = datetime.now()
             task.timings_s['queue'] = round(now - task.queued_at, 3)
+            if getattr(task, 'on_change', None):
+                task.on_change(task)
+            del self.maas_pending[task_id]
             return task_info, task
 
     def _fail_maas_jobs(self, phase):
@@ -2307,12 +2322,12 @@ class VideoGenerationService:
                         "required": False,
                         "default": 5,
                         "description": (
-                            f"Video duration in seconds (5 to {H3_BASE_MAX_DURATION_S})."
+                            f"Video duration in seconds (4 to {H3_BASE_MAX_DURATION_S})."
                             if h3_base else
                             "Video duration in seconds (5 or 10). duration=10 enables two-stage generation."
                         ),
                         "constraints": (
-                            {"min": 5, "max": H3_BASE_MAX_DURATION_S}
+                            {"min": 4, "max": H3_BASE_MAX_DURATION_S}
                             if h3_base else {"allowed_values": [5, 10]}
                         )
                     }
@@ -2852,6 +2867,8 @@ class VideoGenerationService:
                 sys.argv = old_argv
             # Server-level params not in argparse — set manually after parse_args
             args.enable_audio = data.get('enable_audio', True)
+            if self.maas:
+                args._maas_watermark = data.get('_maas_watermark', False)
             args.adopt_sr = _mmh3_adopt_sr
             args.seedvr2_model_dir = _mmh3_seedvr2_dir
             args.seedvr2_model_name = _mmh3_seedvr2_name
@@ -3004,8 +3021,12 @@ class VideoGenerationService:
         cmd += ["-loglevel", "error", save_path]
 
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        convert = self._frame_to_uint8_hwc
+        if getattr(args, '_maas_watermark', False):
+            from maas_artifacts import watermark_converter
+            convert = watermark_converter(convert, width, height)
         for frame in frames:
-            proc.stdin.write(self._frame_to_uint8_hwc(frame).tobytes())
+            proc.stdin.write(convert(frame).tobytes())
         proc.stdin.close()
         proc.wait()
 
@@ -3621,6 +3642,10 @@ def main():
                         help='Maximum number of waiting MaaS requests (default: %(default)s)')
     parser.add_argument('--maas-queue-timeout-s', type=int, default=MAAS_QUEUE_TIMEOUT_S,
                         help='MaaS request wait limit in seconds (default: %(default)s)')
+    parser.add_argument('--maas-state-dir', default=None,
+                        help='Per-replica V2 task history directory (or XGEN_MAAS_STATE_DIR)')
+    parser.add_argument('--maas-mock-backends', action='store_true',
+                        help='TEST ONLY: enable explicitly labelled fake IR and 2K backends')
     parser.add_argument('--warmup', action='store_true', help='Run warmup inference on startup')
     parser.add_argument('--warmup-steps', type=int, default=1, help='Warmup inference steps')
 
@@ -3706,6 +3731,8 @@ def main():
     args = parser.parse_args()
     if args.maas and (args.maas_queue_capacity < 1 or args.maas_queue_timeout_s < 1):
         parser.error('MaaS queue capacity and timeout must be positive')
+    if not args.maas and (args.maas_mock_backends or args.maas_state_dir):
+        parser.error('MaaS state and mock backends require --maas')
     
     _apply_ten_second_config_args(args)
 
@@ -3727,7 +3754,9 @@ def main():
 
     service = VideoGenerationService(config_path=args.config, maas=args.maas,
                                      maas_queue_capacity=args.maas_queue_capacity,
-                                     maas_queue_timeout_s=args.maas_queue_timeout_s)
+                                     maas_queue_timeout_s=args.maas_queue_timeout_s,
+                                     maas_state_dir=args.maas_state_dir,
+                                     maas_mock_backends=args.maas_mock_backends)
     
     _apply_service_config(service, args, rank)
     if args.h3_attention != 'legacy' or service.default_config.get('h3_attention', 'legacy') != 'legacy':

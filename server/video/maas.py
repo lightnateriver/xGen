@@ -13,7 +13,7 @@ from x_diffusers.adaptor.h3_refiner_config import H3_MAX_PROMPT_LENGTH, h3_promp
 MAX_BODY_BYTES = 64*1024*1024
 RATIOS = ('21:9', '16:9', '4:3', '1:1', '3:4', '9:16')
 FIELDS = {'model', 'task_type', 'resolution', 'aspect_ratio', 'duration', 'num_inference_steps',
-          'prompt', 'first_frame', 'last_frame', 'ref_path', 'seed', 'enable_audio'}
+          'prompt', 'first_frame', 'last_frame', 'ref_path', 'seed', 'enable_audio', 'aigc_watermark'}
 
 
 def validate_startup(config, backend, warmup):
@@ -38,7 +38,7 @@ def output_size(ratio):
     return width, height
 
 
-def normalize(value, config):
+def normalize(value, config, *, media_types=None):
     if not isinstance(value, dict) or value.keys()-FIELDS:
         raise InvalidInput('input', 'Expected an object containing only advertised MaaS fields')
     prompt = value.get('prompt')
@@ -63,12 +63,15 @@ def normalize(value, config):
     duration = value.get('duration', 5)
     seed = value.get('seed', 42)
     audio = value.get('enable_audio', True)
-    if type(duration) is not int or not 5 <= duration <= 15:
-        raise InvalidInput('duration', 'Expected an integer from 5 to 15')
+    if type(duration) is not int or not 4 <= duration <= 15:
+        raise InvalidInput('duration', 'Expected an integer from 4 to 15')
     if type(seed) is not int or not 0 <= seed < 2**31:
         raise InvalidInput('seed', 'Expected an integer from 0 to 2147483647')
     if type(audio) is not bool:
         raise InvalidInput('enable_audio', 'Expected a boolean')
+    watermark = value.get('aigc_watermark', False)
+    if type(watermark) is not bool:
+        raise InvalidInput('aigc_watermark', 'Expected a boolean')
     first, last = value.get('first_frame'), value.get('last_frame')
     refs = value.get('ref_path', [])
     if not isinstance(refs, list) or len(refs)>12 or any(not isinstance(x, str) or not x for x in refs):
@@ -93,6 +96,8 @@ def normalize(value, config):
                 frames[field] = materialize(source, directory, field, frame=True)
                 result[field] = frames[field]['path']
         media = [materialize(source, directory, str(i)) for i, source in enumerate(refs)]
+        if media_types is not None and [m['kind'] for m in media] != media_types:
+            raise InvalidInput('content', 'Declared media types must match the decoded assets')
         counts = Counter(m['kind'] for m in media)
         if any(counts[k]>n for k,n in (('image',9),('video',3),('audio',3))):
             raise InvalidInput('ref_path', 'At most 9 images, 3 videos and 3 audio clips')
@@ -112,9 +117,15 @@ def normalize(value, config):
         result['_maas_size'] = output_size(resolved)
         signature = {k:v for k,v in result.items() if k not in ('_maas_dir','first_frame','last_frame','ref_path')}
         result['_maas_fingerprint'] = hashlib.sha256(json.dumps(dict(
-            request=signature, frames={k:m['sha256'] for k,m in frames.items()},
+            request=dict(signature, aigc_watermark=watermark), frames={k:m['sha256'] for k,m in frames.items()},
             references=[m['sha256'] for m in media]),
             sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+        if watermark:
+            result['_maas_watermark'] = True
+        # Small factual metadata only; never retain the inline media in task history.
+        result['_maas_usage'] = dict(input_image_count=len(frames)+counts['image'],
+            input_video_seconds=float(sum((m['seconds'] for m in media if m['kind']=='video'), Fraction())),
+            input_audio_seconds=float(sum((m['seconds'] for m in media if m['kind']=='audio'), Fraction())))
         return result
     except Exception:
         cleanup(result)
@@ -141,9 +152,10 @@ def parameter_spec(config):
         model=dict(allowed_values=['MiniMax-H3']), resolution=dict(allowed_values=['768p','768P']),
         task_type=dict(allowed_values=['ref2va'] if config.get('service_mode', config.get('task_type'))=='ref2va' else ['t2va','fl2va']),
         prompt=dict(required=True,max_length=7000,length_unit='utf16_code_units'),
-        duration=dict(min=5,max=15,type='integer'), aspect_ratio=dict(allowed_values=list(RATIOS)+['adaptive']),
+        duration=dict(min=4,max=15,type='integer'), aspect_ratio=dict(allowed_values=list(RATIOS)+['adaptive']),
         num_inference_steps=dict(allowed_values=[config.get('num_inference_steps',50)]),
         media=dict(byte_limits=BYTE_LIMITS,pixel_limits=PIXEL_LIMITS,min_edge=256,max_edge=5760,
                    min_aspect_ratio=.4,max_aspect_ratio=2.5,max_images=9,max_videos=3,max_audio=3,
                    max_files=12,clip_seconds=[2,15],max_seconds_per_media_type=15),
-        seed=dict(min=0,max=2**31-1),enable_audio=dict(type='boolean',default=True)))
+        seed=dict(min=0,max=2**31-1),enable_audio=dict(type='boolean',default=True),
+        aigc_watermark=dict(type='boolean',default=False)))

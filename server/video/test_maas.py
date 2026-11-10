@@ -92,7 +92,7 @@ class MaaSTests(unittest.TestCase):
                dict(task_type='fl2va',first_frame=image(255,256)),
                dict(task_type='fl2va',first_frame=image(768,256)),
                dict(task_type='fl2va',first_frame='/private.png'),
-               dict(duration=4),dict(duration=16),dict(duration=True),dict(resolution='2k'),
+               dict(duration=3),dict(duration=16),dict(duration=True),dict(resolution='2k'),
                dict(width=1024),dict(aspect_ratio='adaptive'),dict(prompt='🙂'*3501)]
         for fields in cases:
             with self.subTest(fields=list(fields)):

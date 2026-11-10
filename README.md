@@ -18,7 +18,11 @@ H3 视频 decoder 支持 CUDA/NPU 共用的 legacy、lightning、native-stream �
 
 v0.4 的 H3 在线接口将提示词上限从 2,000 放宽到 **7,000 个 UTF-16 码元**，按官方 CLI 的 JavaScript `text.length` 计数：常见汉字或英文字母各计 1，`🙂` 计 2。Base、Refiner、MaaS 共用该限制，在入队前拒绝超长文本，保留原文；这不是 tokenizer 的 token 上限。计数规则、错误响应和请求体上限见 [在线服务指南](docs/H3-ONLINE.md) 与 [MaaS API](server/video/MAAS-API.md)。
 
-v0.4 统一使用 `--maas` 开启 H3 在线输入校验和可靠性接口，旧 `--maas-fl2va-input` 保留为弃用别名。MaaS 开放 768P、5～15 秒的 T2VA、首帧／尾帧／首尾帧 I2VA，以及独立部署的 R2VA，增加自适应比例和受控公网素材下载。R2VA 在入队前强制限制为最多 9 图、3 视频、3 音频，总计不超过 12 个文件；视频和音频各自累计不超过 15 秒。CPU 回归为 46 项测试、242 个子用例通过；这些新增组合的 GPU 成片与精度仍待实测。不开 MaaS 时普通服务入口保持原有行为。
+v0.4 的 `--maas` 提供 MiniMax-H3 V2 格式的生成、查询、列表及取消/删除接口，支持 **768P、4～15 秒整数**、首尾帧、R2VA 和自适应比例；保留 `/generate`、`/v1/tasks` 的旧请求格式。新增可选 AIGC 可见水印、七天任务元信息与状态回调。R2VA 限制为最多 9 图、3 视频、3 音频，总计 12 个文件；视频、音频分别累计不超过 15 秒。**IR 和 2K 目前是默认关闭的模拟后端**，需 `--maas-mock-backends` 显式启用，不代表真实模型能力或性能；再生成接口未实现。新增协议的 CPU 验证与真实 GPU 成片验收分开记录。[API 与启动](server/video/MAAS-API.md) · [对齐边界和替换后端](docs/H3-MAAS-V2.md)。
+
+**MaaS 平台、V2 协议与计算后端是不同层。** 你的 MaaS 平台通过 V2 HTTP 协议调用 xGen；`--maas` 是 xGen 在线服务启用接口和可靠性能力的开关，CUDA/NPU 则负责实际模型计算。V2 字段本身不绑定硬件。当前 `--maas` 启动校验仍限定 CUDA、`--init` 和 SP/进程数匹配；NPU 的旧 HTTP/离线入口继续使用，NPU 上的 MaaS V2 尚未开放或验收。详见 [接口与后端的关系](docs/H3-MAAS-V2.md#接口平台与计算后端)。
+
+水印在 CPU RGB8 帧进入 FFmpeg 前叠加，默认关闭、不增加第二次转码。[5/10/15 秒 CPU 增量实测与复现脚本](docs/performance/h3-watermark-cpu.md)。
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|

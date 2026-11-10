@@ -1,18 +1,23 @@
-# H3 MaaS API（768P）
+# H3 MaaS API（V2 与兼容接口）
 
 `--init --maas` 开启 CUDA H3 Base 的输入校验、排队、探针和成片发布。旧 CLI 开关 `--maas-fl2va-input` 是弃用别名；不开 MaaS 时普通入口保持原有行为。
 
+这里的 MaaS 指 xGen 的服务模式开关。上层 MaaS 平台负责客户鉴权、调度和计费，V2 定义两层之间的 HTTP 路径和字段，CUDA/NPU 是执行模型的后端。**V2 协议不限定 CUDA；当前 `--maas` 的实现仍有 CUDA-only 启动校验，尚不能据此启动 NPU V2 服务。** [分层及开关说明](../../docs/H3-MAAS-V2.md#接口平台与计算后端)。
+
 ## 与 MiniMax 官网的对齐范围
 
-**部分对齐，不兼容官方请求／响应协议。** 以下比较标准 MiniMax-H3（核对日期：2026-11-10），不包含 Highspeed、Lite、Max、Context-IR 或 Regenerate。
+`--maas` 新增标准 **MiniMax-H3 V2** 请求/响应协议，保留旧接口。核对基准为[中国站官方 OpenAPI](https://platform.minimax.cn/docs/api-reference/video/generation/api/v2-video-generation.json)（2026-11-10）。
 
-| 范围 | 结论 |
+| 范围 | 当前实现 |
 |---|---|
-| 输入限额与模式约束 | 下文的 7000 UTF-16 文本计数、素材格式／大小／数量／尺寸／比例、参考音视频时长、64 MiB 请求体及输入模式互斥已按官方文档／CLI 实现 |
-| 本地收窄或额外限制 | 只开放 768P、5～15 秒整数（官网标准 H3 为 768P/2K、4～15 秒）；保留图片像素乘积上限，只接受静态图片；额外拒绝 NUL、非法 Unicode，并限制下载目标及超时 |
-| 不声明一致的部分 | xGen 路由、字段、错误码、任务响应、模型部署及推理配置；R2VA 自动选比例算法、实际输出尺寸、生成结果、速度和服务等级；不接受 `mm_file://` 或平台文件 ID |
+| V2 协议 | content/type/role/ratio、服务端 task_id、任务对象、五种状态、Unix 秒时间戳、分页过滤、错误信封及取消/删除语义 |
+| 真实推理 | CUDA H3 Base，768P、4～15 秒整数；T2VA/I2VA 与独立 Ref2VA 实例。4 秒新增入口的真实 GPU 成片验收另计 |
+| 水印 | `aigc_watermark=true` 在编码前叠加可见 AIGC 标识，默认 false；不是 MiniMax 专有隐式水印的复现 |
+| IR / 2K | 仅显式开启的模拟后端，返回 `X-XGen-Mock` 响应头；IR 原样返回提示词，2K 为醒目标记的测试卡视频，不调用模型或厂商 API |
+| 未实现 | `/v2/video_regeneration`；不将离线 Refiner 支持宣称为 MaaS 再生成能力 |
+| 仍有差异 | 当前恰好一个 text；额外图片像素上限、静态图片及公网下载约束；实际输出尺寸和 R2VA adaptive 算法不保证与托管服务相同 |
 
-依据：[官方输入要求](https://platform.minimax.io/docs/guides/video-generation)、[创建接口](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)、[CLI 文本校验](https://github.com/MiniMax-AI/cli/blob/main/src/video/v2.ts)、[CLI 字节限额](https://github.com/MiniMax-AI/cli/blob/main/src/utils/media.ts)。对齐指输入规则实现，不代表兼容认证或 GPU 精度验收。鉴权、租户配额、限流及内容审核由接入平台另行核验。
+本实例列表和历史不跨副本聚合；客户身份、租户、计费、配额和集群路由由 MaaS 平台负责。内部 V2 可用 `XGEN_MAAS_API_KEY` 配置 Bearer 校验，未配置时仅应在受控内网使用。详见[完整对齐边界](../../docs/H3-MAAS-V2.md)。
 
 ## 启动
 
@@ -25,7 +30,7 @@ pip install -r server/requirements-maas.txt
 
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   server/video/video_server.py --init --maas --service-mode fl2va \
-  --config example/diffusers/configs/h3_maas.example.json
+  --config example/diffusers/configs/h3_maas.example.json --maas-state-dir outputs/maas-fl2va
 ```
 
 上例服务 T2VA/I2VA。R2VA 使用 Ref2VA 权重和独立实例：
@@ -33,12 +38,50 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   server/video/video_server.py --init --maas --service-mode ref2va \
-  --config example/diffusers/configs/h3_cuda5090_ref2va.example.json
+  --config example/diffusers/configs/h3_cuda5090_ref2va.example.json --maas-state-dir outputs/maas-ref2va
 ```
 
-SP 须等于实际 rank 数。步数、权重、量化、attention 和并行策略在启动时固定；请求不得覆盖，显式传入步数须匹配配置。不开放 Refiner、2K、1080P 或旧 reduced-step warmup。HEIC/HEIF 需要依赖中的 pillow-heif，缺失时启动报错。先提交真实预热请求，等 `/ready` 返回 200 再接平台流量。
+SP 须等于实际 rank 数。步数、权重、量化、attention 和并行策略在启动时固定；请求不得覆盖，显式传入步数须匹配配置。真实推理不开放 Refiner、2K、1080P 或旧 reduced-step warmup。HEIC/HEIF 需要依赖中的 pillow-heif，缺失时启动报错。先提交真实预热请求，等 `/ready` 返回 200 再接平台流量。
 
-## 请求与输入限制
+## V2 接口
+
+| 方法/路径 | 输入与输出 |
+|---|---|
+| `POST /v2/video_generation` | model/content/resolution/duration；T2VA 另需具体 ratio。返回 `{"task_id":"..."}` |
+| `POST /v2/h3_context_ir` | model/content/duration，可选 ratio/callback_url；当前需模拟开关，不接受 resolution |
+| `GET /v2/query/video_generation/<task_id>` | `{"task":{...}}`；成功成片为 `task.content.url`，IR 为 `task.content.prompt` |
+| `GET /v2/query/video_generation` | page_num/page_size 与 filter.status/task_ids/model/task_type；返回 items/total |
+| `DELETE /v2/video_generation/<task_id>` | queued→cancelled；succeeded/failed→deleted；running/cancelled 返回参数错误 |
+| `GET /v2/video_outputs/<task_id>` | 成功视频的下载地址，不是另一种创建任务协议 |
+
+生成示例：
+
+```bash
+curl -fsS http://127.0.0.1:5001/v2/video_generation \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"MiniMax-H3","content":[{"type":"text","text":"两个人交谈后起身。"}],"resolution":"768P","duration":4,"ratio":"16:9","aigc_watermark":true}'
+```
+
+I2VA 在 content 中加入 `{"type":"image_url","image_url":{"url":"https://assets.example.com/frame.png"},"role":"first_frame"}`；可换成 last_frame 或同时提供两张。R2VA 使用 reference_image/reference_video/reference_audio 并提交至 Ref2VA 实例。单张未填 role 的图片视为 first_frame；首尾帧不能与参考输入混用。
+
+```bash
+TASK_ID=replace-with-task-id
+curl -fsS "http://127.0.0.1:5001/v2/query/video_generation/$TASK_ID"
+curl -fsS 'http://127.0.0.1:5001/v2/query/video_generation?filter.status=succeeded&page_num=1&page_size=20'
+curl -fsS -X DELETE "http://127.0.0.1:5001/v2/video_generation/$TASK_ID"
+```
+
+状态为 queued/running/succeeded/failed/cancelled。created_at/updated_at 为 Unix **秒**；task_type 是 generation 或 h3_context_ir，不是内部的 t2va/fl2va/ref2va。HTTP 200 仍需检查 task.status。失败任务使用 task.error；HTTP 请求错误使用 `{"type":"error","error":{"type":"bad_request_error","message":"...","http_code":"400"},"request_id":"..."}`。容量拒绝为 429；推理服务异常为 500；未配置的 IR/2K 为 422。V2 对字节超限/内容类型错误统一为 400；旧接口的 413/415 不变。
+
+每个副本须使用独立 `--maas-state-dir`。V2 任务元信息保留七天；重启后未完成任务标 failed，不自动重跑。视频下载 URL 默认签名有效一小时，可重新查询刷新；下载无需内部 Bearer。成功视频仍依赖原输出文件或平台归档可用。旧接口记录继续按下文的两小时策略处理。
+
+可选 callback_url 会先收到 `{"challenge":"..."}`；本实现要求三秒内 HTTP 200 返回同一个 JSON 对象。验证通过后，在独立通知线程按顺序 POST 与查询相同的 `{"task":{...}}`。通知失败不重试生成、不改变任务结果。客户回调若由 MaaS 统一发送，引擎回调应只指向 MaaS 的通知入口。
+
+IR/2K 联调在启动命令追加 **`--maas-mock-backends`**。不能在请求里打开模拟开关。查询、创建和下载模拟结果均有 `X-XGen-Mock: ir` 或 `2k`；实例还返回 `X-XGen-Mock-Enabled: ir,2k`。模拟结果不返回真实用量，不能参与性能/精度/计费统计。
+
+机器可读定义：[OpenAPI](../../docs/openapi/h3-maas-v2.json)。完整调用、默认值、回调约束及后端替换见 [V2 部署说明](../../docs/H3-MAAS-V2.md)。
+
+## 兼容接口请求与输入限制
 
 使用 UTF-8、`Content-Type: application/json`。`POST /v1/tasks` 接收 `{"id":"job-1","input":{...}}`，`POST /generate` 直接接收 input 并生成 ID。
 
@@ -49,14 +92,15 @@ SP 须等于实际 rank 数。步数、权重、量化、attention 和并行策�
 | `prompt` | 必填非空，最多 **7000 UTF-16 码元**，与 JavaScript `string.length` 一致；汉字通常计 1，`🙂` 计 2；禁止 NUL、非法 Unicode，超长拒绝、不截断，不按 tokenizer token 数计数 |
 | `model` / `resolution` | 默认 MiniMax-H3 / 768p；也接受 768P 写法，不接受任意 width/height |
 | `task_type` | t2va / fl2va / ref2va；须符合实例工作流，不能用普通实例临时切换 Ref2VA 权重 |
-| `duration` | 5～15 的 JSON 整数，默认 5；4 秒暂未开放 |
+| `duration` | 4～15 的 JSON 整数，默认 5 |
 | `num_inference_steps` | 可省略；显式传入时须匹配启动配置 |
+| `aigc_watermark` | 可选布尔值，默认 false；true 为可见 AIGC 标识 |
 | `seed` / `enable_audio` | JSON 整数 0～2147483647，默认 42 / JSON 布尔值，默认 true |
 | `first_frame` / `last_frame` | I2VA 至少一个，各最多 1 张，不可与参考素材混用；T2VA 不接受媒体 |
 | `ref_path` | R2VA 必填数组：最多 **9 图、3 视频、3 音频，总计 12 个文件**；音频需搭配图片或视频 |
 | `aspect_ratio` | 21:9、16:9、4:3、1:1、3:4、9:16 或 adaptive；具体规则见下文 |
 
-素材可以使用公网 HTTP(S) URL 或 Base64 data URI，按真实内容识别，保留输入顺序；URL 不必带扩展名。不接受私有 IP、服务器本地路径、`file://` 或平台文件 ID。字段沿用 xGen，不提供官方 content[]/role/ratio 协议层。
+素材可以使用公网 HTTP(S) URL 或 Base64 data URI，按真实内容识别，保留输入顺序；URL 不必带扩展名。不接受私有 IP、服务器本地路径、`file://` 或平台文件 ID。本节旧字段沿用 xGen；V2 使用上文的 content[]/role/ratio。
 
 | 素材 | 格式及硬限制 |
 |---|---|
@@ -93,7 +137,7 @@ R2VA 自动选比例是本地规则，不声明与官网算法一致。输出按
 
 I2VA 使用 `first_frame` 即首帧，两个字段同时提供即首尾帧。R2VA 示例须提交至 ref2va 实例。
 
-## 查询与成片
+## 兼容接口查询与成片
 
 | 方法／路径 | 用途与响应 |
 |---|---|
@@ -165,11 +209,11 @@ I2VA 使用 `first_frame` 即首帧，两个字段同时提供即首尾帧。R2V
 
 ## 验证范围
 
-CPU 回归 **46 项、242 个子用例通过**，覆盖 CLI、路由、真实图片解码（含 HEIC/HEIF）、音视频探测、受控下载、输入校验、去重和清理及原可靠性能力。测试文件：[新 MaaS](test_maas.py)、[原 MaaS 回归](test_maas_fl2va.py)、[成片发布](test_maas_artifacts.py)。
+历史 CPU 回归为 **46 项、242 个子用例通过**；V2 新增测试见 [test_maas_v2.py](test_maas_v2.py)。最新校验记录见 [V2 部署说明](../../docs/H3-MAAS-V2.md)。原回归覆盖 CLI、路由、真实图片解码（含 HEIC/HEIF）、音视频探测、受控下载、输入校验、去重和清理及原可靠性能力。测试文件：[新 MaaS](test_maas.py)、[原 MaaS 回归](test_maas_fl2va.py)、[成片发布](test_maas_artifacts.py)。
 
 ```bash
 CUDA_VISIBLE_DEVICES='' XGEN_DEVICE=cuda python -m pytest -q \
-  server/video/test_maas.py server/video/test_maas_fl2va.py server/video/test_maas_artifacts.py
+  server/video/test_maas.py server/video/test_maas_fl2va.py server/video/test_maas_artifacts.py server/video/test_maas_v2.py
 ```
 
 新比例、首尾帧、9 图及最大混合输入的 **GPU 容量、完整步数成片和人工画面／音频验收仍待完成**；历史 16:9 离线性能不能代替新 MaaS 组合的验收。

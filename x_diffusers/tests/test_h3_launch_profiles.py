@@ -38,10 +38,10 @@ def test_launcher_profile_contract(launch_env,backend,task,precision,monkeypatch
     command=['bash','example/diffusers/scripts/run_h3.sh',backend,task,'5','768p']
     result=json.loads(subprocess.check_output(command,cwd=ROOT,env=env,text=True))
     args,actual=result['args'],result['env']
-    if backend=='cuda' and task!='r2va':
-        assert args[args.index('--h3_cuda_precision')+1]==(precision or 'fp8-bf16')
+    if backend=='cuda':
+        assert args[args.index('--h3_cuda_precision')+1]==(precision or 'fp8-sage')
     else:assert '--h3_cuda_precision' not in args
-    if precision=='fp8-sage':
+    if backend=='cuda' and precision in (None,'fp8-sage'):
         assert actual['XGEN_PHAA_FP8']==actual['XGEN_H3_FUSED_OUTPUT_ADALN']=='1'
         assert actual['PYTORCH_CUDA_ALLOC_CONF']=='expandable_segments:True'
         assert actual['NCCL_MAX_CTAS']=='2'
@@ -103,22 +103,34 @@ def test_cuda5090_r2va_preset_and_explicit_overrides(launch_env):
     assert args[-3:]==['--no-h3_cuda_local_input','--h3_cuda_input_refiner_ffn','bf16']
     launch_env['H3_CUDA_PRESET']='none'
     result=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))
-    assert '--h3_cuda_preset' not in result['args']
+    assert result['args'][result['args'].index('--h3_cuda_preset')+1]=='none'
 
 
 @pytest.mark.parametrize('task',['t2va','i2va'])
-def test_cuda5090_other_tasks_do_not_silently_install_ref2va_features(launch_env,task):
+def test_cuda5090_all_workflows_select_new_default(launch_env,task):
     result=json.loads(subprocess.check_output(['bash','example/diffusers/scripts/run_h3.sh',
         'cuda-5090',task,'5','768p'],cwd=ROOT,env=launch_env,text=True))
     args=result['args']
-    assert '--h3_cuda_preset' not in args
+    assert args[args.index('--h3_cuda_preset')+1]=='sage-fp8-full-parallel'
+    assert args[args.index('--h3_cuda_adaln_mode')+1]=='auto'
     assert args[args.index('--h3_cuda_precision')+1]=='fp8-sage'
 
 
 @pytest.mark.parametrize('backend,task,resolution',[
-    ('npu','r2va','768p'),('cuda','t2va','768p'),('cuda','i2va','2k')])
+    ('npu','r2va','768p'),('cuda','i2va','2k')])
 def test_full_parallel_wrong_route_fails_before_launch(launch_env,backend,task,resolution):
     launch_env['H3_CUDA_PRESET']='sage-fp8-full-parallel'
     result=subprocess.run(['bash','example/diffusers/scripts/run_h3.sh',backend,task,'5',resolution],
         cwd=ROOT,env=launch_env,text=True,capture_output=True)
     assert result.returncode==2 and 'full-parallel' in result.stderr
+
+
+def test_table_options_are_independent_of_full_preset(launch_env):
+    launch_env.update(H3_CUDA_PRECISION='fp8-bf16', H3_CUDA_ADALN_MODE='table',
+                      H3_CUDA_ADALN_DIR='model-cache/custom')
+    result=json.loads(subprocess.check_output(['bash','example/diffusers/scripts/run_h3.sh',
+        'cuda','t2va','5','768p'],cwd=ROOT,env=launch_env,text=True))
+    args=result['args']
+    assert args[args.index('--h3_cuda_preset')+1]=='none'
+    assert args[args.index('--h3_cuda_adaln_mode')+1]=='table'
+    assert args[args.index('--h3_cuda_adaln_dir')+1]=='model-cache/custom'

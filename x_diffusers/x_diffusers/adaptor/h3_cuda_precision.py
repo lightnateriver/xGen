@@ -67,24 +67,26 @@ def resolve(args, backend):
     if input_refiner not in ('none', 'cudnn-sp', 'cudnn-sp-fp8', 'custom'):
         raise ValueError('Unknown h3_cuda_input_refiner profile')
     if input_refiner != 'none' and not portable and (backend != 'cuda'
-            or getattr(args, 'task_type', None) != 'ref2va'
+            or getattr(args, 'task_type', None) not in ('t2va', 'fl2va', 'ref2va')
             or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8)):
-        raise ValueError('h3_cuda_input_refiner requires an explicit CUDA FP8 Ref2VA SP8 profile')
+        raise ValueError('h3_cuda_input_refiner requires a CUDA FP8 H3 SP8 profile')
     if getattr(args, 'h3_cuda_precompute_conditioning', False) and not portable and (backend != 'cuda'
-            or getattr(args, 'task_type', None) != 'ref2va'
+            or getattr(args, 'task_type', None) not in ('t2va', 'fl2va', 'ref2va')
             or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8)):
-        raise ValueError('h3_cuda_precompute_conditioning requires an explicit CUDA FP8 Ref2VA SP8 profile')
+        raise ValueError('h3_cuda_precompute_conditioning requires a CUDA FP8 H3 SP8 profile')
     parallel_key = condition_parallel_key(args)
     if parallel_key[-1] not in ('none', 'long'):
         raise ValueError('Unknown h3_cuda_audio_decoder_parallel profile')
     if (any(parallel_key[:3]) or parallel_key[-1] != 'none') and (
-            not portable and (backend != 'cuda' or getattr(args, 'task_type', None) != 'ref2va'
+            not portable and (backend != 'cuda' or getattr(args, 'task_type', None) not in ('t2va', 'fl2va', 'ref2va')
             or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8))):
-        raise ValueError('H3 condition parallelism requires an explicit CUDA FP8 Ref2VA SP8 profile')
+        raise ValueError('H3 condition parallelism requires a CUDA FP8 H3 SP8 profile')
     if getattr(args, 'h3_cuda_reference_offload', False) and (
             (not portable and backend != 'cuda') or getattr(args, 'task_type', None) != 'ref2va'
             or not getattr(args, 'h3_cuda_conditioning_offload', False)):
         raise ValueError('h3_cuda_reference_offload requires CUDA FP8 Ref2VA with h3_cuda_conditioning_offload')
+    from .h3_cuda_adaln import resolve_assets
+    resolve_assets(args, backend, requested)
     args.h3_cuda_precision = requested
     from .h3_vae_config import resolve_vae_backend
     resolve_vae_backend(args)
@@ -110,11 +112,13 @@ def validate(args, backend):
             or not dist.is_initialized() or dist.get_world_size() != 8 or args.text_encoder_tp != 8):
         layout = ('world=text TP=8 and a valid DiT TP/CP layout' if new_parallel else 'world=SP=text TP=8')
         raise ValueError(f'{profile} requires CUDA BF16 {"/".join(tasks)} and {layout}')
-    conflicts = ('h3_nvfp4_checkpoint', 'h3_nvfp4_resident', 'h3_nvfp4_compile', 'transformer_path',
-                 'adaln_cache_file', 'h3_turbo8', 'h3_turbo_sla_lora', 'h3_refiner', 'lora_path_list',
+    conflicts = ('h3_nvfp4_checkpoint', 'h3_nvfp4_resident', 'h3_nvfp4_compile',
+                 'h3_turbo8', 'h3_turbo_sla_lora', 'h3_refiner', 'lora_path_list',
                  'fsdp', 'inf_vram_blocks_num', 'cache_dit')
     if any(getattr(args, name, None) for name in conflicts) or args.atten != 'none' or args.matmul_quant != 'none':
         raise ValueError(f'{profile} cannot combine with packed weights, LoRA, caches or other attention/quantization recipes; use --h3_cuda_precision none')
+    from .h3_cuda_adaln import validate_options
+    validate_options(args)
     if not new_parallel and args.h3_cuda_precision == 'fp8-bf16' and getattr(args, 'h3_cuda_phaa_fp8', os.environ.get('XGEN_PHAA_FP8') == '1'):
         raise ValueError('fp8-bf16 requires BF16 communication; unset XGEN_PHAA_FP8')
     if type(args.phaa_num) is not int or args.phaa_num < 1:
@@ -170,6 +174,8 @@ def validate_manager(manager, args, backend):
         raise ValueError('Restart the service to change h3_cuda_precision')
     if profile != 'none':
         validate(args, backend)
+        if manager.pipe is not None and bool(getattr(args, 'adaln_cache_file', None)) != bool(getattr(getattr(manager.pipe, 'transformer', None), '_h3_cuda_adaln_table', False)):
+            raise ValueError('Restart the manager to change CUDA AdaLN table mode')
     from .h3_cuda_options import startup_key
     key = startup_key(args)
     from .h3_features import enabled as portable_enabled
@@ -208,6 +214,14 @@ def prepare_transformer(pipe, args, device):
     from x_base.operator.h3_fp8 import H3FP8Linear
 
     model = pipe.transformer
+    table_mode = bool(getattr(args, 'adaln_cache_file', None))
+    if table_mode:
+        from pathlib import Path
+        from .h3_cuda_adaln import assert_weights_absent
+        assert_weights_absent(model)
+        model._h3_cuda_adaln_table = True
+        model._h3_cuda_adaln_checkpoint = str(Path(args.transformer_path).resolve())
+        model._h3_cuda_adaln_load_count = 0
     config = None
     if getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp'):
         from .h3_parallel import initialize
@@ -244,9 +258,11 @@ def prepare_transformer(pipe, args, device):
                 original = getattr(parent, name)
                 setattr(parent, name, H3FP8Linear(original.weight, original.bias))
         converted += 4
-        block.adaln_proj = H3OwnedAdaLN(block.adaln_proj, index, exact_cache=True)
+        if not table_mode:
+            block.adaln_proj = H3OwnedAdaLN(block.adaln_proj, index, exact_cache=True)
         attn._h3_attention_backend = attention_backend
-    model.time_embedder.register_forward_hook(check_shared_timestep)
+    if not table_mode:
+        model.time_embedder.register_forward_hook(check_shared_timestep)
     # These fusions preserve the ordinary BF16/FP8 Linear interfaces. Packed FP4 FFN fusions do not.
     from .h3_cuda import install_dit_fusions
 
@@ -289,8 +305,8 @@ def prepare_transformer(pipe, args, device):
     if getattr(args, 'h3_cuda_local_output', False):
         model._h3_cuda_local_output = True
         logger.info('Experimental H3 SP local output enabled: FP32 prediction gather, original block loop unchanged')
-    logger.info('H3 CUDA precision=%s FP8_main_projections=%d resident_blocks=%d AdaLN=rank-owner exact_cache=%s GEMM=torch._scaled_mm',
-                args.h3_cuda_precision, converted, resident, True)
+    logger.info('H3 CUDA precision=%s FP8_main_projections=%d resident_blocks=%d AdaLN=%s GEMM=torch._scaled_mm',
+                args.h3_cuda_precision, converted, resident, 'BF16 table, weights absent' if table_mode else 'rank-owner exact_cache=True')
 
 
 def retain_module(module,device):

@@ -2,7 +2,7 @@
 
 使用 `XGEN_DEVICE=cuda` 启动现有 CLI 或 HTTP 服务。省略该变量时选择 NPU。设备由启动环境决定，HTTP 请求沿用现有生成参数。
 
-默认 Base / MaaS 配方为 [fp8-bf16](H3-CUDA-PRECISION.md)：FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻。完整模块权重不需要 NVFP4、FlashInfer、Sage、Sparge 或 Comfy-Kitchen；下述 NVFP4 段落为保留的显式历史路线。用 `--h3_cuda_precision none` 回到旧路径。
+v0.5 八卡 CUDA Base / MaaS 默认改为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-V05-CUDA-UPGRADE.md)，需相应表及剔除权重后的 Transformer。原 [fp8-bf16](H3-CUDA-PRECISION.md) 作为精度参考保留，可显式选择；本页 NVFP4 为独立历史路线。用 `--h3_cuda_precision none --h3_cuda_preset none` 回到旧路径。
 
 CUDA 第二套标准方案为 [Sage-FP8](H3-CUDA-SAGE.md)：相同 FP8 Linear、Sage attention、FP8 双向通信、输出调制融合和 expandable segments。八卡 5090 的 5/10/15 秒 T2VA / I2VA、20 步实测更快，人工画面与听音待审核。通用脚本用 `H3_CUDA_PRECISION=fp8-sage` 一次选择完整组合，原默认方案继续保留。
 
@@ -100,7 +100,7 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
 
 ### MaaS 在线服务
 
-默认采用 [fp8-bf16 配方](H3-CUDA-PRECISION.md)，无需 NVFP4 文件。复制 [MaaS 配置](../example/diffusers/configs/h3_maas.example.json) 并填写完整 FL2VA 模块目录。在未设置旧 FP8 通信环境变量的新终端启动：
+默认采用 Sage-FP8 全并行 Streaming + AdaLN 表，无需 NVFP4 文件。复制 [MaaS 配置](../example/diffusers/configs/h3_maas.example.json)，填写完整 FL2VA 模块、可信 native VAE 目录，并按 [AdaLN 教程](H3-CUDA-ADALN.md) 准备缓存资产。在干净的新终端启动：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 --max_restarts=0 \

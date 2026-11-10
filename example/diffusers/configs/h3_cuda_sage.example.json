@@ -18,5 +18,7 @@
   "transformer_path": null,
   "adaln_cache_file": null,
   "h3_vae_model_path": "weights/h3-native/video_vae",
-  "h3_vae_trust_remote_code": true
+  "h3_vae_trust_remote_code": true,
+  "h3_cuda_preset": "none",
+  "h3_cuda_adaln_mode": "owner"
 }

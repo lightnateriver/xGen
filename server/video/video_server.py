@@ -3525,7 +3525,7 @@ def _apply_ten_second_config_args(args) -> None:
 def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None:
     """Apply MiniMax-H3 specific command line arguments."""
     from x_diffusers.adaptor.h3_cuda_options import STARTUP_OPTIONS
-    for name in ('h3_vae_backend', 'h3_vae_model_path', 'h3_vae_trust_remote_code'):
+    for name in ('h3_vae_backend', 'h3_vae_model_path', 'h3_vae_trust_remote_code', 'h3_reference_image_short_edge'):
         value = getattr(args, name, None)
         if value is not None:
             service.default_config[name] = value
@@ -3640,6 +3640,8 @@ def main():
     add_h3_attention_arguments(parser, offline=False)
     from x_diffusers.adaptor.h3_cuda_options import add_arguments as add_cuda_arguments
     add_cuda_arguments(parser, service=True)
+    parser.add_argument('--h3_reference_image_short_edge', type=int, default=None,
+                        help='Ref2VA Base reference image short edge, 32..2048 in multiples of 32; default 2048')
 
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Service host')
     parser.add_argument('--port', type=int, default=5001, help='Service port')
@@ -3749,10 +3751,24 @@ def main():
 
     # Only process startup may set allocator/NCCL defaults. _build_args does
     # not mutate the environment while validating a live worker's request.
-    preset = args.h3_cuda_preset
-    if preset is None and args.config and os.path.isfile(args.config):
+    startup_config = {}
+    if args.config and os.path.isfile(args.config):
         with open(args.config, encoding='utf-8') as config_file:
-            preset = json.load(config_file).get('h3_cuda_preset')
+            startup_config = json.load(config_file)
+    preset = args.h3_cuda_preset if args.h3_cuda_preset is not None else startup_config.get('h3_cuda_preset')
+    if (args.model or startup_config.get('model')) == 'MiniMax-H3' and device_type() == 'cuda':
+        from types import SimpleNamespace
+        from x_diffusers.adaptor.h3_cuda_options import select_default_recipe
+        effective = dict(DEFAULT_MINIMAX_H3_CONFIG, **startup_config)
+        explicit = {parser._option_string_actions[token.split('=', 1)[0]].dest
+                    for token in sys.argv[1:] if token.split('=', 1)[0] in parser._option_string_actions}
+        effective.update({key: getattr(args, key) for key in explicit})
+        effective['h3_cuda_preset'] = preset
+        if args.no_phaa:
+            effective['phaa_num'] = None
+        startup = SimpleNamespace(**effective)
+        select_default_recipe(startup, 'cuda')
+        preset = startup.h3_cuda_preset
     if preset not in (None, 'none'):
         from x_diffusers.adaptor.h3_cuda_options import bootstrap_preset_environment
         bootstrap_preset_environment(preset)

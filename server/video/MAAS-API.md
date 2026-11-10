@@ -1,5 +1,7 @@
 # H3 MaaS API（V2 与兼容接口）
 
+> v0.5 八卡 CUDA H3 Base 默认使用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表；需先[准备匹配资产](../../docs/H3-CUDA-ADALN.md)。`h3_cuda_adaln_mode`、`h3_cuda_adaln_dir` 是启动配置，不是请求字段。目录模式按实际步数选表；显式固定表仍须步数匹配。NPU 配方及 API 输入限制不变。
+
 `--init --maas` 开启 CUDA H3 Base 的输入校验、排队、探针和成片发布。旧 CLI 开关 `--maas-fl2va-input` 是弃用别名；不开 MaaS 时普通入口保持原有行为。
 
 这里的 MaaS 指 xGen 的服务模式开关。上层 MaaS 平台负责客户鉴权、调度和计费，V2 定义两层之间的 HTTP 路径和字段，CUDA/NPU 是执行模型的后端。**V2 协议不限定 CUDA；当前 `--maas` 的实现仍有 CUDA-only 启动校验，尚不能据此启动 NPU V2 服务。** [分层及开关说明](../../docs/H3-MAAS-V2.md#接口平台与计算后端)。

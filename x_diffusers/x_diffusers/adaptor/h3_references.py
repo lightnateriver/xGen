@@ -2,6 +2,7 @@
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +15,25 @@ LIMITS = {"image": 9, "video": 3, "audio": 3}
 MAX_FILES = 12
 MIN_SECONDS = 2
 MAX_SECONDS = 15
+
+
+def configure_reference_image_size(pipe, args):
+    """Opt into the upstream resize config; do not replace either encoder path."""
+    edge = getattr(args, "h3_reference_image_short_edge", None)
+    if edge is None:
+        return
+    if getattr(args, "task_type", None) != "ref2va" or getattr(args, "h3_refiner", False):
+        raise ValueError("h3_reference_image_short_edge currently supports Ref2VA Base only")
+    if type(edge) is not int or not 32 <= edge <= 2048 or edge % 32:
+        raise ValueError("h3_reference_image_short_edge must be an integer multiple of 32 in [32, 2048]")
+    if "reference_image_short_edge" not in pipe.config:
+        raise ValueError("This Diffusers pipeline does not expose reference_image_short_edge; upgrade the H3 runtime")
+    previous = pipe.config["reference_image_short_edge"]
+    pipe.update_components(reference_image_short_edge=edge)
+    logging.getLogger(__name__).info(
+        "Experimental H3 reference image short edge: %s -> %d; shared VAE/Qwen input, output canvas unchanged",
+        previous, edge,
+    )
 
 
 def media_kind(path):
@@ -113,6 +133,10 @@ def select_reference_adaln(pipe, args):
 
 
 def select_adaln(pipe, args, conditioning):
+    if getattr(pipe.transformer, '_h3_cuda_adaln_table', False):
+        from .h3_cuda_adaln import select_table
+        select_table(pipe, args, conditioning)
+        return
     cache = getattr(pipe.transformer, "_adaln_cache", None)
     if cache is not None and cache._conditioning_type != conditioning:
         from x_base.adaln_cache import install_adaln_cache

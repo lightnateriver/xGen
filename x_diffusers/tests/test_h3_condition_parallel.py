@@ -28,7 +28,9 @@ def test_cuda_precision_guards_remain_separate_from_shared_scheduling(name):
                 h3_parallel_mode='sp', h3_vae_backend='legacy')
     base[name] = 'long' if name.endswith('decoder_parallel') else True
     assert precision.resolve(SimpleNamespace(**base), 'cuda') == 'fp8-sage'
-    for changes, backend in ((dict(task_type='t2va'), 'cuda'), (dict(sp=4), 'cuda'),
+    for task in ('t2va', 'fl2va'):
+        assert precision.resolve(SimpleNamespace(**(base | dict(task_type=task))), 'cuda') == 'fp8-sage'
+    for changes, backend in ((dict(task_type='t2v'), 'cuda'), (dict(sp=4), 'cuda'),
                              ({}, 'npu')):
         with pytest.raises(ValueError):
             precision.resolve(SimpleNamespace(**(base | changes)), backend)

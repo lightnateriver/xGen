@@ -1,5 +1,7 @@
 # MiniMax-H3 在线服务
 
+> v0.5 八卡 CUDA H3 Base 默认使用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表；需先[准备匹配资产](H3-CUDA-ADALN.md)。`h3_cuda_adaln_mode`、`h3_cuda_adaln_dir` 是启动配置，不是请求字段。目录模式按实际步数选表；显式固定表仍须步数匹配。NPU 配方及 API 输入限制不变。
+
 从仓库根目录执行。先按 [权重下载](../README.md#h3-权重下载) 准备模型和素材，并用 `python tools/collect_env.py` 确认当前环境能看到八张卡。以下示例绑定本机，默认端口为 5001。每次选择一个服务启动。
 
 ## 选择服务
@@ -42,7 +44,7 @@ R2VA 单独启动。使用 `example/diffusers/configs/h3_npu_ref2va.example.json
 
 ## CUDA Base
 
-默认配置为 [fp8-bf16](H3-CUDA-PRECISION.md)：FP8 Linear、BF16 稠密 attention / 通信、文本 TP8、50 层常驻。准备包含完整 Transformer 的 `weights/base`。T2VA 使用 `--service-mode t2va`，该模式同时接受 T2VA / I2VA；只服务 I2VA 时使用 fl2va。R2VA 使用独立 ref2va 模式及包含 transformer_ref 的模型目录，继续走旧路线。需要回退时，在配置中设置 `"h3_cuda_precision":"none"` 或启动时加同名 CLI 参数。
+默认配置为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-CUDA-ADALN.md)。准备完整 Base 模块、相应 FL2VA／Ref2VA 表及剔除权重后的 Transformer。T2VA 使用 `--service-mode t2va`，同时接受 T2VA / I2VA；只服务 I2VA 用 fl2va。R2VA 独立使用 ref2va 模式和对应资产。保留的 [fp8-bf16 JSON](../example/diffusers/configs/h3_cuda_bf16.example.json) 可直接回退原精度方案；改变配方需重启服务。
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
@@ -52,7 +54,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 ### CUDA 标准方案二：Sage-FP8
 
-方案一继续作为默认精度参考。方案二复用相同服务接口，采用 Sage attention、FP8 通信、输出调制融合和 expandable segments。修改 [Sage 配置](../example/diffusers/configs/h3_cuda_sage.example.json) 中的模型目录后，从新终端启动：
+以下为保留的 Sage 基础方案，显式关闭全并行预设和表。复用相同服务接口，采用 Sage attention、FP8 通信、输出调制融合和 expandable segments。修改 [Sage 配置](../example/diffusers/configs/h3_cuda_sage.example.json) 中的模型目录后，从新终端启动：
 
 ```bash
 XGEN_DEVICE=cuda XGEN_PHAA_FP8=1 XGEN_H3_FUSED_OUTPUT_ADALN=1 \

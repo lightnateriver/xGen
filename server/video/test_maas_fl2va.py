@@ -290,7 +290,7 @@ class H3BaseDurationTests(unittest.TestCase):
                 task = self.service.task_queue.get_nowait()["data"]
                 self.assertEqual(task["duration"], 15)
                 self.assertEqual(task["frames"], 360)
-                self.assertEqual(task["num_inference_steps"], 50)
+                self.assertEqual(task["num_inference_steps"], self.service.default_config["num_inference_steps"])
 
     def test_base_duration_outside_range_or_fractional_is_rejected(self):
         for duration in (3, 15.5, 16):

@@ -17,7 +17,9 @@
   "transformer_path": null,
   "adaln_cache_file": null,
   "h3_cuda_vae_sp": true,
-  "h3_cuda_precision": "fp8-bf16",
+  "h3_cuda_precision": "auto",
   "h3_vae_model_path": "weights/h3-native/video_vae",
-  "h3_vae_trust_remote_code": true
+  "h3_vae_trust_remote_code": true,
+  "h3_cuda_preset": "sage-fp8-full-parallel",
+  "h3_cuda_adaln_mode": "auto"
 }

@@ -8,11 +8,9 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 ## 版本
 
-CUDA H3 Base 的 T2VA / I2VA 默认采用 [fp8-bf16 配方](docs/H3-CUDA-PRECISION.md)：FP8 Linear 与文本 TP8、BF16 attention / 通信、50 层 DiT 常驻，以及 VAE 和音频内存修复。v0.5 NPU Base 默认采用 Laser INT8 + Stream；可显式选择旧 CUDA 路径。
+v0.5 的八卡 CUDA H3 Base 默认采用 **Sage-FP8 全并行 Streaming + BF16 AdaLN 缓存表**，统一覆盖 T2VA、I2VA／首尾帧和 R2VA：主干 SP8、文本 FP8 TP8、FP8 Linear／PHAA、组件并行、50 层 DiT 常驻与 `native-stream` 解码。需先准备对应工作流的表及剔除 AdaLN 权重后的 checkpoint。[默认配置与差异](docs/H3-V05-CUDA-UPGRADE.md) · [AdaLN 准备与回退](docs/H3-CUDA-ADALN.md)
 
-CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage attention、FP8 双向通信、输出 AdaLN 调制融合和 `expandable_segments`。八卡 5090 的 5/10/15 秒、20 步 T2VA / I2VA 实测更快，六条成片均完整解码通过；人工画面、口型和听音审核仍待完成。原精度认可方案继续保留为默认。
-
-v0.4 提供面向八卡 RTX 5090 R2VA 的优选 [Sage-FP8 全并行配置](docs/H3-CUDA-COMPOSABLE.md)：用 `cuda-5090 r2va` 显式选择，加入 SAP、本地输入、请求内条件复用、组件并行和去 BF16 临时副本，DiT 全程常驻。每项可单独关闭；原 `cuda`／`npu` 命令不自动开启。当前范围为八卡 Ref2VA 768P；组合正确性、显存容量和人工精度以各自实测记录为准。
+原 [fp8-bf16 精度参考方案](docs/H3-CUDA-PRECISION.md) 和 [Sage-FP8 基础方案](docs/H3-CUDA-SAGE.md) 保留，可显式选择。新默认的技术解码、抽帧诊断与人工画面／音频验收分别记录，不沿用旧样例的人工认可结论。v0.5 NPU Base 继续采用 Laser INT8 + Stream；本次 CUDA 默认调整不改变 NPU 配方。
 
 H3 视频 decoder 支持 CUDA/NPU 共用的 legacy、lightning、native-stream 三后端。CUDA 推荐的 T2VA/I2VA/R2VA 配方默认 native-stream，保留显式回退；v0.5 NPU Base 默认也使用 native-stream。[后端配置与验证范围](docs/H3-OMNI-VAE.md)
 
@@ -26,7 +24,7 @@ v0.4 的 `--maas` 提供 MiniMax-H3 V2 格式的生成、查询、列表及取�
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v0.5](../../tree/v0.5) | NPU Base 默认 Laser INT8 + Stream、20实际步、SP8、硬件无关全并行调度；Stream Linear FP16存储在CUDA/NPU共用。保留显式后端回退，2K Refiner与CUDA配方独立。 | [NPU默认与升级](docs/H3-NPU-DEFAULT.md) · [复测](docs/performance/h3-native-shared-fp16.md) · [通用适配](docs/H3-PORTABLE.md) |
+| [v0.5](../../tree/v0.5) | CUDA Base 默认 Sage-FP8 全并行 Streaming + AdaLN 表，覆盖 T2VA/I2VA/R2VA；保留旧精度回退。NPU Base 默认 Laser INT8 + Stream、20实际步、SP8，共用通用调度与 Stream FP16存储。 | [NPU默认与升级](docs/H3-NPU-DEFAULT.md) · [复测](docs/performance/h3-native-shared-fp16.md) · [通用适配](docs/H3-PORTABLE.md) |
 | [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用及组件并行，DiT 全程常驻；各项可独立关闭。新增统一 `--maas`、多模态输入校验、首尾帧、768P 自适应比例和公网素材下载。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [MaaS API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) |
 | [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
@@ -89,56 +87,38 @@ bash example/diffusers/scripts/run_h3.sh npu r2va 15 2k
 
 ### NVIDIA CUDA 启动
 
-#### RTX 5090 R2VA 优选：Sage-FP8 全并行
+#### 八卡 RTX 5090：Sage-FP8 全并行 Streaming + AdaLN 表
 
-适用于八卡 RTX 5090、R2VA、768P。使用完整 Ref2VA 权重；不需要 NVFP4、稀疏权重或离线 AdaLN 表。先设置模型目录和自己的 H3 prompt：
+先安装 [CUDA 依赖](docs/H3-CUDA-PRECISION.md#模型与环境)，按 [AdaLN 教程](docs/H3-CUDA-ADALN.md) 为 FL2VA 和 Ref2VA 分别准备 20／50 步表及剔除权重的 checkpoint。缺少资产会明确报错，不会静默退回其他方案。
 
 ```bash
-export BASE_MODEL=weights/h3-ref2va
+export BASE_MODEL=weights/h3-fl2va
 export PROMPT_FILE=inputs/prompt.txt
 export H3_VAE_MODEL_PATH=weights/h3-native/video_vae
 export H3_VAE_TRUST_REMOTE_CODE=1
 export H3_BASE_STEPS=20
-bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
-```
-
-生成五图参考的 15 秒视频：
-
-```bash
-bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 15 768p inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
-```
-
-`cuda-5090` 是脚本的位置参数，不是 `--cuda-5090`。R2VA 时自动启用 `sage-fp8-full-parallel`；主干仍为 SP8，DiT 全程常驻。CUDA 推荐的 T2VA/I2VA/R2VA 配方现在均默认使用 `native-stream` decoder，需上面的原生 VAE 目录和授权；可用 `H3_VAE_BACKEND=legacy` 或 `lightning` 显式切换，并取消原生 VAE 的路径和授权变量。v0.5 NPU Base 默认也使用 native-stream。全部单项开关、关闭预设、内存代价和在线 JSON 见 [完整教程](docs/H3-CUDA-COMPOSABLE.md)。原 `cuda` 命令不会自动启用 R2VA 全并行预设；v0.5 `npu` Base命令默认开启通用full-parallel与Stream，详见[NPU默认方案](docs/H3-NPU-DEFAULT.md)。
-
-历史 legacy decoder 已测 768P、20 步：单图 5/10 秒 55.97/97.54s，五图 5/10/15 秒 139.67/224.81/316.49s；峰值 allocated 27.93–28.33 GiB/卡。耗时含生成保存，不含初始化和预热；这些数据不代表切换 native-stream 后的整网性能。技术检查与抽帧通过，完整动态、口型和人工听音仍待复核。[性能表及口径](docs/performance/h3-cuda5090-full-parallel.md)
-
-该CUDA全并行预设当前只面向 R2VA 768P。T2VA/I2VA和其他CUDA设备请使用各自方案，NPU使用v0.5独立默认方案；不能套用 R2VA 的性能与精度结论。
-
-#### 原 CUDA 路线和 T2VA / I2VA
-
-先准备 [完整 FL2VA 权重和依赖](docs/H3-CUDA-PRECISION.md#模型与环境)。CUDA 768P 的 T2VA / I2VA 默认使用 **FP8 Linear、BF16 attention / 通信、文本 TP8、PHAA2、50 层常驻**，八卡启动。5 秒、20 步样例已获人工精度认可；R2VA 保留原路线，精度仍待验证。建议先从 5 秒试跑。
-
-| 标准方案 | 选择方式 | 适用范围与审核状态 |
-|---|---|---|
-| 一：精度参考 `fp8-bf16` | 默认，不需新增开关 | 八卡 T2VA / I2VA；5 秒、20 步固定样例人工精度认可 |
-| 二：更高性能 `fp8-sage` | 命令前加 `H3_CUDA_PRECISION=fp8-sage` | 八卡 T2VA / I2VA 768P，5/10/15 秒、20 步技术通过；人工精度待审 |
-
-```bash
-bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
-bash example/diffusers/scripts/run_h3.sh cuda r2va 5 768p
+bash example/diffusers/scripts/run_h3.sh cuda i2va 10 768p inputs/first-frame.png
 ```
 
-用 `H3_BASE_STEPS=20` 可做 20 步复测；用 `H3_CUDA_PRECISION=none` 显式回到旧 CUDA 路径。长视频须单独验证峰值和画质。
-
-**方案二：Sage-FP8。** 脚本自动开启 FP8 通信、输出 AdaLN 融合和 `expandable_segments`，无需再拼接环境变量。准备对应时长的 prompt 后，时长可改为 `5`、`10` 或 `15`。下面按已测的 20 步启动：
+R2VA 切换完整模型及相应 Ref2VA 表，示例为五张参考图：
 
 ```bash
-H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
-H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
+export BASE_MODEL=weights/h3-ref2va
+bash example/diffusers/scripts/run_h3.sh cuda r2va 15 768p inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
 ```
 
-两套方案均使用 FP8 Linear 和文本 TP8、50 层常驻及 VAE 空间 tile。方案二需安装 SageAttention CUDA 扩展；不是 NVFP4 或稀疏方案。本段是 T2VA/I2VA 的原 Sage 配方；R2VA 全并行另见上文。2K、四卡及在线端到端的验证范围分别记录，不能复用离线结果。范围见 [方案二教程](docs/H3-CUDA-SAGE.md)。
+时长可填 `5`、`10`、`15`，`cuda-5090` 与 `cuda` 在 Base 768P 使用相同默认。仅对可信的原生 `video_vae` 目录开启授权；它不是 Diffusers 的 `vae` 子目录。参考图短边默认仍为 2048，可用 [独立参数](docs/H3-REFERENCE-IMAGE-SIZE.md) 调整。
+
+| 方案 | 选择方式 |
+|---|---|
+| 新默认：Sage-FP8 全并行 Streaming + AdaLN 表 | 上述命令；自动按实际步数选对应表 |
+| 保留全并行，关闭 AdaLN 表 | 命令前加 `H3_CUDA_ADALN_MODE=owner` |
+| 原精度参考：FP8 Linear + BF16 attention／通信 | 命令前加 `H3_CUDA_PRECISION=fp8-bf16` |
+| 原 Sage-FP8 基础方案 | `H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage` |
+| 原始 CUDA 路径 | `H3_CUDA_PRECISION=none` |
+
+单项开关仍可自由组合，见 [全并行配置](docs/H3-CUDA-COMPOSABLE.md)。本方案为 SP8，不默认开启实验 TP/CP、NVFP4 或稀疏 attention。历史和最新性能的预热、AdaLN 模式及精度范围见 [Streaming 矩阵](docs/performance/h3-cuda-streaming-matrix.md)。
 
 开发中的 [TP2 + Ulysses CP4 备选路线](docs/H3-CUDA-TP-CP.md) 使用独立开关，默认仍为原 SP。它复用现有推理链路，分别配置 TP/CP 的 BF16 或 FP8 传输；合成单层验证与完整视频性能、人工精度验收分开记录，不能沿用上表的成片结论。
 
@@ -237,11 +217,13 @@ H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|nativ
 | xGen NVFP4 Base＋Sparge/FP8 PHAA＋Refiner | I2VA，5s/2K | 172.03 s | rank 0 请求周期，Base 50＋Refiner 3 次 DiT |
 | xGen 原生 attention＋Refiner | I2VA，10s/2K | 606.24 s | 历史服务推理计时，同实例从 5 秒切换到 10 秒 |
 | xGen MaaS 早期八卡 HTTP 测试 | I2VA，5s/768P | 51.655 s | 一条热态成功请求，从受理到发布。推理 50.232 s |
-| xGen 当前默认 fp8-bf16 | T2VA，5s/768P，**20 步** | 56.75 s | 历史常驻生成至保存，取最慢 rank；本轮样例人工精度可接受 |
-| xGen 当前默认 fp8-bf16 | I2VA，5s/768P，**20 步** | 72.67 s | 同组模型复用；首次图像条件请求，样例人工精度可接受 |
-| xGen CUDA R2VA | 五图，768P | — | 待完整推理、音视频复核和计时 |
+| xGen 历史 fp8-bf16 | T2VA，5s/768P，**20 步** | 56.75 s | 历史常驻生成至保存，取最慢 rank；本轮样例人工精度可接受 |
+| xGen 历史 fp8-bf16 | I2VA，5s/768P，**20 步** | 72.67 s | 同组模型复用；首次图像条件请求，样例人工精度可接受 |
+| xGen CUDA R2VA Streaming | 五图，5s/768P，20步 | 133.69 s | 常驻、完整20步预热后正式；AdaLN表模式，人工完整视听待审，见下表链接 |
 
 [详细 GPU 性能与对照口径](docs/performance/h3-cuda.md)
+
+最新 **Sage-FP8 全并行 Streaming** 的 12 项 20 步结果见 [完整表格](docs/performance/h3-cuda-streaming-matrix.md)：包含 T2VA/I2VA/单图及五图 R2VA 的 5/10/15 秒。每项均先完整预热 20 步，owner／table 分行标明，不能混算查表收益。Max 多媒体压力样例仍在视觉阶段 OOM，不能承诺满载容量。
 
 **CUDA 两套标准方案的历史 20 步参考（legacy decoder）**：8×RTX 5090、SP8、768P；单位为生成至 MP4 保存的秒数，不含模型初始化。Sage 每项先完整预热 1 步，复用同一组模型。历史基线的预热条件存在差异，比较的是整套配方，不能归因为单个算子收益。方案一仅 5 秒样例已人工认可，Sage 六项均为技术通过、人工待审；这些数据不代表新默认 native-stream 组合。
 
@@ -256,7 +238,7 @@ H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|nativ
 
 方案一的 15 秒行额外开启输出 AdaLN 融合和 `expandable_segments`，不是未加开关的默认路径。15 秒峰值 allocated 仍约 29.88 / 30.00 GiB/卡，Sage 主要提速，没有明显降低该形状的峰值。详细阶段、显存和预热口径见 [六项实测](docs/H3-CUDA-SAGE.md#性能与验证)。
 
-整理后的默认配置另做了八卡 20 步回归：T2VA 57.67 s、I2VA 88.70 s。两条 MP4 均与上述人工认可样例的文件哈希完全一致；新机器首次图像条件请求没有单独预热，具体口径见详细记录。
+历史 fp8-bf16 配置另做了八卡 20 步回归：T2VA 57.67 s、I2VA 88.70 s。两条 MP4 均与上述人工认可样例的文件哈希完全一致；新机器首次图像条件请求没有单独预热。这不是本次全并行 Streaming + 表模式的性能。
 
 ## 在线服务
 
@@ -274,7 +256,7 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
 
 ### CUDA 在线
 
-普通 768P I2VA 默认使用 FP8 Linear＋BF16 attention。它与 NPU Base 使用同一套提交、查询和下载接口。
+八卡 CUDA 768P Base 默认使用 Sage-FP8 全并行 Streaming + AdaLN 表。它与 NPU Base 使用同一套原 HTTP 提交、查询和下载接口。
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
@@ -284,7 +266,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 原服务用 `/generate` 提交。Base HTTP 接受 5 至 15 秒的整数时长。 [各任务的请求和下载示例](docs/H3-ONLINE.md#提交原服务请求)
 
-Sage-FP8 在线启动配置见 [方案二在线说明](docs/H3-CUDA-SAGE.md#在线服务)。它复用原接口，属于尚未完成在线端到端实测的部署示例；上述六项性能来自离线常驻请求。
+在线 JSON 默认示例已改为全并行 Streaming + AdaLN 表；[表资产与回退](docs/H3-CUDA-ADALN.md) 同离线入口。HTTP/MaaS 的排队、下载及网络耗时不包含在离线性能中；不要将离线常驻 E2E 当作 HTTP SLA。
 
 ### 2K 在线
 
@@ -298,7 +280,7 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
 
 ### MaaS 在线服务
 
-MaaS 支持 CUDA H3 Base T2VA/I2VA 和独立部署的 R2VA，输出 768P、5～15 秒，可使用自适应比例；步数以启动配置为准。默认采用 fp8-bf16；准备好完整 FL2VA/Base 模块权重后启动：
+MaaS 支持 CUDA H3 Base T2VA/I2VA 和独立部署的 R2VA，输出 768P、5～15 秒，可使用自适应比例；步数以启动配置为准。默认采用 Sage-FP8 全并行 Streaming + AdaLN 表；准备好 FL2VA/Base 模块、匹配的表及剔除权重后的 Transformer 后启动：
 
 ```bash
 pip install -r server/requirements-maas.txt

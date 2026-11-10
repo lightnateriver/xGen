@@ -88,7 +88,7 @@ def test_residency_modes_are_exclusive(residency):
 
 
 def test_all_startup_switches_cannot_change_after_loading_but_inputs_can():
-    args=settings(); manager=SimpleNamespace(pipe=None)
+    args=settings(h3_cuda_adaln_mode='owner'); manager=SimpleNamespace(pipe=None)
     with patch.object(precision.dist,'is_initialized',return_value=True),patch.object(precision.dist,'get_world_size',return_value=8):
         precision.validate_manager(manager,args,'cuda'); manager.pipe=object()
         per_request=deepcopy(args);per_request.frames=243;per_request.prompt='another prompt';per_request.reference_paths=['other.png']

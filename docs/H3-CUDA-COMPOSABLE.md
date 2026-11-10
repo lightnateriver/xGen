@@ -1,10 +1,12 @@
-# RTX 5090 R2VA 优选：Sage-FP8 全并行
+# RTX 5090：Sage-FP8 全并行 Streaming
 
-新增预设名为 `sage-fp8-full-parallel`，通过原 CLI、InferenceManager 和 HTTP 服务加载，沿用同一个 H3 DiT 循环、VAE 和输出链路。旧 `cuda`／`npu` 命令及 `auto` 精度默认行为保留。新预设目前面向八卡 RTX 5090、H3 Ref2VA、768P；不是所有输入都保证显存足够，生成成功也不等于人工精度审核通过。
+v0.5 八卡 CUDA H3 Base 默认采用 `sage-fp8-full-parallel`、`native-stream` 和 BF16 AdaLN 表，覆盖 T2VA、I2VA／首尾帧、R2VA。复用原 CLI、InferenceManager、HTTP 服务及同一个 H3 DiT 循环。NPU 保留 v0.5 的 Laser INT8 + Stream 配方；其他模型、2K、NVFP4 和显式旧精度配方不自动套用。
+
+先完成 [AdaLN 资产准备](H3-CUDA-ADALN.md)。表替代对应的时间编码／投影权重，主 DiT 全部常驻；每项组件优化仍可单独关闭。最大输入限制不等于显存容量保证，技术生成也不等于人工精度认可。
 
 ## 最简单的启动方式
 
-先按根 README 准备 Ref2VA 原始模型、参考图和 H3 prompt。路径由环境变量指定，下面的路径相对于仓库根目录。
+先按根 README 准备 Ref2VA 完整模型、对应 AdaLN 表、参考图和 H3 prompt。路径由环境变量指定，下面的路径相对于仓库根目录。
 
 ```bash
 export BASE_MODEL=weights/h3-ref2va
@@ -19,9 +21,9 @@ bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 
 新预设默认使用：主干 SP8、Sage attention、FP8 W8A8 Linear、文本 FP8 TP8、PHAA2 双向 FP8、直接 stride 打包、SAP 本地 FP32 输出、本地输入投影、请求内固定条件复用、Token Refiner SP8/cuDNN BF16/FP8 FFN、视觉 SP8、VAE Encoder tile 分工、Audio Encoder 卷积分工和长音频 Decoder 分工。DiT 全部常驻 GPU，包括条件编码和 VAE 阶段。视频 decoder 默认改为 `native-stream`：原生 decoder、FP16 autocast、全 rank tile 分派、分块 RGB8 和异步 D2H/编码；输出头及音频计算的既有精度不变。Audio Decoder 的 `long` 在 5 秒形状走原实现；Audio Encoder 在没有参考音频时不会执行。
 
-`video_vae` 是独立的原生模型目录，不是 Diffusers `vae` 子目录。授权变量只应用于可信模型代码。新后端初始化更慢，CPU master 和显存代价见 [VAE 教程](H3-OMNI-VAE.md)。历史整网性能表使用 legacy decoder，不能算作本次新默认配置的性能或精度验收。
+`video_vae` 是独立的原生模型目录，不是 Diffusers `vae` 子目录。授权变量只应用于可信模型代码。新后端初始化更慢，CPU master 和显存代价见 [VAE 教程](H3-OMNI-VAE.md)。[最新 Streaming 矩阵](performance/h3-cuda-streaming-matrix.md) 区分 owner 与 table；历史 legacy decoder 表单独保留。
 
-CUDA 推荐配方仅把 native decoder 的 Linear 预存为 FP16，其他参数保持 FP32，计算仍是 FP16 autocast；复用旧解码器同一策略以减少静态占用。解码前释放请求内条件结果并回收空闲缓存，DiT 仍全常驻。NPU 默认和原生 FP32 组件测量路径不变。
+CUDA 推荐配方仅把 native decoder 的 Linear 预存为 FP16，其他参数保持 FP32，计算仍是 FP16 autocast；复用旧解码器同一策略以减少静态占用。解码前释放请求内条件结果并回收空闲缓存，DiT 仍全常驻。NPU 沿用 v0.5 原配方；原生 FP32 组件测量路径不变。
 
 ## 覆盖单项配置
 
@@ -35,10 +37,10 @@ bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png 
 关闭整个新增预设、使用原 Sage-FP8 配方：
 
 ```bash
-H3_CUDA_PRESET=none bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
+H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 ```
 
-使用 `cuda` 而非 `cuda-5090` 也不会自动开启该预设。关闭新预设不代表关闭原先的 FP8 Linear 或 Sage；精度选择仍由 `H3_CUDA_PRECISION`／`--h3_cuda_precision` 控制。
+`cuda` 与 `cuda-5090` 的 Base 768P 默认相同。关闭新预设不代表关闭原先的 FP8 Linear 或 Sage；精度选择仍由 `H3_CUDA_PRECISION`／`--h3_cuda_precision` 控制。
 
 ## 独立控制项
 
@@ -46,6 +48,7 @@ H3_CUDA_PRESET=none bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 76
 
 | 能力 | 参数 | 原路径默认 | 全并行预设 | 关闭后的行为／限制 |
 |---|---|---|---|---|
+| AdaLN 资产 | `--h3_cuda_adaln_mode auto\|table\|owner` | owner | table | owner 使用原始权重，需重启；[准备与匹配](H3-CUDA-ADALN.md) |
 | 视频解码后端 | `--h3_vae_backend legacy\|lightning\|native-stream` | CUDA 推荐 FP8 配方为 native-stream；其他入口见 VAE 教程 | native-stream | 可显式切换；legacy/lightning 需取消原生模型路径及授权 |
 | 本地输入投影 | `--h3_cuda_local_input` | SP 下关 | 开 | 全模态投影后再分片；文本上下文不会被截短 |
 | SAP 本地 FP32 输出 | `--h3_cuda_local_output` | SP 下关 | 开 | 先 gather 完整 hidden，再执行输出头 |
@@ -77,7 +80,7 @@ TP／CP 传输由 `--h3_tp_comm bf16|fp8` 和 `--h3_cp_comm auto|bf16|fp8` 控�
 
 ## 在线服务
 
-原 HTTP 服务支持同一套启动参数和 JSON 字段。配置、路由、队列和请求作用域已有CPU回归，真实八卡HTTP连续请求仍待部署验证，不能沿用离线成片结论。由启动配置决定开关，生成请求不能覆盖权重／并行布局／精度；如需改变，重启 worker。服务仍沿用原任务接口，不因此开放新的 MaaS R2VA 契约。
+原 HTTP 服务支持同一套启动参数和 JSON 字段。配置、路由、队列和请求作用域已有CPU回归，真实八卡HTTP连续请求仍待部署验证，不能沿用离线成片结论。由启动配置决定开关，生成请求不能覆盖权重／并行布局／精度；如需改变，重启 worker。MaaS 复用既有 R2VA 协议和输入限制，独立部署对应工作流。
 
 修改仓库提供的 [在线示例 JSON](../example/diffusers/configs/h3_cuda5090_ref2va.example.json) 中的模型目录。示例已配置 Ref2VA、SP8、文本 TP8、全并行预设、DiT 常驻和20步；无需手动拼接优化开关。启动：
 

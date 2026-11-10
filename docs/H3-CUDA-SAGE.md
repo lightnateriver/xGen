@@ -1,12 +1,15 @@
 # CUDA 标准方案二：Sage-FP8
 
+> v0.5 默认已改为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-V05-CUDA-UPGRADE.md)。本文保留旧标准方案的配置与历史验收；显式选择对应精度仍可使用。
+
+
 方案二组合 Sage attention、FP8 双向 PHAA 通信、输出 AdaLN 的 indexed affine fusion 和 PyTorch `expandable_segments`。它沿用 FP8 Linear、文本 TP8、PHAA2、50 层 DiT 常驻、音频 FP32 和逐视频空闲显存回收。视频 decoder 现在默认 native-stream，使用原生 decoder、FP16 autocast、全 rank tile 分派和异步分块输出；可显式选择 legacy/lightning。
 
 CUDA 推荐配方复用已有 Linear FP16 存储，native decoder 的其余参数保持 FP32，计算仍走 FP16 autocast；同时保留解码前条件释放和空闲缓存回收，DiT 不卸载。原生全 FP32 存储的组件表不代表该组合的整网容量。
 
 以下历史成片、性能及约 4.52 GiB/rank 的 decoder CPU master 数据均属于 legacy 后端。新默认的性能、主机内存和人工精度需独立记录，不能沿用历史结论；组件对比见 [VAE 教程](H3-OMNI-VAE.md)。
 
-八卡 RTX 5090 上，5/10/15 秒、20 步的 T2VA / I2VA 均完成成片和完整音视频解码，实测比方案一更快。**Sage 成片的人工画面、口型和听音审核仍待完成。** 原 [方案一 fp8-bf16](H3-CUDA-PRECISION.md) 的 5 秒固定样例已有人工认可，继续保留为默认；选择方案二不会改变 NPU 的默认路径。
+八卡 RTX 5090 上，5/10/15 秒、20 步的 T2VA / I2VA 均完成成片和完整音视频解码，实测比方案一更快。**Sage 成片的人工画面、口型和听音审核仍待完成。** 原 [方案一 fp8-bf16](H3-CUDA-PRECISION.md) 的 5 秒固定样例已有人工认可，继续保留为显式备选；选择本方案不会改变 NPU 的默认路径。
 
 ## 范围与依赖
 

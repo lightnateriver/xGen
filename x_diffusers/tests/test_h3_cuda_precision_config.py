@@ -48,7 +48,8 @@ def test_recommended_cuda_tasks_default_to_native_stream(task,profile):
 def test_condition_precompute_is_opt_in_cuda_ref2va_sp8_and_resident_immutable():
     args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_precompute_conditioning=True)
     assert module.resolve(args,'cuda')=='fp8-sage'
-    for values in (dict(task_type='t2va'),dict(sp=4)):
+    assert module.resolve(settings(**(vars(args)|dict(task_type='t2va'))),'cuda')=='fp8-sage'
+    for values in (dict(sp=4),):
         with pytest.raises(ValueError,match='precompute_conditioning requires'):
             module.resolve(settings(**(vars(args)|values)),'cuda')
     assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va',h3_cuda_precompute_conditioning=True),'npu') == 'none'
@@ -63,7 +64,6 @@ def test_condition_precompute_is_opt_in_cuda_ref2va_sp8_and_resident_immutable()
 def test_input_refiner_profiles_are_opt_in_and_reject_other_routes():
     assert module.resolve(settings(task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')=='fp8-sage'
     for backend,values in (
-        ('cuda',dict(task_type='t2va')),
         ('cuda',dict(sp=4)),
     ):
         args=dict(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_input_refiner='cudnn-sp-fp8')
@@ -104,7 +104,7 @@ def test_refiner_ff_chunk_invalid_values_fail_early(chunk):
 
 
 def test_refiner_ff_chunk_is_explicit_ref2va_and_resident_immutable():
-    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va'),'cuda')=='none'
+    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va',h3_cuda_preset='none'),'cuda')=='none'
     for backend,task,profile in [('cuda','t2va','fp8-sage')]:
         with pytest.raises(ValueError,match='refiner_ff_chunk_size requires'):
             module.resolve(settings(task_type=task,h3_cuda_precision=profile,h3_cuda_refiner_ff_chunk_size=8192),backend)
@@ -151,7 +151,7 @@ def test_explicit_sage_ref2va_reuses_sp8_profile():
 
 
 def test_explicit_bf16_attention_ref2va_control_keeps_auto_legacy():
-    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va'),'cuda')=='none'
+    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va',h3_cuda_preset='none'),'cuda')=='none'
     with patch.object(module.dist,'is_initialized',return_value=True),patch.object(module.dist,'get_world_size',return_value=8),patch.dict(module.os.environ,{'XGEN_PHAA_FP8':'0'}):
         module.validate(settings(h3_cuda_precision='fp8-bf16',task_type='ref2va'),'cuda')
 
@@ -184,8 +184,8 @@ def test_conditioning_offload_is_only_explicit_ref2va_and_resident_immutable():
 
 @pytest.mark.parametrize('backend,model,task,expected',[
     ('npu','MiniMax-H3','t2va','none'), ('npu','MiniMax-H3','ref2va','none'),
-    ('cuda','Wan2.2-T2V-A14B','t2v','none'), ('cuda','MiniMax-H3','ref2va','none'),
-    ('cuda','MiniMax-H3','t2va','fp8-bf16'), ('cuda','MiniMax-H3','fl2va','fp8-bf16'),
+    ('cuda','Wan2.2-T2V-A14B','t2v','none'), ('cuda','MiniMax-H3','ref2va','fp8-sage'),
+    ('cuda','MiniMax-H3','t2va','fp8-sage'), ('cuda','MiniMax-H3','fl2va','fp8-sage'),
 ])
 def test_hardware_specific_default(backend,model,task,expected):
     args=settings(h3_cuda_precision='auto',model=model,task_type=task,phaa_num=0)

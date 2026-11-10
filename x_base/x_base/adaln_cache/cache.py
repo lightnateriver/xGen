@@ -73,6 +73,7 @@ class AdalnScheduleCache:
         self._const_table = None       # constant timestep table (0.999, 1.0)
         self._const_timesteps = None   # tensor of constant timesteps
         self._conditioning_type = conditioning_type
+        self._source_file = os.path.realpath(cache_file) if cache_file else None
         self._device = device_type()
 
         if cache_file:
@@ -97,22 +98,28 @@ class AdalnScheduleCache:
         num_eval_steps = int(metadata.get("num_eval_steps", int(metadata["num_steps"]) - 1))
         num_blocks = int(metadata.get("num_blocks", len(self.model.transformer_blocks)))
         quantization = metadata.get("quantization", "none")
+        # New CUDA-prepared assets include complete timestep batches for each
+        # condition. Keep the existing split/merge format unchanged by default.
+        conditioned = metadata.get("conditioning_tables")
+        if conditioned and self._conditioning_type not in conditioned.split(','):
+            raise ValueError(f"AdaLN table does not contain conditioning={self._conditioning_type}")
+        prefix = f"{self._conditioning_type}_" if conditioned else ""
 
         step_entries = []  # list of (timesteps_tensor, table)
         for step_idx in range(num_eval_steps):
-            ts_tensor = f.get_tensor(f"step{step_idx}_timesteps").to(self._device)
+            ts_tensor = f.get_tensor(f"{prefix}step{step_idx}_timesteps").to(self._device)
 
             # Load block tables: chunk raw output into 6 modulation params
             block_tables = []
             for block_idx in range(num_blocks):
-                raw = self._read_tensor(f, f"step{step_idx}_block{block_idx}", quantization)
+                raw = self._read_tensor(f, f"{prefix}step{step_idx}_block{block_idx}", quantization)
                 # raw shape: [M, 96768] -> view(-1, 6*H) -> [M*3, 32256] -> chunk(6) -> 6 x [M*3, 5376]
                 _H = raw.shape[-1] // (6 * 3)
                 modulation = raw.view(-1, 6 * _H).chunk(6, dim=-1)
                 block_tables.append(modulation)
 
             # Load final layer: chunk raw output into (shift, scale)
-            final_raw = self._read_tensor(f, f"step{step_idx}_final", quantization)
+            final_raw = self._read_tensor(f, f"{prefix}step{step_idx}_final", quantization)
             # final_raw shape: [M, 10752] -> chunk(2, dim=-1) -> 2 x [M, 5376]
             final_shift, final_scale = final_raw.chunk(2, dim=-1)
 
@@ -138,7 +145,7 @@ class AdalnScheduleCache:
                 "final": (const_final_shift, const_final_scale),
             }
             self._const_timesteps = const_ts
-        else:
+        elif not conditioned:
             self._const_table = None
             self._const_timesteps = None
             logger.warning(
@@ -150,7 +157,7 @@ class AdalnScheduleCache:
         # based on conditioning_type. After this, _tables keys are full
         # timestep schedules (step + constant), so maybe_install() is pure
         # lookup with zero runtime overhead.
-        const_indices = self._CONST_INDEX_MAP.get(self._conditioning_type, [])
+        const_indices = [] if conditioned else self._CONST_INDEX_MAP.get(self._conditioning_type, [])
         if const_indices:
             if self._const_table is None:
                 raise RuntimeError(
@@ -320,6 +327,8 @@ def install_adaln_cache(pipe, cache_file: str | None = None,
     # Inject cache into transformer itself so _mmh3_forward_with_sp
     # can call maybe_install(timestep) before the block loop.
     transformer._adaln_cache = cache
+    if getattr(transformer, '_h3_cuda_adaln_table', False):
+        transformer._h3_cuda_adaln_load_count += 1
 
     return cache
 

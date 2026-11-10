@@ -15,13 +15,18 @@ STARTUP_OPTIONS = BOOL_OPTIONS + (
     'h3_cuda_preset', 'h3_cuda_dit_residency', 'h3_cuda_input_refiner',
     'h3_cuda_input_refiner_attention', 'h3_cuda_input_refiner_ffn',
     'h3_cuda_audio_decoder_parallel', 'h3_cuda_refiner_ff_chunk_size', 'h3_features',
+    'h3_cuda_adaln_mode', 'h3_cuda_adaln_dir', 'h3_reference_image_short_edge',
 )
 
 
 def add_arguments(parser, *, service=False):
     group = parser.add_argument_group('Composable CUDA H3 options')
     group.add_argument('--h3_cuda_preset', choices=PRESETS, default=None,
-                       help='Explicit cuda-5090 preset; omitted preserves existing defaults')
+                       help='CUDA H3 Base defaults to sage-fp8-full-parallel; none disables the preset')
+    group.add_argument('--h3_cuda_adaln_mode', choices=('auto', 'table', 'owner'), default=None,
+                       help='CUDA AdaLN: auto selects tables for the full Sage preset; owner retains rank-owned weights')
+    group.add_argument('--h3_cuda_adaln_dir', default=None,
+                       help='Prepared CUDA AdaLN directory; defaults to MODEL/xgen-adaln/fl2va|ref2va')
     group.add_argument('--h3_cuda_dit_residency', choices=('inherit', 'resident', 'conditioning', 'reference'), default=None,
                        help='DiT placement during conditioning; resident retains all blocks on GPU')
     group.add_argument('--h3_cuda_local_input', action=argparse.BooleanOptionalAction, default=None,
@@ -47,20 +52,48 @@ def local_io_default(mode):
     return mode in ('tp_cp', 'tp_cp_shared')
 
 
+def select_default_recipe(args, backend):
+    """Only unqualified CUDA H3 Base; explicit legacy/operator choices win."""
+    if (backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3'
+            or getattr(args, 'task_type', None) not in ('t2va', 'fl2va', 'ref2va')
+            or getattr(args, 'h3_cuda_precision', 'auto') != 'auto'
+            or getattr(args, 'h3_cuda_preset', None) is not None
+            or getattr(args, 'h3_features', None) not in (None, 'none')
+            or getattr(args, 'h3_parallel_mode', 'sp') != 'sp'
+            or getattr(args, 'h3_cuda_linear_tp', 1) != 1
+            or getattr(args, 'sp', 1) != 8
+            or getattr(args, 'text_encoder_tp', 1) != 8
+            or getattr(args, 'dtype', 'bf16') != 'bf16'
+            or getattr(args, 'atten', 'none') != 'none'
+            or getattr(args, 'matmul_quant', 'none') != 'none'
+            or getattr(args, 'h3_attention', 'legacy') != 'legacy'
+            or getattr(args, 'phaa_num', 0) is None):
+        return
+    legacy = ('h3_nvfp4_checkpoint', 'h3_nvfp4_resident', 'h3_nvfp4_compile',
+              'h3_turbo8', 'h3_turbo_sla_lora', 'h3_refiner', 'lora_path_list',
+              'fsdp', 'inf_vram_blocks_num', 'cache_dit')
+    if getattr(args, 'h3_cuda_adaln_mode', None) != 'table':
+        legacy += ('transformer_path', 'adaln_cache_file')
+    if not any(getattr(args, name, None) for name in legacy):
+        args.h3_cuda_preset = 'sage-fp8-full-parallel'
+
+
 def resolve_options(args, backend):
-    """Expand an explicit preset only into unspecified fields, then canonicalize."""
+    """Select the CUDA default or explicit preset, preserving per-feature overrides."""
     if not hasattr(args, '_h3_residency_explicit'):
         args._h3_residency_explicit = getattr(args, 'h3_cuda_dit_residency', None) not in (None, 'inherit')
     from .h3_features import resolve_defaults
     resolve_defaults(args)
+    select_default_recipe(args, backend)
     preset = getattr(args, 'h3_cuda_preset', None) or 'none'
     if preset not in PRESETS:
         raise ValueError('Unknown H3 CUDA preset')
     full = preset == 'sage-fp8-full-parallel'
     environment = {}
     if full:
-        if backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3' or getattr(args, 'task_type', None) != 'ref2va':
-            raise ValueError('sage-fp8-full-parallel requires CUDA H3 Ref2VA')
+        if (backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3'
+                or getattr(args, 'task_type', None) not in ('t2va', 'fl2va', 'ref2va')):
+            raise ValueError('sage-fp8-full-parallel requires CUDA H3 T2VA/FL2VA/Ref2VA')
         if getattr(args, 'h3_cuda_precision', 'auto') == 'auto':
             args.h3_cuda_precision = 'fp8-sage'
         for key, value in (('NCCL_MAX_CTAS', '2'), ('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True'),
@@ -162,7 +195,8 @@ def startup_key(args):
     values = tuple((name, getattr(args, name, None)) for name in STARTUP_OPTIONS)
     runtime = tuple((name, getattr(args, name, None)) for name in (
         'sp', 'text_encoder_tp', 'dtype', 'atten', 'matmul_quant', 'vae_matmul_quant',
-        'phaa_num', 'rope_fused', 'transformer_path', 'adaln_cache_file'))
+        'phaa_num', 'rope_fused', 'transformer_path', 'adaln_cache_file')
+        if name != 'adaln_cache_file' or not getattr(args, '_h3_cuda_adaln_auto_paths', False))
     return values + runtime + (('_h3_residency_explicit', bool(getattr(args, '_h3_residency_explicit', False))),
                      ('model', getattr(args, 'model', None)),
                      ('weights', getattr(args, 'pretrained_model_name_or_path', None)),
@@ -171,6 +205,8 @@ def startup_key(args):
 
 def needs_resolution(args):
     return (getattr(args, 'h3_features', None) not in (None, 'none')
+            or getattr(args, 'h3_cuda_adaln_mode', None) not in (None, 'auto')
+            or bool(getattr(args, 'h3_cuda_adaln_dir', None))
             or getattr(args, 'h3_cuda_precision', 'auto') != 'none'
             or any(getattr(args, key, None) is not None for key in BOOL_OPTIONS)
             or getattr(args, 'h3_cuda_preset', None) not in (None, 'none')

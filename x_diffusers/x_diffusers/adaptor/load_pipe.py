@@ -212,6 +212,9 @@ def load_minimax_h3_pipe(args):
         logger.info("building minimax-h3 t2va/fl2va modular pipeline...")
         pipe = ModularPipeline.from_pretrained(args.pretrained_model_name_or_path)
 
+    from .h3_references import configure_reference_image_size
+    configure_reference_image_size(pipe, args)
+
     # Keep automatic T2VA/FL2VA routing, but do not load the unused Ref2VA DiT
     # from a combined repository into a resident CUDA precision pipeline.
     component_options = ({"workflow": "fl2va"} if task_type in ("t2va", "fl2va")

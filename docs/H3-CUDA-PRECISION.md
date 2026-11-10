@@ -1,6 +1,9 @@
-# CUDA H3 默认配方：fp8-bf16
+# CUDA H3 精度参考配方：fp8-bf16
 
-这是 CUDA 标准方案一，H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。历史 legacy decoder 的 5 秒、20 步固定样例已有人工精度认可；新默认 decoder 的精度需独立判断。它复用现有 InferenceManager、SP、PHAA、文本 TP 和 VAE 接口，不新增服务或调度体系。NPU 和其他模型的默认路径不变。更快、人工精度待审核的第二套标准方案见 [Sage-FP8](H3-CUDA-SAGE.md)。
+> v0.5 默认已改为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-V05-CUDA-UPGRADE.md)。本文保留旧标准方案的配置与历史验收；显式选择对应精度仍可使用。
+
+
+这是保留的 CUDA 标准方案一，显式使用 `fp8-bf16`。历史 legacy decoder 的 5 秒、20 步固定样例已有人工精度认可；更换 decoder 的精度需独立判断。它复用现有 InferenceManager、SP、PHAA、文本 TP 和 VAE 接口，不新增服务或调度体系。更快、人工精度待审核的基础方案见 [Sage-FP8](H3-CUDA-SAGE.md)。
 
 | 模块 | 当前精度 / 策略 |
 |---|---|
@@ -27,8 +30,8 @@ export BASE_MODEL=./weights/h3
 export PROMPT_FILE=./inputs/prompt.txt
 export H3_VAE_MODEL_PATH=./weights/h3-native/video_vae
 export H3_VAE_TRUST_REMOTE_CODE=1
-bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
-bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p inputs/first-frame.png
+H3_CUDA_PRECISION=fp8-bf16 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
+H3_CUDA_PRECISION=fp8-bf16 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p inputs/first-frame.png
 ```
 
 每条命令各生成一个视频。脚本默认八卡、SP8、文本 TP8、PHAA2、50 次实际 DiT、seed42、1344×768、124 帧 / 24 FPS。快速复测可在命令前加 `H3_BASE_STEPS=20`。模型初始化不计入常驻请求性能。
@@ -47,12 +50,12 @@ H3_CUDA_PRECISION=none bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p
 
 ## 在线部署
 
-[Base 示例](../example/diffusers/configs/h3_cuda_base.example.json) 和 [MaaS 示例](../example/diffusers/configs/h3_maas.example.json) 默认使用 fp8-bf16。修改模型路径后启动：
+[精度参考 JSON](../example/diffusers/configs/h3_cuda_bf16.example.json) 显式使用 fp8-bf16 和 owner AdaLN；Base / MaaS 默认示例已改为新全并行方案。修改模型路径后启动本页参考方案：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   server/video/video_server.py --init --maas \
-  --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
+  --config example/diffusers/configs/h3_cuda_bf16.example.json --host 127.0.0.1 --port 5001
 ```
 
 普通 Base HTTP 去掉 `--maas`，并使用 Base 示例配置。MaaS 接受 768P、5～15 秒的 T2VA/I2VA 和独立部署的 R2VA，步数由启动配置决定；原队列、超时、健康探针、原子发布和请求结构不变。precision 只能作为启动配置；常驻 worker 不允许在请求间静默切换配方，改变时须重启服务。

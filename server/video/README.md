@@ -505,7 +505,7 @@ while True:
 
 ## CUDA H3 默认配方
 
-CUDA H3 Base 的 T2VA / I2VA 默认采用 `fp8-bf16`：FP8 Linear、BF16 cuDNN attention / 通信、文本 TP8、PHAA2、50 层常驻。使用完整原始模块权重；默认 Base / MaaS 无需 packed NVFP4 文件。NPU 的默认配置保持不变。
+v0.5 八卡 CUDA H3 Base 的 T2VA / I2VA / R2VA 默认采用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表：FP8 Linear、Sage attention、FP8 PHAA、文本 TP8、组件并行与50层常驻。先[准备对应工作流的表和剔除权重后的 Transformer](../../docs/H3-CUDA-ADALN.md)，并配置可信的原生 VAE 目录。NPU 保持其 v0.5 默认配置。
 
 从仓库根目录运行八卡服务：
 
@@ -515,6 +515,6 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
 ```
 
-先填写 JSON 中的模型路径。普通 Base HTTP 使用 `h3_cuda_base.example.json` 并去掉 MaaS 开关。通过配置或启动参数 `--h3_cuda_precision none` 可选择旧 CUDA 路径，服务启动后不能在请求之间切换 precision。MaaS 支持 768P、5～15 秒及各自部署的 T2VA/I2VA/R2VA，步数由启动配置决定；排队、超时、健康探针及原子发布接口不变。
+先填写 JSON 中的模型路径。普通 Base HTTP 使用 `h3_cuda_base.example.json` 并去掉 MaaS 开关。回到原始 CUDA 路径需同时设置 `--h3_cuda_preset none --h3_cuda_precision none --h3_cuda_adaln_mode auto`，并移除已配置的表资产路径；服务启动后不能在请求间切换配方。MaaS 支持 768P、5～15 秒及各自部署的 T2VA/I2VA/R2VA，步数由启动配置决定；排队、超时、健康探针及原子发布接口不变。
 
-详细的精度、锁页内存成本、验证范围及历史性能见 [CUDA 默认配方](../../docs/H3-CUDA-PRECISION.md)。当前只将 5 秒、20 步 T2VA / I2VA 的人工审核结论记录为该组样例通过，不将解码成功等同于所有素材的精度通过。
+旧精度参考方案可选 `h3_cuda_bf16.example.json`。新默认的配置、资产和回退见 [CUDA 升级说明](../../docs/H3-V05-CUDA-UPGRADE.md)，历史与最新性能分开记录；技术解码成功不等于人工画面／音频认可。

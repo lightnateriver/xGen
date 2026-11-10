@@ -19,11 +19,15 @@ def parse_args(namespace=None, mode="infer", *, bootstrap_environment=True):
     from .h3_features import add_aliases
     add_aliases(parser)
     args = parser.parse_args(namespace=namespace)
-    if bootstrap_environment and getattr(args, 'h3_cuda_preset', None) not in (None, 'none'):
+    if bootstrap_environment and (getattr(args, 'h3_cuda_preset', None) not in (None, 'none')
+            or (args.model == 'MiniMax-H3' and args.h3_cuda_precision == 'auto')):
         from x_base.device import device_type
-        from .h3_cuda_options import resolve_options, commit_environment
-        resolve_options(args, device_type())
-        commit_environment(args)  # Allocator/NCCL options precede init_env().
+        from .h3_cuda_options import select_default_recipe, resolve_options, commit_environment
+        backend = device_type()
+        select_default_recipe(args, backend)
+        if getattr(args, 'h3_cuda_preset', None) not in (None, 'none'):
+            resolve_options(args, backend)
+            commit_environment(args)  # Allocator/NCCL options precede init_env().
 
     return args
 
@@ -139,6 +143,8 @@ def add_minimax_h3_args(parser: argparse.ArgumentParser):
                        help="Last keyframe image path for the fl2va_last_frame task.")
     group.add_argument("--reference_paths", nargs='+', default=None,
                        help="Reference media paths for the ref2va task (images, videos, or audio files).")
+    group.add_argument("--h3_reference_image_short_edge", type=int, default=None,
+                       help="Ref2VA Base image short edge: 32..2048, multiple of 32; default preserves 2048")
     group.add_argument("--audio_save_path", type=str, default="",
                        help="Path to save the generated audio. If empty, derived from --save_path.")
     group.add_argument("--rope_table_cache", action="store_true", default=False,

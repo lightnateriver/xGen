@@ -38,15 +38,13 @@ esac
 
 preset=${H3_CUDA_PRESET:-none}
 precision=${H3_CUDA_PRECISION:-auto}
-if [[ $hardware == cuda-5090 && $resolution == 768p ]]; then
-  precision=${H3_CUDA_PRECISION:-fp8-sage}
-  if [[ $task == ref2va || $task == r2va ]]; then
-    preset=${H3_CUDA_PRESET:-sage-fp8-full-parallel}
-  fi
+if [[ $backend == cuda && $resolution == 768p && ${H3_FAST:-0} != 1 && $precision == auto ]]; then
+  preset=${H3_CUDA_PRESET:-sage-fp8-full-parallel}
+  if [[ $preset != none ]]; then precision=fp8-sage; fi
 fi
 if [[ $preset != none ]]; then
-  if [[ $backend != cuda || ( $task != ref2va && $task != r2va ) || $resolution != 768p || ${H3_FAST:-0} == 1 ]]; then
-    echo "The full-parallel preset currently requires CUDA Ref2VA 768p without H3_FAST." >&2
+  if [[ $backend != cuda || $resolution != 768p || ${H3_FAST:-0} == 1 ]]; then
+    echo "The full-parallel preset requires CUDA H3 Base 768p without H3_FAST." >&2
     exit 2
   fi
   precision=${H3_CUDA_PRECISION:-fp8-sage}
@@ -174,8 +172,14 @@ else
   fi
 fi
 
-if [[ $preset != none ]]; then
+if [[ $backend == cuda ]]; then
   profile+=(--h3_cuda_preset "$preset")
+fi
+if [[ $backend == cuda && $resolution == 768p && ( $preset != none || -n ${H3_CUDA_ADALN_MODE:-} || -n ${H3_CUDA_ADALN_DIR:-} ) ]]; then
+  profile+=(--h3_cuda_adaln_mode "${H3_CUDA_ADALN_MODE:-auto}")
+  if [[ -n ${H3_CUDA_ADALN_DIR:-} ]]; then
+    profile+=(--h3_cuda_adaln_dir "$H3_CUDA_ADALN_DIR")
+  fi
 fi
 if [[ $backend == cuda && $resolution == 768p && ( $precision == fp8-bf16 || $precision == fp8-sage ) ]]; then
   profile+=(--h3_vae_backend native-stream)

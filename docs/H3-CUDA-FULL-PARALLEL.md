@@ -6,4 +6,6 @@ v0.4 的完整配置、独立开关、在线／离线启动和回退方法统一
 
 旧 `cuda`／`npu` 启动和默认精度不变。TP/CP为独立实验选项，不包含在全并行SP8预设内。
 
+CUDA 推荐 T2VA/I2VA/R2VA 的视频 decoder 默认已改为 native-stream，需可信原生 `video_vae` 目录和显式授权。旧精度配方继续保留，后端可用 `--h3_vae_backend legacy|lightning|native-stream` 覆盖；原 NPU 默认不变。历史整网表使用 legacy decoder，新默认不继承其性能和精度结论。
+
 [性能与验证范围](performance/h3-cuda5090-full-parallel.md) · [在线服务](H3-ONLINE.md)

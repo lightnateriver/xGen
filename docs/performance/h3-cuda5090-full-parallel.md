@@ -1,5 +1,7 @@
 # RTX5090 R2VA Sage-FP8 全并行：性能与验证
 
+本页整网数据使用历史 legacy decoder。当前 CUDA 推荐配方默认 native-stream；本页性能、峰值和成片检查不自动适用于新后端，后端组件对比见 [VAE 性能](h3-omni-vae.md)。
+
 测试日期：2026-11-08至2026-11-09。8×RTX5090、SP8、1344×768、24fps、seed42、20次实际DiT。单图或五张原始2560×1440参考图，按固定顺序输入。
 
 实测运行时：Python3.10.12、PyTorch2.12.0+cu130、CUDA13.0、Diffusers0.40.0、Transformers5.15.0、Triton3.7.0、SageAttention2.2.0。H3所需的原生模块与修补按原部署教程准备；版本号本身不能代替CUDA扩展编译和模型目录的检查。此表是实测环境，不要求NPU或其他CUDA模型安装这些版本。

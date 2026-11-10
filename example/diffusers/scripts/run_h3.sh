@@ -115,7 +115,7 @@ if [[ $backend == npu ]]; then
   launch=(--master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29530}")
   profile=(--transformer_path "$base_transformer" --adaln_cache_file "$base_adaln"
     --atten laser --matmul_quant int8 --vae_matmul_quant int8 --rope_fused
-    --vae_lightning decoder --text_encoder_tp 8 --phaa_num 2)
+    --h3_vae_backend lightning --text_encoder_tp 8 --phaa_num 2)
 else
   if [[ ${H3_FAST:-0} == 1 ]]; then
     export XGEN_PHAA_DEVICE_JOIN=1 XGEN_PHAA_ASYNC_EXCHANGE=1
@@ -133,13 +133,13 @@ else
   unset XGEN_H3_FUSED_INDEXED_AFFINE XGEN_H3_FUSED_PARTIAL_ROPE XGEN_H3_FUSED_QK_RMS
   unset XGEN_H3_FUSED_FF_AMAX XGEN_H3_FUSED_SWIGLU XGEN_H3_NVFP4_FUSED_AMAX
   launch=(--standalone)
-  profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
+  profile=(--atten none --matmul_quant none --vae_matmul_quant none --h3_vae_backend legacy
     --text_encoder_tp 8 --phaa_num 4 --h3_cuda_vae_sp)
   if [[ $resolution == 768p && ( $task != ref2va || $precision != auto || $preset != none ) ]]; then
     if [[ $precision == auto ]]; then
       precision=fp8-bf16
     fi
-    profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
+    profile=(--atten none --matmul_quant none --vae_matmul_quant none --h3_vae_backend legacy
       --text_encoder_tp 8 --phaa_num 2 --h3_cuda_vae_sp --h3_cuda_precision "$precision")
     if [[ $precision != none ]]; then
       export NCCL_MAX_CTAS=2
@@ -156,7 +156,7 @@ else
   fi
   if [[ $resolution == 2k ]]; then
     base_model=${MODEL_PATH:-weights/h3}
-    profile=(--atten none --matmul_quant none --vae_matmul_quant none --vae_lightning none
+    profile=(--atten none --matmul_quant none --vae_matmul_quant none --h3_vae_backend legacy
       --text_encoder_tp 1 --phaa_num 2 --h3_nvfp4_checkpoint "$nvfp4_checkpoint" --h3_refiner
       --h3_refiner_weights "$refiner_weights" --h3_refiner_prepared "${REFINER_PREPARED:-model-cache/refiner-cuda}"
       --h3_refiner_seconds "$duration")
@@ -165,6 +165,18 @@ fi
 
 if [[ $preset != none ]]; then
   profile+=(--h3_cuda_preset "$preset")
+fi
+if [[ $backend == cuda && $resolution == 768p && ( $precision == fp8-bf16 || $precision == fp8-sage ) ]]; then
+  profile+=(--h3_vae_backend native-stream)
+fi
+if [[ -n ${H3_VAE_BACKEND:-} ]]; then
+  profile+=(--h3_vae_backend "$H3_VAE_BACKEND")
+fi
+if [[ -n ${H3_VAE_MODEL_PATH:-} ]]; then
+  profile+=(--h3_vae_model_path "$H3_VAE_MODEL_PATH")
+fi
+if [[ ${H3_VAE_TRUST_REMOTE_CODE:-0} == 1 ]]; then
+  profile+=(--h3_vae_trust_remote_code)
 fi
 
 width=1344 height=768

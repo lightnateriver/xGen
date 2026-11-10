@@ -15,7 +15,7 @@ exec torchrun --nproc_per_node=8 --max_restarts=0 --master_port="${MASTER_PORT:-
   --dtype bf16 --num_inference_steps "${H3_BASE_STEPS:-50}" --seed "${H3_SEED:-42}" \
   --width 2560 --height 1440 --frames 124 --save_fps 24 \
   --sp 8 --text_encoder_tp 8 --phaa_num 2 --atten laser --matmul_quant int8 \
-  --vae_matmul_quant none --vae_lightning none --inf_vram_blocks_num 0 --rope_fused \
+  --vae_matmul_quant none --h3_vae_backend legacy --inf_vram_blocks_num 0 --rope_fused \
   --h3_refiner --h3_refiner_weights "$REFINER_WEIGHTS" --h3_refiner_prepared "$REFINER_PREPARED" \
   --h3_refiner_seconds "${SECONDS_TO_GENERATE:-5}" \
   --save_path "${OUTPUT_VIDEO:-./h3-refiner-2k.mp4}" \

@@ -28,12 +28,21 @@ def isolate_chunk_installer():
 
 def settings(**values):
     base=dict(h3_cuda_precision='fp8-bf16',model='MiniMax-H3',dtype='bf16',task_type='t2va',
-              sp=8,text_encoder_tp=8,atten='none',matmul_quant='none',phaa_num=2,h3_cuda_vae_sp=True)
+              sp=8,text_encoder_tp=8,atten='none',matmul_quant='none',phaa_num=2,h3_cuda_vae_sp=True,
+              h3_vae_backend='legacy')
     return SimpleNamespace(**(base|values))
 
 
 def test_legacy_validation_does_nothing():
     module.validate(SimpleNamespace(),'npu')
+
+
+@pytest.mark.parametrize('task,profile',[('t2va','auto'),('fl2va','auto'),('ref2va','fp8-sage')])
+def test_recommended_cuda_tasks_default_to_native_stream(task,profile):
+    args=settings(task_type=task,h3_cuda_precision=profile,h3_vae_backend=None)
+    module.resolve(args,'cuda')
+    assert args.h3_vae_backend=='native-stream'
+    assert module.resolve(args,'cuda')==args.h3_cuda_precision
 
 
 def test_condition_precompute_is_opt_in_cuda_ref2va_sp8_and_resident_immutable():

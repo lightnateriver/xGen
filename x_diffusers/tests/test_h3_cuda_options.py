@@ -11,7 +11,7 @@ from x_diffusers.adaptor import h3_cuda_precision as precision
 def settings(**overrides):
     return SimpleNamespace(**(dict(model='MiniMax-H3',task_type='ref2va',h3_cuda_precision='fp8-sage',
         dtype='bf16',sp=8,text_encoder_tp=8,atten='none',matmul_quant='none',phaa_num=2,
-        h3_cuda_vae_sp=True,h3_cuda_preset='sage-fp8-full-parallel') | overrides))
+        h3_cuda_vae_sp=True,h3_cuda_preset='sage-fp8-full-parallel',h3_vae_backend='legacy') | overrides))
 
 
 @pytest.fixture(autouse=True)
@@ -124,6 +124,8 @@ def test_real_offline_parser_bootstraps_preset_without_device_allocation(monkeyp
         '--no-h3_cuda_local_output','--h3_cuda_input_refiner_ffn','bf16'])
     args=parse_args()
     assert args.h3_cuda_precision=='fp8-sage' and args.h3_cuda_local_input
+    from x_diffusers.adaptor.h3_vae_config import resolve_vae_backend
+    assert resolve_vae_backend(args)=='native-stream'
     assert not args.h3_cuda_local_output and args.h3_cuda_input_refiner_ffn=='bf16'
     assert os.environ['XGEN_PHAA_FP8']==os.environ['XGEN_PHAA_FP8_MIXED_STRIDES']=='1'
 
@@ -138,3 +140,12 @@ def test_legacy_non_fp8_manager_keeps_original_model_rebuild_contract(backend,mo
             assert precision.resolve(args,backend)=='none'
             precision.validate_manager(manager,args,backend)
             assert not hasattr(manager,'_h3_cuda_options_key')
+
+
+@pytest.mark.parametrize('backend',['cuda','npu'])
+def test_non_h3_unspecified_decoder_preserves_resident_service(backend):
+    manager=SimpleNamespace(pipe=object())
+    args=settings(model='Wan2.2-T2V-A14B',task_type='t2v',h3_cuda_preset=None,
+                  h3_cuda_precision='auto',h3_vae_backend=None,vae_lightning='encoder_and_decoder')
+    precision.validate_manager(manager,args,backend)
+    assert args.h3_vae_backend=='legacy' and args.vae_lightning=='encoder_and_decoder'

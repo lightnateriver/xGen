@@ -53,5 +53,5 @@ torchrun --standalone --nproc_per_node "$GPUS" "$SCRIPT_DIR/../infer.py" \
     --keyframe_image "$FIRST_FRAME" --prompt="$(cat -- "$PROMPT_FILE")" \
     --save_path "$OUTPUT_PATH" --num_inference_steps "${NUM_INFERENCE_STEPS:-50}" \
     --width 1344 --height 768 --frames "$frames" --save_fps 24 --seed 42 \
-    --matmul_quant none --vae_matmul_quant none --vae_lightning none \
+    --matmul_quant none --vae_matmul_quant none --h3_vae_backend legacy \
     --atten "${ATTENTION_BACKEND:-none}" --text_encoder_tp "$text_encoder_tp" --sp "$GPUS" "${recipe_args[@]}" "$@"

@@ -167,7 +167,7 @@ BF16 配置和 NVFP4 Base 权重，由 Refiner 统一管理阶段驻留。
   "num_inference_steps": 50,
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
-  "vae_lightning": "none",
+  "h3_vae_backend": "legacy",
   "rope_fused": false
 }
 ```

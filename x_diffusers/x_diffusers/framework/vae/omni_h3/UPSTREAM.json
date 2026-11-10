@@ -1,0 +1,75 @@
+{
+  "commit": "b92856cb540958713fee5d99a1d6c8e68fd48755",
+  "files": {
+    "temporal_chunks.py": {
+      "upstream": "models/minimax_h3/temporal_chunks.py",
+      "upstream_sha256": "533771c28d043b0c78a6750f1bebf1e7e853f402fbb8b474f032d7ab07219e0e",
+      "adapted_sha256": "de8afd247bfbc7f97b037eac5d42f3bf04124027237602e39e168ba54174aa09"
+    },
+    "chunked_decode.py": {
+      "upstream": "models/minimax_h3/chunked_decode.py",
+      "upstream_sha256": "5b3ef48d85b1a66e2bb2d88cdad41bd742cdf3c487a81a9b40a4a1b7c85cb5e6",
+      "adapted_sha256": "1031a70cd7a59e7eb7880d718d85d85bbb849023e3e83921280d3a9f196ce70e"
+    },
+    "vae_temporal.py": {
+      "upstream": "models/minimax_h3/vae_temporal.py",
+      "upstream_sha256": "84ace8abd7ca6854399e77d626b3fa3d5f464ebf473645b7c8201a4dee435741",
+      "adapted_sha256": "4ac8947f76a1aaf49b9dacff458c049d7cd1ffa6a8c7dd5f2a5444bdb3d2a4f0"
+    },
+    "chunked_video.py": {
+      "upstream": "utils/chunked_video.py",
+      "upstream_sha256": "a9f775b2cc993c2f45162d3ee8cad71bee2f50fe103fa9072dbcf6f3d60ce652",
+      "adapted_sha256": "d916cf6432b230dd6b9f54747f6f750b9527df74388ad6b2f1a2143fd6d1c8dc"
+    },
+    "media_utils.py": {
+      "upstream": "utils/media_utils.py",
+      "upstream_sha256": "1324ddaf2e4f0f030f39717871ead846d8b9fb525d2255bcb1d20f2df5c702a3",
+      "adaptation": "Retain progressive MP4 encoder and exact dependencies; stdlib logger.",
+      "adapted_sha256": "62ee22c56ebc3dcc17800a32e19138740423b8d8dfe2115f1cd5cdc6da42813e"
+    },
+    "ops/__init__.py": {
+      "upstream": "models/minimax_h3/ops/vae/__init__.py",
+      "upstream_sha256": "eb6d1bda0a5ed83ff1863ed4f3b75d417c71fb335027dadcf4ebba446380dabb",
+      "adapted_sha256": "a675478893f0e77834bbedd34cc413ab207e81b897fb22a70fe60d2b7dddccbb"
+    },
+    "ops/dispatch.py": {
+      "upstream": "models/minimax_h3/ops/vae/dispatch.py",
+      "upstream_sha256": "7c7df96a99d6e3bb63fdfe902c142bd78c9dbcb614d4b9b05601ce296a535f83",
+      "adapted_sha256": "1bd77372cdd8ea11174b122087390c9792a8e6cc31fd528da8d54b43297bf9ee"
+    },
+    "ops/qk_norm_rope.py": {
+      "upstream": "models/minimax_h3/ops/vae/qk_norm_rope.py",
+      "upstream_sha256": "4fddcd65b669d18f51a9ccc58aba47f5ba9f75a408e5087426f53f2e95eb89db",
+      "adapted_sha256": "e5f7add5f899e2b2a9461b380fbc604d52604d40326ef05a0227dbdc252a8b5f"
+    },
+    "ops/scaled_residual.py": {
+      "upstream": "models/minimax_h3/ops/vae/scaled_residual.py",
+      "upstream_sha256": "c6abed0010610ed3ec68967782b3e111d5a2534ae04a296cced718036ed6a551",
+      "adapted_sha256": "50fb9b42097cb20a62d5050c0b86957da1324b03bc4b0a28f392e34951109c2e"
+    },
+    "vae.py": {
+      "upstream": "models/minimax_h3/vae.py",
+      "upstream_sha256": "142aab5df0fc5720074e10db8336a74e49417c0011ce1c21d1b20d994bc4f5cb",
+      "retained_numerical_methods": [
+        "_decode_tiling_context",
+        "_decoder_tile_count",
+        "_denormalize_latent",
+        "_native_parallel_state",
+        "_normalize_decoded_frames",
+        "_rank_local_tiling",
+        "_revert_decoded",
+        "_revert_decoded_inplace",
+        "decode_latent",
+        "decode_with_chunks",
+        "is_distributed_enabled",
+        "owns_chunk_output",
+        "set_parallel_size"
+      ],
+      "adaptation": "Standalone native checkpoint loader; caller provides process group; no service/quantized-model/offloader dependency.",
+      "adapted_sha256": "40a05b792b825e203da1144a84cd819d8db24ded73198b5d7b7169499e43ccf9"
+    }
+  },
+  "scope": "Native H3 tiled FP32-weight/FP16 decode and complete preencode_mp4 pipeline",
+  "activation_adaptation": "Torch SiluAndMul reference fallback; not invoked on SM120 because upstream VAE fusion dispatch excludes it.",
+  "adapted_hash_format": "SHA-256 of file bytes with LF newlines"
+}

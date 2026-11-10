@@ -87,6 +87,20 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 用 I2VA 请求示例，将 `duration` 设为 15。设 `num_inference_steps` 为 1 可以跑 1 次 DiT，适合检查生成和下载链路。本配置已通过 1 次 DiT 的 15 秒音视频验证。全驻留配置在同一用例的 VAE 解码阶段显存不足。
 
+## H3 视频解码后端
+
+CUDA/NPU 共用 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 T2VA/I2VA/R2VA 配置默认 native-stream，示例 JSON 已包含原生 `video_vae` 路径及授权；使用前必须改为本地可信模型目录。NPU 在线默认仍是 Lightning。后端只在服务启动时选择，生成请求不能切换。
+
+也可在原启动命令后追加：
+
+```bash
+--h3_vae_backend native-stream \
+--h3_vae_model_path weights/h3-native/video_vae \
+--h3_vae_trust_remote_code --vae_matmul_quant none
+```
+
+显式 CLI 覆盖 JSON，`none` 可关闭 NPU 配置中的 VAE INT8。回退旧后端时，将配置改为 legacy 或 lightning，并移除原生 VAE 路径和授权后重启；保留 DiT 的原有量化与并行参数。模型暂存、初始化成本及验证范围见 [VAE 后端](H3-OMNI-VAE.md)。
+
 ## 2K Refiner
 
 NPU T2VA 可直接使用 [Refiner 配置](../example/diffusers/configs/h3_refiner.example.json)。

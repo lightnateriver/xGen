@@ -14,14 +14,22 @@ def rgb8_to_pil(rgb):
     return [[Image.fromarray(frame) for frame in batch] for batch in pixels]
 
 
+def prepare_decoder_linears(decoder):
+    """Store Linear weights as their FP16 autocast operands; retain other dtypes."""
+    count=0
+    for layer in decoder.modules():
+        if isinstance(layer,torch.nn.Linear):
+            layer.to(dtype=torch.float16)
+            count+=1
+    return count
+
+
 def install_staged_decoder(vae,device,retain_module):
     """Load the decode half once per video, with native autocast weight rounding."""
     cpu=torch.device('cpu')
     retain_module(vae.decoder,cpu)
     retain_module(vae.post_quant_conv,cpu)
-    for layer in vae.decoder.modules():
-        if isinstance(layer,torch.nn.Linear):
-            layer.to(dtype=torch.float16)
+    prepare_decoder_linears(vae.decoder)
     from diffusers.hooks.group_offloading import ModuleGroup
 
     group=ModuleGroup(modules=[vae.decoder,vae.post_quant_conv],offload_device=cpu,

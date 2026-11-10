@@ -4,12 +4,20 @@ v0.4 新增显式 `cuda-5090 r2va` 优选全并行方案；原 CUDA/NPU 命令�
 
 新预设面向八卡 RTX5090、Ref2VA、768P。所有50层DiT在条件编码和VAE期间常驻；关闭整个预设使用 `H3_CUDA_PRESET=none`，单项关闭见 [配置表](H3-CUDA-COMPOSABLE.md)。此前显式 offload、TP/CP 或混合通信配方继续使用独立参数，互斥组合在模型加载前报错，不会自动降精度或裁输入。
 
-在线使用 [新增JSON示例](../example/diffusers/configs/h3_cuda5090_ref2va.example.json)，复用 `/generate` / `/status` / `/download`。本次没有增加MaaS R2VA接口。
+在线使用 [JSON示例](../example/diffusers/configs/h3_cuda5090_ref2va.example.json)，复用 `/generate` / `/status` / `/download`。MaaS R2VA 使用独立 Ref2VA 实例，详见 [MaaS API](../server/video/MAAS-API.md)。
 
 提交包含运行代码、独立测试工具、公开示例及脱敏的性能/功能说明；不包含模型、AdaLN资产、私有部署脚本、机器清单、原始请求、生成素材或原始日志。TP/CP实验路径保持默认关闭，其结果与全并行SP8分开。
 
-## v0.3.2-maas 历史升级说明
+## v0.4 视频 decoder 更新
 
+H3 改为统一 `--h3_vae_backend legacy|lightning|native-stream`，三种后端均支持 CUDA/NPU。H3 旧命令的 `--vae_lightning decoder` 必须改为 `--h3_vae_backend lightning`；其他模型如 Wan 保留旧参数。
+
+CUDA 推荐的 T2VA/I2VA/R2VA（fp8-bf16、fp8-sage、全并行预设）默认 native-stream。补充可信原生 `video_vae` 目录及授权；`run_h3.sh` 使用 `H3_VAE_MODEL_PATH`、`H3_VAE_TRUST_REMOTE_CODE=1`，HTTP JSON 使用 `h3_vae_model_path`、`h3_vae_trust_remote_code=true`。不能把 Diffusers `vae` 目录当作原生模型目录。缺少配置时加载前报错，不自动切换后端。回退 legacy/lightning 时显式选择并移除原生模型路径和授权。
+
+NPU 默认不变，native-stream 须显式关闭 VAE INT8；Refiner、历史 NVFP4 和其他模型默认不变。CUDA 推荐配方复用 Linear FP16 存储，其余 native decoder 参数 FP32、FP16 autocast；解码前沿用原有条件释放和空闲缓存回收，DiT 保持常驻。切换后端需重启服务；旧后端的人工精度和整网性能不自动适用于新组合。详情见 [VAE 后端](H3-OMNI-VAE.md)。
+
+
+## v0.3.2-maas 历史升级说明
 
 本次更新继续使用 `v0.3.2-maas` 分支。在 `6d462df` 的基础上增加 CUDA 标准方案二 Sage-FP8 和可选输出 AdaLN 融合，保留默认方案一及 NPU 行为。此前相对 `ef1a321` 增加的 NPU benchmark、R2VA 多媒体输入处理和请求结束后的显存回收继续保留。
 

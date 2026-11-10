@@ -9,13 +9,19 @@
 ```bash
 export BASE_MODEL=weights/h3-ref2va
 export PROMPT_FILE=inputs/prompt.txt
+export H3_VAE_MODEL_PATH=weights/h3-native/video_vae
+export H3_VAE_TRUST_REMOTE_CODE=1
 export H3_BASE_STEPS=20
 bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 ```
 
 五图输入直接追加五个文件，不改变输入顺序。10 / 15 秒把 `5` 改为 `10` / `15`。初始化只计入模型启动；常驻 Manager 连续请求可以切换时长和参考图，启动配置不能在复用模型时悄悄改变。
 
-新预设默认使用：主干 SP8、Sage attention、FP8 W8A8 Linear、文本 FP8 TP8、PHAA2 双向 FP8、直接 stride 打包、SAP 本地 FP32 输出、本地输入投影、请求内固定条件复用、Token Refiner SP8/cuDNN BF16/FP8 FFN、视觉 SP8、VAE Encoder tile 分工、Audio Encoder 卷积分工和长音频 Decoder 分工。DiT 全部常驻 GPU，包括条件编码和 VAE 阶段。沿用原融合、FP16 VAE Decoder、tile、RGB8 和编码配置；输出头及音频计算的既有精度不变。Audio Decoder 的 `long` 在 5 秒形状走原实现；Audio Encoder 在没有参考音频时不会执行。
+新预设默认使用：主干 SP8、Sage attention、FP8 W8A8 Linear、文本 FP8 TP8、PHAA2 双向 FP8、直接 stride 打包、SAP 本地 FP32 输出、本地输入投影、请求内固定条件复用、Token Refiner SP8/cuDNN BF16/FP8 FFN、视觉 SP8、VAE Encoder tile 分工、Audio Encoder 卷积分工和长音频 Decoder 分工。DiT 全部常驻 GPU，包括条件编码和 VAE 阶段。视频 decoder 默认改为 `native-stream`：原生 decoder、FP16 autocast、全 rank tile 分派、分块 RGB8 和异步 D2H/编码；输出头及音频计算的既有精度不变。Audio Decoder 的 `long` 在 5 秒形状走原实现；Audio Encoder 在没有参考音频时不会执行。
+
+`video_vae` 是独立的原生模型目录，不是 Diffusers `vae` 子目录。授权变量只应用于可信模型代码。新后端初始化更慢，CPU master 和显存代价见 [VAE 教程](H3-OMNI-VAE.md)。历史整网性能表使用 legacy decoder，不能算作本次新默认配置的性能或精度验收。
+
+CUDA 推荐配方仅把 native decoder 的 Linear 预存为 FP16，其他参数保持 FP32，计算仍是 FP16 autocast；复用旧解码器同一策略以减少静态占用。解码前释放请求内条件结果并回收空闲缓存，DiT 仍全常驻。NPU 默认和原生 FP32 组件测量路径不变。
 
 ## 覆盖单项配置
 
@@ -40,6 +46,7 @@ H3_CUDA_PRESET=none bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 76
 
 | 能力 | 参数 | 原路径默认 | 全并行预设 | 关闭后的行为／限制 |
 |---|---|---|---|---|
+| 视频解码后端 | `--h3_vae_backend legacy\|lightning\|native-stream` | CUDA 推荐 FP8 配方为 native-stream；其他入口见 VAE 教程 | native-stream | 可显式切换；legacy/lightning 需取消原生模型路径及授权 |
 | 本地输入投影 | `--h3_cuda_local_input` | SP 下关 | 开 | 全模态投影后再分片；文本上下文不会被截短 |
 | SAP 本地 FP32 输出 | `--h3_cuda_local_output` | SP 下关 | 开 | 先 gather 完整 hidden，再执行输出头 |
 | 请求内条件预计算 | `--h3_cuda_precompute_conditioning` | 关 | 开 | 每步计算；请求结束／异常或条件改变即释放／失效 |

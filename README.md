@@ -14,6 +14,8 @@ CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage atte
 
 v0.4 提供面向八卡 RTX 5090 R2VA 的优选 [Sage-FP8 全并行配置](docs/H3-CUDA-COMPOSABLE.md)：用 `cuda-5090 r2va` 显式选择，加入 SAP、本地输入、请求内条件复用、组件并行和去 BF16 临时副本，DiT 全程常驻。每项可单独关闭；原 `cuda`／`npu` 命令不自动开启。当前范围为八卡 Ref2VA 768P；组合正确性、显存容量和人工精度以各自实测记录为准。
 
+H3 视频 decoder 支持 CUDA/NPU 共用的 legacy、lightning、native-stream 三后端。CUDA 推荐的 T2VA/I2VA/R2VA 配方默认 native-stream，保留显式回退；NPU 原默认不变。[后端配置与验证范围](docs/H3-OMNI-VAE.md)
+
 v0.4 的 H3 在线接口将提示词上限从 2,000 放宽到 **7,000 个 UTF-16 码元**，按官方 CLI 的 JavaScript `text.length` 计数：常见汉字或英文字母各计 1，`🙂` 计 2。Base、Refiner、MaaS 共用该限制，在入队前拒绝超长文本，保留原文；这不是 tokenizer 的 token 上限。计数规则、错误响应和请求体上限见 [在线服务指南](docs/H3-ONLINE.md) 与 [MaaS API](server/video/MAAS-API.md)。
 
 v0.4 统一使用 `--maas` 开启 H3 在线输入校验和可靠性接口，旧 `--maas-fl2va-input` 保留为弃用别名。MaaS 开放 768P、5～15 秒的 T2VA、首帧／尾帧／首尾帧 I2VA，以及独立部署的 R2VA，增加自适应比例和受控公网素材下载。R2VA 在入队前强制限制为最多 9 图、3 视频、3 音频，总计不超过 12 个文件；视频和音频各自累计不超过 15 秒。CPU 回归为 46 项测试、242 个子用例通过；这些新增组合的 GPU 成片与精度仍待实测。不开 MaaS 时普通服务入口保持原有行为。
@@ -87,6 +89,8 @@ bash example/diffusers/scripts/run_h3.sh npu r2va 15 2k
 ```bash
 export BASE_MODEL=weights/h3-ref2va
 export PROMPT_FILE=inputs/prompt.txt
+export H3_VAE_MODEL_PATH=weights/h3-native/video_vae
+export H3_VAE_TRUST_REMOTE_CODE=1
 export H3_BASE_STEPS=20
 bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 ```
@@ -97,9 +101,9 @@ bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 15 768p inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
 ```
 
-`cuda-5090` 是脚本的位置参数，不是 `--cuda-5090`。R2VA 时自动启用 `sage-fp8-full-parallel`；主干仍为 SP8，DiT 全程常驻。全部单项开关、关闭预设、内存代价和在线 JSON 见 [完整教程](docs/H3-CUDA-COMPOSABLE.md)。原 `cuda`、`npu` 命令不会自动启用新预设。
+`cuda-5090` 是脚本的位置参数，不是 `--cuda-5090`。R2VA 时自动启用 `sage-fp8-full-parallel`；主干仍为 SP8，DiT 全程常驻。CUDA 推荐的 T2VA/I2VA/R2VA 配方现在均默认使用 `native-stream` decoder，需上面的原生 VAE 目录和授权；可用 `H3_VAE_BACKEND=legacy` 或 `lightning` 显式切换，并取消原生 VAE 的路径和授权变量。NPU 原默认不变。全部单项开关、关闭预设、内存代价和在线 JSON 见 [完整教程](docs/H3-CUDA-COMPOSABLE.md)。原 `cuda`、`npu` 命令不会自动启用 R2VA 全并行预设。
 
-已测 768P、20 步：单图 5/10 秒 55.97/97.54s，五图 5/10/15 秒 139.67/224.81/316.49s；峰值 allocated 27.93–28.33 GiB/卡。耗时含生成保存，不含初始化和预热；技术检查与抽帧通过，完整动态、口型和人工听音仍待复核。[性能表及口径](docs/performance/h3-cuda5090-full-parallel.md)
+历史 legacy decoder 已测 768P、20 步：单图 5/10 秒 55.97/97.54s，五图 5/10/15 秒 139.67/224.81/316.49s；峰值 allocated 27.93–28.33 GiB/卡。耗时含生成保存，不含初始化和预热；这些数据不代表切换 native-stream 后的整网性能。技术检查与抽帧通过，完整动态、口型和人工听音仍待复核。[性能表及口径](docs/performance/h3-cuda5090-full-parallel.md)
 
 全并行预设当前只面向 R2VA 768P。T2VA/I2VA、其他 CUDA 设备及 NPU 请使用下面各自的方案；不能套用 R2VA 的性能与精度结论。
 
@@ -206,6 +210,12 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 
 ## GPU 性能
 
+H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 `fp8-bf16`、`fp8-sage` 和全并行预设默认 `native-stream`；其余离线入口默认 `legacy`，NPU 在线预设仍为 `lightning`，显式选择优先。H3 旧命令的 `--vae_lightning decoder` 需替换为 `--h3_vae_backend lightning`，其他模型的旧参数保留。实验性 [Native-stream 后端](docs/H3-OMNI-VAE.md)迁移原生 H3 tile 调度、分块输出、异步 D2H 和 MP4 编码，需要原生 `video_vae` 权重目录和显式授权。[组件实测对比](docs/performance/h3-omni-vae.md)包含性能、显存和精度验证范围。
+
+昇腾也可选择 `native-stream`，需追加 `--vae_matmul_quant none`。已完成 [8×910B3 三后端组件对比](docs/performance/h3-vae-npu.md)：768P、5/10/15 秒，预热后新后端比 Lightning 快 1.57–1.95 倍；初始化单列，尚不代表整网加速或成片精度验收。
+
+[默认切换验证](docs/performance/h3-vae-release.md)：134 项回归通过；八卡 5090 的新默认 R2VA 单图 5 秒链路连续两次 1-step 请求完成，第二次八 rank 最大调用耗时 11.48 秒，累计 allocated 峰值 29.14 GiB／卡。这里只验证链路与复用，不是完整步数的性能／精度结论。
+
 除注明外，均为 8×RTX 5090、SP8、50 次实际 Base DiT。下表按用例和计时边界区分，保留各自精度证据。
 
 | 路径 | 请求 | 耗时 | 计时和验证口径 |
@@ -226,7 +236,7 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 
 [详细 GPU 性能与对照口径](docs/performance/h3-cuda.md)
 
-**CUDA 两套标准方案的 20 步参考**：8×RTX 5090、SP8、768P；单位为生成至 MP4 保存的秒数，不含模型初始化。Sage 每项先完整预热 1 步，复用同一组模型。历史基线的预热条件存在差异，比较的是整套配方，不能归因为单个算子收益。方案一仅 5 秒样例已人工认可，Sage 六项均为技术通过、人工待审。
+**CUDA 两套标准方案的历史 20 步参考（legacy decoder）**：8×RTX 5090、SP8、768P；单位为生成至 MP4 保存的秒数，不含模型初始化。Sage 每项先完整预热 1 步，复用同一组模型。历史基线的预热条件存在差异，比较的是整套配方，不能归因为单个算子收益。方案一仅 5 秒样例已人工认可，Sage 六项均为技术通过、人工待审；这些数据不代表新默认 native-stream 组合。
 
 | 任务 | 时长 | 方案一 BF16 attention / 通信 | 方案二 Sage / FP8 通信 |
 |---|---:|---:|---:|

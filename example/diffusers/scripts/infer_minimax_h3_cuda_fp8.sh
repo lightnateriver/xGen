@@ -27,6 +27,10 @@ unset XGEN_PHAA_FP8 XGEN_PHAA_ASYNC_EXCHANGE XGEN_PHAA_DIRECT_RETURN
 unset XGEN_PHAA_GATHER_PRIORITY XGEN_PHAA_FP8_ROW_TILING XGEN_PHAA_DEVICE_JOIN
 unset XGEN_PHAA_FUSED_RETURN_PACK XGEN_PHAA_DIRECT_GATHER XGEN_PHAA_DUAL_COMM
 export XGEN_PHAA_CHUNK_ORDER=natural NCCL_MAX_CTAS=2
+vae_args=(--h3_vae_backend "${H3_VAE_BACKEND:-native-stream}")
+if [[ $PROFILE == none ]]; then vae_args=(--h3_vae_backend "${H3_VAE_BACKEND:-legacy}"); fi
+if [[ -n ${H3_VAE_MODEL_PATH:-} ]]; then vae_args+=(--h3_vae_model_path "$H3_VAE_MODEL_PATH"); fi
+if [[ ${H3_VAE_TRUST_REMOTE_CODE:-0} == 1 ]]; then vae_args+=(--h3_vae_trust_remote_code); fi
 torchrun --standalone --nproc_per_node "$GPUS" "$SCRIPT_DIR/../infer.py" \
     --model MiniMax-H3 --task_type "$TASK_TYPE" \
     --pretrained_model_name_or_path "$MODEL_PATH" --h3_cuda_precision "$PROFILE" \
@@ -34,5 +38,5 @@ torchrun --standalone --nproc_per_node "$GPUS" "$SCRIPT_DIR/../infer.py" \
     --dtype bf16 --num_inference_steps "${NUM_INFERENCE_STEPS:-20}" \
     --width 1344 --height 768 --frames "$frames" --save_fps 24 --seed 42 \
     --sp "$GPUS" --text_encoder_tp "$GPUS" --phaa_num "${PHAA_NUM:-2}" --h3_cuda_vae_sp \
-    --matmul_quant none --vae_matmul_quant none --vae_lightning none --atten none \
+    --matmul_quant none --vae_matmul_quant none --atten none "${vae_args[@]}" \
     "${image_args[@]}" "$@"

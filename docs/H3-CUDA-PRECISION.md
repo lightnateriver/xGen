@@ -1,6 +1,6 @@
 # CUDA H3 默认配方：fp8-bf16
 
-这是 CUDA 标准方案一，H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。5 秒、20 步固定样例已有人工精度认可。它复用现有 InferenceManager、SP、PHAA、文本 TP 和 VAE tile，不新增服务或调度体系。NPU 和其他模型的默认路径不变。更快、人工精度待审核的第二套标准方案见 [Sage-FP8](H3-CUDA-SAGE.md)。
+这是 CUDA 标准方案一，H3 Base 的 T2VA / I2VA 默认使用 `fp8-bf16`。历史 legacy decoder 的 5 秒、20 步固定样例已有人工精度认可；新默认 decoder 的精度需独立判断。它复用现有 InferenceManager、SP、PHAA、文本 TP 和 VAE 接口，不新增服务或调度体系。NPU 和其他模型的默认路径不变。更快、人工精度待审核的第二套标准方案见 [Sage-FP8](H3-CUDA-SAGE.md)。
 
 | 模块 | 当前精度 / 策略 |
 |---|---|
@@ -9,7 +9,7 @@
 | attention / All-to-All | BF16 cuDNN dense / BF16 |
 | AdaLN | 原 BF16 owner 投影、逐层广播；仅完全相同的最近输入可精确复用 |
 | DiT 权重 | 全部 50 层常驻，VAE 阶段也保留 |
-| 视频 decoder | 原 FP16 autocast；218 个 Linear 提前存 FP16，其余层保留原 dtype |
+| 视频 decoder | 默认 native-stream：Linear 预存 FP16，其余参数 FP32、FP16 autocast；可显式选 legacy/lightning |
 | 音频 VAE | FP32，整模块按需上卡，结束或异常后回 CPU |
 
 本方案默认不包含 NVFP4 attention、FP8 通信、AdaLN gather、部分层常驻或区域编译。历史 NVFP4 / Refiner 路线仍可显式使用，不能将其精度结论套用到本配方。
@@ -25,13 +25,17 @@
 ```bash
 export BASE_MODEL=./weights/h3
 export PROMPT_FILE=./inputs/prompt.txt
+export H3_VAE_MODEL_PATH=./weights/h3-native/video_vae
+export H3_VAE_TRUST_REMOTE_CODE=1
 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
 bash example/diffusers/scripts/run_h3.sh cuda i2va 5 768p inputs/first-frame.png
 ```
 
 每条命令各生成一个视频。脚本默认八卡、SP8、文本 TP8、PHAA2、50 次实际 DiT、seed42、1344×768、124 帧 / 24 FPS。快速复测可在命令前加 `H3_BASE_STEPS=20`。模型初始化不计入常驻请求性能。
 
-直接 CLI 的 `--h3_cuda_precision auto` 按设备选择默认；可显式指定 `fp8-bf16`。通用 CLI 仍需填写模型路径、任务、SP8 和文本 TP8 等参数。若已有显式 packed NVFP4、Refiner、LoRA、AdaLN 表或其他 attention 配方，auto 保留其旧路线；强制指定 fp8-bf16 时，对不兼容组合明确报错。
+直接 CLI 的 `--h3_cuda_precision auto` 按设备选择默认；可显式指定 `fp8-bf16`。该 CUDA 配方默认选择 native-stream，还需传 `--h3_vae_model_path`、`--h3_vae_trust_remote_code`；显式 `--h3_vae_backend legacy` 或 `lightning` 可覆盖默认。通用 CLI 仍需填写模型路径、任务、SP8 和文本 TP8 等参数。若已有显式 packed NVFP4、Refiner、LoRA、AdaLN 表或其他 attention 配方，auto 保留其旧路线；强制指定 fp8-bf16 时，对不兼容组合明确报错。
+
+本页历史精度认可与性能使用 legacy decoder；更换 native-stream 后不继承该人工认可。新后端组件精度、初始化和显存数据见 [VAE 后端教程](H3-OMNI-VAE.md)。
 
 回到原 CUDA 路径：
 

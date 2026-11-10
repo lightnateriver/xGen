@@ -11,7 +11,7 @@
   "atten": "laser",
   "matmul_quant": "int8",
   "vae_matmul_quant": "none",
-  "vae_lightning": "none",
+  "h3_vae_backend": "legacy",
   "inf_vram_blocks_num": 0,
   "rope_fused": true,
   "adaln_cache_file": "./model-cache/t2va-51step.safetensors",

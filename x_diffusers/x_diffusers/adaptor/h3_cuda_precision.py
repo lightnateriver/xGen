@@ -82,6 +82,8 @@ def resolve(args, backend):
             or not getattr(args, 'h3_cuda_conditioning_offload', False)):
         raise ValueError('h3_cuda_reference_offload requires CUDA FP8 Ref2VA with h3_cuda_conditioning_offload')
     args.h3_cuda_precision = requested
+    from .h3_vae_config import resolve_vae_backend
+    resolve_vae_backend(args)
     if requested in ('fp8-bf16', 'fp8-sage'):
         if getattr(args, 'phaa_num', 0) == 0:
             args.phaa_num = 2
@@ -120,6 +122,16 @@ def validate(args, backend):
 def validate_manager(manager, args, backend):
     """A resident HTTP worker cannot silently change its precision recipe."""
     profile = resolve(args, backend)
+    from ..framework.vae.omni_decoder import validate_options
+    validate_options(args, backend)
+    if manager.pipe is not None:
+        installed = getattr(manager.pipe, '_h3_vae_decode_backend', None)
+        selected = getattr(args, 'h3_vae_backend', 'legacy')
+        if selected != getattr(manager.pipe, '_h3_vae_backend_name', 'legacy'):
+            raise ValueError('Restart the service to change H3 VAE decode backend')
+        if (installed is not None) != (selected == 'native-stream') or (installed is not None and
+                str(installed.path) != str(args.h3_vae_model_path)):
+            raise ValueError('Restart the service to change H3 VAE decode backend or checkpoint')
     pair_tp = getattr(args, 'h3_cuda_linear_tp', 1)
     if manager.pipe is not None and pair_tp != getattr(manager, '_h3_cuda_linear_tp_key', 1):
         raise ValueError('Restart the service to change H3 linear TP')
@@ -297,11 +309,14 @@ def prepare_vaes(pipe,args,device):
     from diffusers.hooks import apply_group_offloading
     from ..framework.vae.h3_cuda_chunks import install_cpu_decode_chunks,install_staged_decoder
 
-    install_cpu_decode_chunks(pipe.vae)
-    pipe._h3_cuda_cpu_decode_chunks=True
+    omni_decode = getattr(args, 'h3_vae_backend', 'legacy') == 'native-stream'
+    if not omni_decode:
+        install_cpu_decode_chunks(pipe.vae)
+        pipe._h3_cuda_cpu_decode_chunks=True
     apply_group_offloading(pipe.vae,offload_type='leaf_level',onload_device=device,
                            offload_device=torch.device('cpu'),use_stream=False,low_cpu_mem_usage=True)
-    install_staged_decoder(pipe.vae,device,retain_module)
+    if not omni_decode:
+        install_staged_decoder(pipe.vae,device,retain_module)
     # Audio weight_norm pre-hooks run before leaf onload hooks. Move the complete
     # module before decode instead, as required by its upstream offload contract.
     audio=pipe.audio_vae
@@ -316,8 +331,7 @@ def prepare_vaes(pipe,args,device):
             offload_audio(audio)
     audio.decode=decode_audio
     original=pipe.vae.decode
-    @wraps(original)
-    def decode(*values,**kwargs):
+    def prepare_video_decode():
         import gc
         import time
 
@@ -333,6 +347,12 @@ def prepare_vaes(pipe,args,device):
                    reserved_after=torch.cuda.memory_reserved(),allocated=torch.cuda.memory_allocated())
         pipe._h3_cuda_decode_trim=event
         logger.info('H3 CUDA before video VAE decode: unused memory reclaimed, DiT retained: %s',event)
+    # Both old and native decoders must release request-scoped conditioning
+    # and reclaim unused allocations before staging decoder weights.
+    pipe._h3_prepare_video_decode=prepare_video_decode
+    @wraps(original)
+    def decode(*values,**kwargs):
+        pipe._h3_prepare_video_decode()
         return original(*values,**kwargs)
     pipe.vae.decode=decode
     if getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp') or getattr(args, 'task_type', None) == 'ref2va':
@@ -344,7 +364,8 @@ def prepare_vaes(pipe,args,device):
     if any(condition_parallel_key(args)[:3]) or condition_parallel_key(args)[-1] != 'none':
         from .h3_condition_parallel import install_condition_parallel
         install_condition_parallel(pipe, args, device)
-    logger.info('H3 CUDA spatial VAE tiles; DiT resident blocks remain on device through decode')
+    logger.info('H3 CUDA VAE backend=%s; DiT resident blocks remain on device through decode',
+                getattr(args, 'h3_vae_backend', 'legacy'))
 
 
 def prepare_text_tp(pipe):

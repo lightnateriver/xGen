@@ -14,7 +14,7 @@
   "atten": "sparge",
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
-  "vae_lightning": "none",
+  "h3_vae_backend": "legacy",
   "rope_fused": false,
   "transformer_path": null,
   "adaln_cache_file": null,

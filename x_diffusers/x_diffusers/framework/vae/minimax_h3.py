@@ -807,6 +807,9 @@ _original_video_decode_step_call = MiniMaxH3VideoDecodeStep.__call__
 
 @torch.no_grad()
 def _decode_long_cuda_video(self, pipeline, state):
+    backend = getattr(pipeline, "_h3_vae_decode_backend", None)
+    if backend is not None:
+        return backend.decode_video(self, pipeline, state)
     cpu_chunks = getattr(pipeline, "_h3_cuda_cpu_decode_chunks", False)
     if not cpu_chunks and not getattr(pipeline, "_h3_base_long_video", False):
         return _original_video_decode_step_call(self, pipeline, state)
@@ -850,6 +853,9 @@ MiniMaxH3VideoDecodeStep.__call__ = _decode_long_cuda_video
 
 @torch.no_grad()
 def _decode_step_call_route_b(self, pipeline, state):
+    backend = getattr(pipeline, "_h3_vae_decode_backend", None)
+    if backend is not None:
+        return backend.decode_step(self, pipeline, state)
     is_lightning = (
             getattr(infer_info, "vae_lightning", "none")
             in ["decoder", "encoder_and_decoder"]

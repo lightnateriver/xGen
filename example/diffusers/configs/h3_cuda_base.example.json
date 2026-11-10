@@ -12,10 +12,12 @@
   "atten": "none",
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
-  "vae_lightning": "none",
+  "h3_vae_backend": "native-stream",
   "rope_fused": false,
   "transformer_path": null,
   "adaln_cache_file": null,
   "h3_cuda_vae_sp": true,
-  "h3_cuda_precision": "fp8-bf16"
+  "h3_cuda_precision": "fp8-bf16",
+  "h3_vae_model_path": "weights/h3-native/video_vae",
+  "h3_vae_trust_remote_code": true
 }

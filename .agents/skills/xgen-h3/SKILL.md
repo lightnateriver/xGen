@@ -18,7 +18,7 @@ Resolve the repository root from this skill's location. Run the documented comma
 | CUDA offline 2K | I2VA with packed NVFP4 FL2VA Base plus the CUDA-prepared Refiner. The experimental profile accepts 5, 10 and 15 seconds |
 | Legacy HTTP Base | Integer durations from 5 to 15 seconds. NPU uses a T2VA/I2VA service or a separate R2VA service. CUDA Base defaults to fp8-bf16 for T2VA/I2VA; R2VA remains on the legacy route |
 | Legacy HTTP 2K | One workflow per instance. NPU supports all three tasks. CUDA requires FL2VA. Accepted durations are 5, 10 and 15 seconds |
-| CUDA MaaS | 5-second 768P landscape FL2VA with one inline first frame and 50 actual DiT evaluations |
+| CUDA MaaS | 768P, integer 5..15 seconds; separate FL2VA/T2VA and Ref2VA instances. Recommended JSON files select native-stream and require a trusted native video_vae directory. Input limits and adaptive aspect ratio follow the MaaS API document |
 
 For offline use, start with the [one-command examples](../../../README.md#离线生成):
 
@@ -38,9 +38,11 @@ Use the [online launch and request guide](../../../docs/H3-ONLINE.md) for servic
 - On NPU, follow [Base/Refiner preparation](../../../docs/H3-DEPLOYMENT.md#4-模型与目录准备). The stripped Transformer and AdaLN table must match the workflow and schedule. Set `num_inference_steps` and AdaLN preparation `--steps` to the actual Base evaluations (for example, 50). An existing 51-point table matches 50 steps. Refiner adds three.
 - On CUDA, use the default [fp8-bf16 profile](../../../docs/H3-CUDA-PRECISION.md) with a complete original FL2VA modular checkpoint. No packed NVFP4 file is required for default Base/MaaS. Auto keeps NPU, other models and explicit legacy/Refiner workflows unchanged. `H3_CUDA_PRECISION=none` selects the legacy offline path; service JSON/CLI can set h3_cuda_precision=none. H3_FAST=1 is a separate historical experiment, not the manually accepted profile. Never set XGEN_PHAA_FP8=1 for fp8-bf16. Precision is fixed at service startup, not a request option.
 - CUDA standard recipe 2 is [Sage-FP8](../../../docs/H3-CUDA-SAGE.md). Run `H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p`; choose i2va and a first frame for I2VA, and 5/10/15 for duration. The launcher enables FP8 transport, output AdaLN fusion and expandable segments after clearing legacy flags. Direct torchrun and HTTP/MaaS require those environment variables before process startup. The standard recipe retains FP8 weights and is not INT8 Q/K communication. Sage HTTP/MaaS end-to-end has not been validated; never report offline timings as HTTP SLA or technical decode as human quality approval.
-- Read [MaaS API](../../../server/video/MAAS-FL2VA-API.md) for bounds, queue errors, timeouts and delivery. The current MaaS input profile has no 2K, 10-second, 15-second, T2VA or R2VA route. Use legacy HTTP or offline as appropriate.
+- Read [MaaS API](../../../server/video/MAAS-API.md) for bounds, queue errors, timeouts, first/last frames, reference media and delivery. MaaS currently exposes 768P only; use the documented FL2VA/T2VA or separate Ref2VA instance. Decoder selection is a startup option, not a generation-request field.
 
 ## Verify a run
+
+CUDA recommended T2VA/I2VA/R2VA (`fp8-bf16`, `fp8-sage`, `sage-fp8-full-parallel`) now default to `native-stream` VAE decode. For run_h3.sh, set `H3_VAE_MODEL_PATH=weights/h3-native/video_vae` and `H3_VAE_TRUST_REMOTE_CODE=1` only for trusted native model code. Diffusers `vae` is not the native `video_vae` directory. CLI equivalents are `--h3_vae_model_path`, `--h3_vae_trust_remote_code`, and `--vae_matmul_quant none`. Explicit `--h3_vae_backend legacy|lightning|native-stream` overrides the recipe on CUDA and NPU. For script rollback, unset native path/trust variables and set `H3_VAE_BACKEND=legacy` or `lightning`. NPU defaults remain unchanged. Resident services require restart to change decoder. Historical full-pipeline performance and manual quality acceptance used legacy decode and do not automatically apply to native-stream. See [backend guide](../../../docs/H3-OMNI-VAE.md).
 
 Run `python tools/collect_env.py` in the target environment. The launch examples use eight visible devices. On a shared node, check device memory, utilization and compute processes before reserving cards or starting work.
 

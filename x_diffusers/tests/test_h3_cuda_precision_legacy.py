@@ -18,6 +18,7 @@ FLAGS.update(h3_cuda_linear_tp=1,h3_cuda_conditioning_offload=False,
     h3_cuda_input_refiner='none',h3_cuda_vision_sp=False,
     h3_cuda_vae_encoder_parallel=False,h3_cuda_audio_encoder_parallel=False,
     h3_cuda_audio_decoder_parallel='none')
+FLAGS.update(h3_vae_backend='legacy',h3_vae_model_path=None,h3_vae_trust_remote_code=False)
 
 
 def constant(test):
@@ -53,6 +54,9 @@ class DisabledPrecision(ast.NodeTransformer):
         # Selective component loading contributes no kwargs when precision is off.
         node.keywords=[kw for kw in node.keywords if not (
             kw.arg is None and isinstance(kw.value,ast.Dict) and not kw.value.keys)]
+        # Public H3 naming changes the shared argument's help, not Wan logic.
+        if node.args and isinstance(node.args[0],ast.Constant) and node.args[0].value=='--vae_lightning':
+            node.keywords=[kw for kw in node.keywords if kw.arg!='help']
         return node
 
     def visit_Name(self,node):
@@ -62,17 +66,17 @@ class DisabledPrecision(ast.NodeTransformer):
             return ast.copy_location(ast.Constant('none'),node)
         if node.id=='bootstrap_environment' and isinstance(node.ctx,ast.Load):
             return ast.copy_location(ast.Constant(False),node)
-        if node.id in ('local_io','h3_parallel','shared_exchange') and isinstance(node.ctx,ast.Load):
-            return ast.copy_location(ast.Constant(False if node.id=='local_io' else None),node)
+        if node.id in ('local_io','h3_parallel','shared_exchange','omni_decode') and isinstance(node.ctx,ast.Load):
+            return ast.copy_location(ast.Constant(False if node.id in ('local_io','omni_decode') else None),node)
         return node
 
     def visit_Assign(self,node):
-        if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('precision','local_io','h3_parallel','shared_exchange','component_options'):
+        if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('precision','local_io','h3_parallel','shared_exchange','component_options','omni_decode'):
             return None
         return self.generic_visit(node)
 
     def visit_ImportFrom(self,node):
-        return None if node.module in ('h3_parallel_config','h3_cuda_options','h3_cuda_precision') else node
+        return None if node.module in ('h3_parallel_config','h3_cuda_options','h3_cuda_precision','framework.vae.omni_decoder') else node
 
     def visit_BoolOp(self,node):
         self.generic_visit(node)
@@ -112,7 +116,7 @@ class DisabledPrecision(ast.NodeTransformer):
     def visit_Expr(self,node):
         call=node.value
         if isinstance(call,ast.Call) and (
-                isinstance(call.func,ast.Name) and call.func.id in ('add_arguments','add_cuda_options','resolve','commit_environment')
+                isinstance(call.func,ast.Name) and call.func.id in ('add_arguments','add_cuda_options','resolve','commit_environment','validate_options')
                 or isinstance(call.func,ast.Attribute) and isinstance(call.func.value,ast.Name)
                 and call.func.value.id=='H3ParallelConfig' and call.func.attr=='from_args'):
             return None

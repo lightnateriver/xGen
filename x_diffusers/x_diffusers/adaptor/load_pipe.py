@@ -445,9 +445,11 @@ def to_dtype(name: str):
 
 def load_pipe(args):
     backend = device_type()
+    from ..framework.vae.omni_decoder import validate_options
     from .h3_parallel_config import H3ParallelConfig
     from .h3_cuda_precision import resolve
     resolve(args, backend)
+    validate_options(args, backend)
     H3ParallelConfig.from_args(args, backend, dist.get_world_size() if dist.is_initialized() else 1)
     precision = getattr(args, "h3_cuda_precision", "auto")
     if precision != "none":
@@ -747,6 +749,9 @@ def update_pipe(pipe, args):
     operator_ability(pipe, args)
     general_ability(pipe, args)
     parallelism_ability(pipe, args)
+    if getattr(args, 'h3_vae_backend', 'legacy') != 'legacy':
+        from ..framework.vae.omni_decoder import configure
+        configure(pipe, args, pipe._execution_device)
     if getattr(args, 'h3_attention', 'legacy') != 'legacy':
         from ..framework.transformer.h3_attention import install
         install(pipe.transformer, args)

@@ -195,7 +195,7 @@ torchrun --nproc_per_node=8 --max_restarts=0 example/diffusers/infer.py \
   --task_type fl2va --keyframe_image "$FIRST_FRAME" --frames 243 \
   --width 1344 --height 768 --save_fps 24 --num_inference_steps 20 --seed 42 \
   --dtype bf16 --sp 8 --text_encoder_tp 8 --phaa_num 2 --rope_fused \
-  --atten laser --matmul_quant int8 --vae_matmul_quant int8 --vae_lightning decoder \
+  --atten laser --matmul_quant int8 --vae_matmul_quant int8 --h3_vae_backend lightning \
   --h3_attention veda --h3_veda_predictor "$VEDA_PREDICTOR" \
   --h3_veda_sparsity 0.7 --prompt "$(cat "$PROMPT_FILE")" --save_path "$OUTPUT_VIDEO"
 ```

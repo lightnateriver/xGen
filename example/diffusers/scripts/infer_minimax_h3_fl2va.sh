@@ -26,7 +26,7 @@ export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1}"
 export N_NPUS="${N_NPUS:-2}"
 
 export TASK_NAME="${TASK_NAME:-minimax_h3_fl2va_2npu}"
-export VAE_LIGHTING="${VAE_LIGHTING:-decoder}"
+export H3_VAE_BACKEND="${H3_VAE_BACKEND:-lightning}"
 
 MODEL_PATH="${MODEL_PATH:-./weights/MiniMax-H3}"
 FIRST_FRAME="${FIRST_FRAME:-${SCRIPT_DIR}/astronaut.jpg}"
@@ -78,7 +78,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --matmul_quant "${MATMUL_QUANT:-int8}" \
          --vae_matmul_quant "${VAE_MATMUL_QUANT:-int8}" \
          --atten "${ATTENTION_BACKEND:-laser}" \
-         --vae_lightning $VAE_LIGHTING \
+         --h3_vae_backend "$H3_VAE_BACKEND" \
          --text_encoder_tp "${TEXT_ENCODER_TP:-$N_NPUS}" \
          --sp $N_NPUS \
          --phaa_num "${PHAA_NUM:-7}" \

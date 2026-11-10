@@ -199,7 +199,7 @@ mkdir -p outputs logs
 bash example/diffusers/scripts/infer_minimax_h3_refiner.sh
 ```
 
-示例会明确设置 Base INT8、Laser、RoPE、AdaLN、SP8/文本 TP8，以及 Refiner BF16/3 步。`vae_matmul_quant=none`、`vae_lightning=none`、`inf_vram_blocks_num=0` 避免与新后端分阶段驻留叠加 hook。输出位置由环境变量设置，脚本不会写死机器路径。
+示例会明确设置 Base INT8、Laser、RoPE、AdaLN、SP8/文本 TP8，以及 Refiner BF16/3 步。`vae_matmul_quant=none`、`h3_vae_backend=legacy`、`inf_vram_blocks_num=0` 避免与 Refiner 分阶段驻留叠加 hook。输出位置由环境变量设置，脚本不会写死机器路径。Refiner 不使用 Base 的 native-stream decoder。
 
 ### 单图 I2VA
 

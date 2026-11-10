@@ -1,0 +1,5 @@
+Derived from vLLM-Omni b92856cb540958713fee5d99a1d6c8e68fd48755.
+Copyright contributors to the vLLM-Omni project. Apache-2.0.
+Modified by xGen: standalone checkpoint loader, local capability/operator adapters,
+standard logging and environment naming. Native H3 decode/temporal/tile arithmetic
+and chunk transfer/encoding retained. See UPSTREAM.json for per-file provenance.

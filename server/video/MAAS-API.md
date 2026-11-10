@@ -18,6 +18,8 @@
 
 从仓库根目录执行，先填写配置中的模型路径，并准备 `ffmpeg`、`ffprobe`：
 
+CUDA 推荐示例的 decoder 为 `native-stream`；同时填写可信原生 `video_vae` 路径并确认 `h3_vae_trust_remote_code=true` 授权。Diffusers 的 `vae` 目录不能替代原生目录。可在启动时显式改为 legacy 或 lightning，并移除原生路径和授权；生成请求不能切换后端。详见 [VAE 配置与回退](../../docs/H3-OMNI-VAE.md)。
+
 ```bash
 pip install -r server/requirements-maas.txt
 

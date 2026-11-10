@@ -80,12 +80,13 @@ def install_dit_fusions(transformer, enabled):
 
 
 def configure_parallelism(pipe, args):
+    omni_decode = getattr(args, "h3_vae_backend", "legacy") == "native-stream"
     cuda_vae_tiles = os.environ.get("XGEN_H3_CUDA_VAE_TILES") == "1"
     if getattr(args, "h3_cuda_precision", "none") in ("fp8-bf16", "fp8-sage"):
         cuda_vae_tiles = True
-    if cuda_vae_tiles and not getattr(args, "h3_cuda_vae_sp", False):
+    if not omni_decode and cuda_vae_tiles and not getattr(args, "h3_cuda_vae_sp", False):
         raise ValueError("XGEN_H3_CUDA_VAE_TILES requires --h3_cuda_vae_sp")
-    if getattr(args, "h3_cuda_vae_sp", False):
+    if not omni_decode and getattr(args, "h3_cuda_vae_sp", False):
         manager = getattr(pipe, '_h3_vae_parallel_manager', pipe.transformer.parallel_manager)
         heads = pipe.vae.decoder.transformer_blocks[0].attn.heads
         if heads % manager.sp_size:

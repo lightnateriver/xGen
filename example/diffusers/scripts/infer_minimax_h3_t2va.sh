@@ -16,7 +16,7 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export N_NPUS=8
 
 export TASK_NAME="minimax_h3_t2va"
-export VAE_LIGHTING="decoder"
+export H3_VAE_BACKEND="lightning"
 export INF_VRAM_BLOCKS_NUM=1
 
 torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MASTER_PORT ../infer.py \
@@ -35,7 +35,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --vae_matmul_quant int8 \
          --atten laser \
          --rope_fused \
-         --vae_lightning $VAE_LIGHTING \
+         --h3_vae_backend "$H3_VAE_BACKEND" \
          --text_encoder_tp $N_NPUS \
          --adaln_cache_file ../weights/MiniMax-H3/adaln_cache/adaln_cache_51step.safetensors \
          --transformer_path ../weights/MiniMax-H3/transformer_adaln_cache \

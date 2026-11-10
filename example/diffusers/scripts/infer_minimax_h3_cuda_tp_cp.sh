@@ -33,5 +33,5 @@ torchrun --standalone --nproc_per_node 8 "$SCRIPT_DIR/../infer.py" \
     --h3_parallel_mode tp_cp --h3_dit_tp 2 --sp 4 --text_encoder_tp 8 \
     --h3_tp_comm "${TP_COMM:-bf16}" --h3_cp_comm "${CP_COMM:-fp8}" \
     --phaa_num 2 --h3_cuda_vae_sp \
-    --matmul_quant none --vae_matmul_quant none --vae_lightning none --atten none \
+    --matmul_quant none --vae_matmul_quant none --h3_vae_backend legacy --atten none \
     "${image_args[@]}" "$@"

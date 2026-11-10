@@ -241,7 +241,8 @@ DEFAULT_MINIMAX_H3_CONFIG = {
     "dtype": "bf16",
     "sp": 8,
     "fsdp": None,
-    "vae_lightning": "decoder",
+    "h3_vae_backend": "lightning",
+    "vae_lightning": "none",  # Internal placeholder; H3 selection is resolved by the worker.
     "turbo_mode": "default",
     "inf_vram_blocks_num": 0,
     "atten": "laser",
@@ -283,7 +284,7 @@ if device_type() == "cuda":
     DEFAULT_MINIMAX_H3_CONFIG.update({
         "h3_cuda_precision": "auto", "phaa_num": 2, "h3_cuda_vae_sp": True,
         "atten": "none", "matmul_quant": "none", "vae_matmul_quant": "none",
-        "vae_lightning": "none", "rope_fused": False,
+        "h3_vae_backend": None, "vae_lightning": "none", "rope_fused": False,
         "transformer_path": None, "adaln_cache_file": None,
     })
 
@@ -3494,6 +3495,10 @@ def _apply_ten_second_config_args(args) -> None:
 def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None:
     """Apply MiniMax-H3 specific command line arguments."""
     from x_diffusers.adaptor.h3_cuda_options import STARTUP_OPTIONS
+    for name in ('h3_vae_backend', 'h3_vae_model_path', 'h3_vae_trust_remote_code'):
+        value = getattr(args, name, None)
+        if value is not None:
+            service.default_config[name] = value
     for name in STARTUP_OPTIONS + ('h3_parallel_mode', 'h3_dit_tp', 'h3_tp_comm', 'h3_cp_comm',
                                    'h3_tp_comm_chunk_elements', 'h3_parallel_warmup_mib'):
         value = getattr(args, name, None)
@@ -3520,7 +3525,7 @@ def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None
     if getattr(args, 'transformer_path', None):
         service.default_config['transformer_path'] = args.transformer_path
         logger.info(f"[Rank {rank}] Transformer path set to: {args.transformer_path}")
-    if getattr(args, 'vae_matmul_quant', None) and args.vae_matmul_quant != 'none':
+    if getattr(args, 'vae_matmul_quant', None) is not None:
         service.default_config['vae_matmul_quant'] = args.vae_matmul_quant
         logger.info(f"[Rank {rank}] VAE matmul quant set to: {args.vae_matmul_quant}")
     if getattr(args, 'seedvr2_model_dir', None):
@@ -3644,6 +3649,11 @@ def main():
                         help='Service mode: t2va (allows t2va+fl2va) or ref2va (allows ref2va only)')
     parser.add_argument('--h3_cuda_precision', choices=['auto', 'none', 'fp8-bf16', 'fp8-sage'], default=None,
                         help='CUDA H3 Base defaults to fp8-bf16; none selects legacy; NPU auto stays unchanged')
+    parser.add_argument('--h3_vae_backend', choices=['legacy', 'lightning', 'native-stream'], default=None,
+                        help='H3 decoder; changing the backend requires restarting the service')
+    parser.add_argument('--h3_vae_model_path', default=None, help='Trusted native H3 video_vae directory')
+    parser.add_argument('--h3_vae_trust_remote_code', action='store_true', default=None,
+                        help='Authorize loading Python code from the native H3 VAE directory')
     parser.add_argument('--h3_parallel_mode', choices=['sp', 'tp_cp', 'tp_cp_shared', 'tp_sp'], default=None,
                         help='Experimental CUDA H3 TP + pure-Ulysses; default preserves SP')
     parser.add_argument('--h3_dit_tp', type=int, default=None)
@@ -3655,7 +3665,7 @@ def main():
                         help='Path to precomputed AdaLN cache file (MiniMax-H3)')
     parser.add_argument('--transformer_path', type=str, default=None,
                         help='Custom transformer checkpoint directory (MiniMax-H3)')
-    parser.add_argument('--vae_matmul_quant', type=str, default='none',
+    parser.add_argument('--vae_matmul_quant', type=str, default=None,
                         choices=['none', 'int8', 'int4', 'mxfp4'],
                         help='VAE matmul quantization type')
     parser.add_argument('--ten-second', action='store_true',

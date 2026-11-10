@@ -12,7 +12,7 @@
   "atten": "laser",
   "matmul_quant": "int8",
   "vae_matmul_quant": "int8",
-  "vae_lightning": "decoder",
+  "h3_vae_backend": "lightning",
   "rope_fused": true,
   "transformer_path": "model-cache/base-t2va",
   "adaln_cache_file": "model-cache/t2va-51step.safetensors"

@@ -41,32 +41,36 @@ def resolve(args, backend):
                      and getattr(args, 'task_type', None) in ('t2va', 'fl2va') and not legacy else 'none')
     if requested != 'none' and (backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3'):
         raise ValueError(f'{requested} requires CUDA MiniMax-H3; use auto or none on NPU and other models')
+    portable = requested == 'none'
+    if portable:
+        from .h3_features import validate as validate_features
+        validate_features(args, backend)
     linear_tp = getattr(args, 'h3_cuda_linear_tp', 1)
     if type(linear_tp) is not int or linear_tp not in (1, 2):
         raise ValueError('h3_cuda_linear_tp must be 1 or 2')
     if linear_tp == 2 and (backend != 'cuda' or requested not in ('fp8-bf16', 'fp8-sage')
             or getattr(args, 'sp', 1) != 8 or getattr(args, 'h3_parallel_mode', 'sp') != 'sp'):
         raise ValueError('h3_cuda_linear_tp=2 requires CUDA H3 FP8 and original SP8 mode')
-    if getattr(args, 'h3_cuda_local_output', False) and (requested == 'none' or backend != 'cuda'):
+    if getattr(args, 'h3_cuda_local_output', False) and not portable and backend != 'cuda':
         raise ValueError('h3_cuda_local_output requires a CUDA H3 FP8 precision profile')
-    if getattr(args, 'h3_cuda_local_input', False) and (requested == 'none' or backend != 'cuda'):
+    if getattr(args, 'h3_cuda_local_input', False) and not portable and backend != 'cuda':
         raise ValueError('h3_cuda_local_input requires a CUDA H3 FP8 precision profile')
     if getattr(args, 'h3_cuda_conditioning_offload', False) and (
-            requested == 'none' or backend != 'cuda' or getattr(args, 'task_type', None) != 'ref2va'):
+            (not portable and backend != 'cuda') or getattr(args, 'task_type', None) != 'ref2va'):
         raise ValueError('h3_cuda_conditioning_offload requires an explicit CUDA FP8 Ref2VA profile')
     chunk = getattr(args, 'h3_cuda_refiner_ff_chunk_size', 0)
     if type(chunk) is not int or chunk < 0 or (chunk and (chunk < 128 or chunk > 32768 or chunk % 128)):
         raise ValueError('h3_cuda_refiner_ff_chunk_size must be zero or 128..32768 in multiples of 128')
-    if chunk and (requested == 'none' or backend != 'cuda' or getattr(args, 'task_type', None) != 'ref2va'):
+    if chunk and ((not portable and backend != 'cuda') or getattr(args, 'task_type', None) != 'ref2va'):
         raise ValueError('h3_cuda_refiner_ff_chunk_size requires an explicit CUDA FP8 Ref2VA profile')
     input_refiner = getattr(args, 'h3_cuda_input_refiner', 'none')
     if input_refiner not in ('none', 'cudnn-sp', 'cudnn-sp-fp8', 'custom'):
         raise ValueError('Unknown h3_cuda_input_refiner profile')
-    if input_refiner != 'none' and (requested == 'none' or backend != 'cuda'
+    if input_refiner != 'none' and not portable and (backend != 'cuda'
             or getattr(args, 'task_type', None) != 'ref2va'
             or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8)):
         raise ValueError('h3_cuda_input_refiner requires an explicit CUDA FP8 Ref2VA SP8 profile')
-    if getattr(args, 'h3_cuda_precompute_conditioning', False) and (requested == 'none' or backend != 'cuda'
+    if getattr(args, 'h3_cuda_precompute_conditioning', False) and not portable and (backend != 'cuda'
             or getattr(args, 'task_type', None) != 'ref2va'
             or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8)):
         raise ValueError('h3_cuda_precompute_conditioning requires an explicit CUDA FP8 Ref2VA SP8 profile')
@@ -74,11 +78,11 @@ def resolve(args, backend):
     if parallel_key[-1] not in ('none', 'long'):
         raise ValueError('Unknown h3_cuda_audio_decoder_parallel profile')
     if (any(parallel_key[:3]) or parallel_key[-1] != 'none') and (
-            requested == 'none' or backend != 'cuda' or getattr(args, 'task_type', None) != 'ref2va'
-            or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8)):
+            not portable and (backend != 'cuda' or getattr(args, 'task_type', None) != 'ref2va'
+            or (getattr(args, 'h3_parallel_mode', 'sp') == 'sp' and getattr(args, 'sp', 1) != 8))):
         raise ValueError('H3 condition parallelism requires an explicit CUDA FP8 Ref2VA SP8 profile')
     if getattr(args, 'h3_cuda_reference_offload', False) and (
-            requested == 'none' or backend != 'cuda' or getattr(args, 'task_type', None) != 'ref2va'
+            (not portable and backend != 'cuda') or getattr(args, 'task_type', None) != 'ref2va'
             or not getattr(args, 'h3_cuda_conditioning_offload', False)):
         raise ValueError('h3_cuda_reference_offload requires CUDA FP8 Ref2VA with h3_cuda_conditioning_offload')
     args.h3_cuda_precision = requested
@@ -168,13 +172,23 @@ def validate_manager(manager, args, backend):
         validate(args, backend)
     from .h3_cuda_options import startup_key
     key = startup_key(args)
-    cuda_resident = profile in ('fp8-bf16', 'fp8-sage') or previous in ('fp8-bf16', 'fp8-sage')
+    from .h3_features import enabled as portable_enabled
+    portable_now = portable_enabled(args)
+    previous_portable_key = getattr(manager, '_h3_portable_startup_key', None)
+    if manager.pipe is not None and portable_now and previous not in ('fp8-bf16', 'fp8-sage'):
+        if previous_portable_key is None or previous_portable_key != key:
+            raise ValueError('Restart the service to enable or change portable H3 startup options')
+    cuda_resident = (profile in ('fp8-bf16', 'fp8-sage') or previous in ('fp8-bf16', 'fp8-sage')
+                     or portable_now or getattr(manager, '_h3_portable_enabled', False))
+    manager._h3_portable_enabled = portable_now
     if cuda_resident and manager.pipe is not None and getattr(manager, '_h3_cuda_options_key', key) != key:
         raise ValueError('Restart the manager/service to change H3 CUDA startup options')
     from .h3_cuda_options import commit_environment
     commit_environment(args)
     if cuda_resident:
         manager._h3_cuda_options_key = key
+    if getattr(args, 'model', None) == 'MiniMax-H3':
+        manager._h3_portable_startup_key = key
     manager._h3_cuda_linear_tp_key = pair_tp
     manager._h3_cuda_precision_key = profile
     manager._h3_condition_parallel_key = condition_key
@@ -301,7 +315,7 @@ def offload_audio(audio):
     # caches can still be meta placeholders after loading; they carry no data.
     for child in audio.modules():
         if (hasattr(child,'weight_g') and hasattr(child,'weight_v')
-                and child.weight.device.type=='cuda'):
+                and child.weight.device.type in ('cuda', 'npu')):
             child.weight=child.weight.to('cpu')
 
 

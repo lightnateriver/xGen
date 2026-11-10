@@ -1,0 +1,23 @@
+{
+  "model": "MiniMax-H3",
+  "pretrained_model_name_or_path": "weights/base",
+  "task_type": "ref2va",
+  "resolution": "768p",
+  "dtype": "bf16",
+  "sp": 8,
+  "text_encoder_tp": 8,
+  "phaa_num": 2,
+  "num_inference_steps": 20,
+  "fsdp": null,
+  "atten": "laser",
+  "matmul_quant": "int8",
+  "vae_matmul_quant": "none",
+  "h3_vae_backend": "native-stream",
+  "rope_fused": true,
+  "transformer_path": "model-cache/base-ref2va",
+  "adaln_cache_file": "model-cache/ref2va-21step.safetensors",
+  "h3_features": "full-parallel",
+  "h3_vae_model_path": "weights/native/video_vae",
+  "h3_vae_trust_remote_code": true,
+  "h3_cuda_refiner_ff_chunk_size": 2048
+}

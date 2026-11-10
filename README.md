@@ -8,13 +8,13 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 ## 版本
 
-CUDA H3 Base 的 T2VA / I2VA 默认采用 [fp8-bf16 配方](docs/H3-CUDA-PRECISION.md)：FP8 Linear 与文本 TP8、BF16 attention / 通信、50 层 DiT 常驻，以及 VAE 和音频内存修复。NPU 默认保持不变；可显式选择旧 CUDA 路径。
+CUDA H3 Base 的 T2VA / I2VA 默认采用 [fp8-bf16 配方](docs/H3-CUDA-PRECISION.md)：FP8 Linear 与文本 TP8、BF16 attention / 通信、50 层 DiT 常驻，以及 VAE 和音频内存修复。v0.5 NPU Base 默认采用 Laser INT8 + Stream；可显式选择旧 CUDA 路径。
 
 CUDA 另提供第二套标准方案 [Sage-FP8](docs/H3-CUDA-SAGE.md)：Sage attention、FP8 双向通信、输出 AdaLN 调制融合和 `expandable_segments`。八卡 5090 的 5/10/15 秒、20 步 T2VA / I2VA 实测更快，六条成片均完整解码通过；人工画面、口型和听音审核仍待完成。原精度认可方案继续保留为默认。
 
 v0.4 提供面向八卡 RTX 5090 R2VA 的优选 [Sage-FP8 全并行配置](docs/H3-CUDA-COMPOSABLE.md)：用 `cuda-5090 r2va` 显式选择，加入 SAP、本地输入、请求内条件复用、组件并行和去 BF16 临时副本，DiT 全程常驻。每项可单独关闭；原 `cuda`／`npu` 命令不自动开启。当前范围为八卡 Ref2VA 768P；组合正确性、显存容量和人工精度以各自实测记录为准。
 
-H3 视频 decoder 支持 CUDA/NPU 共用的 legacy、lightning、native-stream 三后端。CUDA 推荐的 T2VA/I2VA/R2VA 配方默认 native-stream，保留显式回退；NPU 原默认不变。[后端配置与验证范围](docs/H3-OMNI-VAE.md)
+H3 视频 decoder 支持 CUDA/NPU 共用的 legacy、lightning、native-stream 三后端。CUDA 推荐的 T2VA/I2VA/R2VA 配方默认 native-stream，保留显式回退；v0.5 NPU Base 默认也使用 native-stream。[后端配置与验证范围](docs/H3-OMNI-VAE.md)
 
 v0.4 的 H3 在线接口将提示词上限从 2,000 放宽到 **7,000 个 UTF-16 码元**，按官方 CLI 的 JavaScript `text.length` 计数：常见汉字或英文字母各计 1，`🙂` 计 2。Base、Refiner、MaaS 共用该限制，在入队前拒绝超长文本，保留原文；这不是 tokenizer 的 token 上限。计数规则、错误响应和请求体上限见 [在线服务指南](docs/H3-ONLINE.md) 与 [MaaS API](server/video/MAAS-API.md)。
 
@@ -26,6 +26,7 @@ v0.4 的 `--maas` 提供 MiniMax-H3 V2 格式的生成、查询、列表及取�
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
+| [v0.5](../../tree/v0.5) | NPU Base 默认 Laser INT8 + Stream、20实际步、SP8、硬件无关全并行调度；Stream Linear FP16存储在CUDA/NPU共用。保留显式后端回退，2K Refiner与CUDA配方独立。 | [NPU默认与升级](docs/H3-NPU-DEFAULT.md) · [复测](docs/performance/h3-native-shared-fp16.md) · [通用适配](docs/H3-PORTABLE.md) |
 | [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用及组件并行，DiT 全程常驻；各项可独立关闭。新增统一 `--maas`、多模态输入校验、首尾帧、768P 自适应比例和公网素材下载。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [MaaS API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) |
 | [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
@@ -73,7 +74,9 @@ H3 的 `num_inference_steps` 直接填实际 Base DiT 次数，例如 20 或 50�
 按 [NPU 权重准备](docs/H3-DEPLOYMENT.md#4-模型与目录准备) 下载模型并生成 AdaLN 表。每条命令启动一个八卡任务。时长可以填写 `5`、`10` 或 `15`。
 
 ```bash
-# 768P
+# 768P：v0.5 默认 Laser INT8 + Stream / Base 20步
+export H3_VAE_MODEL_PATH=weights/native/video_vae
+export H3_VAE_TRUST_REMOTE_CODE=1
 bash example/diffusers/scripts/run_h3.sh npu t2va 5 768p
 bash example/diffusers/scripts/run_h3.sh npu i2va 10 768p
 bash example/diffusers/scripts/run_h3.sh npu r2va 15 768p
@@ -105,11 +108,11 @@ bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 15 768p inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
 ```
 
-`cuda-5090` 是脚本的位置参数，不是 `--cuda-5090`。R2VA 时自动启用 `sage-fp8-full-parallel`；主干仍为 SP8，DiT 全程常驻。CUDA 推荐的 T2VA/I2VA/R2VA 配方现在均默认使用 `native-stream` decoder，需上面的原生 VAE 目录和授权；可用 `H3_VAE_BACKEND=legacy` 或 `lightning` 显式切换，并取消原生 VAE 的路径和授权变量。NPU 原默认不变。全部单项开关、关闭预设、内存代价和在线 JSON 见 [完整教程](docs/H3-CUDA-COMPOSABLE.md)。原 `cuda`、`npu` 命令不会自动启用 R2VA 全并行预设。
+`cuda-5090` 是脚本的位置参数，不是 `--cuda-5090`。R2VA 时自动启用 `sage-fp8-full-parallel`；主干仍为 SP8，DiT 全程常驻。CUDA 推荐的 T2VA/I2VA/R2VA 配方现在均默认使用 `native-stream` decoder，需上面的原生 VAE 目录和授权；可用 `H3_VAE_BACKEND=legacy` 或 `lightning` 显式切换，并取消原生 VAE 的路径和授权变量。v0.5 NPU Base 默认也使用 native-stream。全部单项开关、关闭预设、内存代价和在线 JSON 见 [完整教程](docs/H3-CUDA-COMPOSABLE.md)。原 `cuda` 命令不会自动启用 R2VA 全并行预设；v0.5 `npu` Base命令默认开启通用full-parallel与Stream，详见[NPU默认方案](docs/H3-NPU-DEFAULT.md)。
 
 历史 legacy decoder 已测 768P、20 步：单图 5/10 秒 55.97/97.54s，五图 5/10/15 秒 139.67/224.81/316.49s；峰值 allocated 27.93–28.33 GiB/卡。耗时含生成保存，不含初始化和预热；这些数据不代表切换 native-stream 后的整网性能。技术检查与抽帧通过，完整动态、口型和人工听音仍待复核。[性能表及口径](docs/performance/h3-cuda5090-full-parallel.md)
 
-全并行预设当前只面向 R2VA 768P。T2VA/I2VA、其他 CUDA 设备及 NPU 请使用下面各自的方案；不能套用 R2VA 的性能与精度结论。
+该CUDA全并行预设当前只面向 R2VA 768P。T2VA/I2VA和其他CUDA设备请使用各自方案，NPU使用v0.5独立默认方案；不能套用 R2VA 的性能与精度结论。
 
 #### 原 CUDA 路线和 T2VA / I2VA
 
@@ -160,7 +163,7 @@ PROMPT_FILE=inputs/my-prompt.txt OUTPUT_PATH=outputs/result.mp4 \
   bash example/diffusers/scripts/run_h3.sh npu i2va 5 768p inputs/my-first-frame.png
 ```
 
-NPU 默认使用 Laser、INT8 线性层和 50 次 Base DiT。Spark-H3、Veda 和 LightX2V 8 步另见 [可选加速配方](docs/H3-ATTENTION.md)。
+v0.5 NPU Base 默认使用 Laser attention、INT8 DiT Linear、Stream decoder、full-parallel和20次实际Base DiT；需要21点AdaLN表。它不是FP8配方。详见[NPU默认方案](docs/H3-NPU-DEFAULT.md)。Spark-H3、Veda 和 LightX2V 8 步另见 [可选加速配方](docs/H3-ATTENTION.md)。
 
 H3 在线、离线均在每条视频保存完、临时输出释放后同步设备并回收 PyTorch 空闲显存，保留常驻模型。日志记录回收耗时和前后显存；该策略对单条请求内部的峰值 OOM 不作保证，当前策略的完整设备矩阵待验证。
 
@@ -214,7 +217,7 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 
 ## GPU 性能
 
-H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 `fp8-bf16`、`fp8-sage` 和全并行预设默认 `native-stream`；其余离线入口默认 `legacy`，NPU 在线预设仍为 `lightning`，显式选择优先。H3 旧命令的 `--vae_lightning decoder` 需替换为 `--h3_vae_backend lightning`，其他模型的旧参数保留。实验性 [Native-stream 后端](docs/H3-OMNI-VAE.md)迁移原生 H3 tile 调度、分块输出、异步 D2H 和 MP4 编码，需要原生 `video_vae` 权重目录和显式授权。[组件实测对比](docs/performance/h3-omni-vae.md)包含性能、显存和精度验证范围。
+H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 `fp8-bf16`、`fp8-sage` 和全并行预设默认 `native-stream`；NPU Base推荐脚本与在线预设默认 `native-stream`，其余低层离线入口保持既有选择逻辑，显式选择优先。H3 旧命令的 `--vae_lightning decoder` 需替换为 `--h3_vae_backend lightning`，其他模型的旧参数保留。实验性 [Native-stream 后端](docs/H3-OMNI-VAE.md)迁移原生 H3 tile 调度、分块输出、异步 D2H 和 MP4 编码，需要原生 `video_vae` 权重目录和显式授权。[组件实测对比](docs/performance/h3-omni-vae.md)包含性能、显存和精度验证范围。
 
 昇腾也可选择 `native-stream`，需追加 `--vae_matmul_quant none`。已完成 [8×910B3 三后端组件对比](docs/performance/h3-vae-npu.md)：768P、5/10/15 秒，预热后新后端比 Lightning 快 1.57–1.95 倍；初始化单列，尚不代表整网加速或成片精度验收。
 
@@ -261,7 +264,7 @@ H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|nativ
 
 ### NPU 在线
 
-768P 服务支持 T2VA 和 I2VA。要部署 R2VA，按 [NPU 在线配置](docs/H3-ONLINE.md#npu-base) 切换任务类型和 Ref2VA 权重。
+v0.5 NPU Base配置默认20步、full-parallel与Stream。先在JSON配置自己的原生video_vae路径，并确认该模型代码可信；T2VA/I2VA/其他时长的默认启动配置可用，当前新的整网性能证据仅覆盖5s单图R2VA。要部署 R2VA，按 [NPU 在线配置](docs/H3-ONLINE.md#npu-base) 切换任务类型和 Ref2VA 权重。
 
 ```bash
 XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=29530 \

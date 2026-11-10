@@ -29,7 +29,10 @@ class TestH3ParallelConfig(unittest.TestCase):
             self.assertEqual((config.tp,config.cp,config.tp_comm,config.cp_comm),(8,8,wire,wire))
             for world in (1,4,16,64):
                 with self.assertRaises(ValueError):module.H3ParallelConfig.from_args(args,'cuda',world)
-            with self.assertRaises(ValueError):module.H3ParallelConfig.from_args(args,'npu',8)
+            if wire == 'bf16':
+                self.assertEqual(module.H3ParallelConfig.from_args(args,'npu',8).cp_comm,'bf16')
+            else:
+                with self.assertRaises(ValueError):module.H3ParallelConfig.from_args(args,'npu',8)
         for tp,cp in ((1,8),(2,4),(4,2),(8,1)):
             with self.assertRaises(ValueError):
                 module.H3ParallelConfig.from_args(settings(h3_parallel_mode='tp_cp_shared',h3_dit_tp=tp,sp=cp),'cuda',8)
@@ -55,7 +58,7 @@ class TestH3ParallelConfig(unittest.TestCase):
         for value in (-1,True,1.5,1025):
             with self.subTest(value=value),self.assertRaises(ValueError):
                 module.H3ParallelConfig.from_args(settings(h3_parallel_warmup_mib=value),'cuda',8)
-        for backend,change in [('cuda',dict(h3_parallel_mode='sp',h3_dit_tp=1)),('npu',{}),('cuda',dict(model='Wan'))]:
+        for backend,change in [('cuda',dict(h3_parallel_mode='sp',h3_dit_tp=1)),('npu',dict(h3_tp_comm='fp8')),('cuda',dict(model='Wan'))]:
             with self.subTest(backend=backend,change=change),self.assertRaises(ValueError):
                 module.H3ParallelConfig.from_args(settings(h3_parallel_warmup_mib=512,**change),backend,8)
         with self.assertRaisesRegex(ValueError,'Restart the manager'):
@@ -83,8 +86,7 @@ class TestH3ParallelConfig(unittest.TestCase):
                        dict(h3_cuda_precision='auto'),dict(task_type='other')):
             with self.subTest(change=change),self.assertRaises(ValueError):
                 module.H3ParallelConfig.from_args(settings(**change),'cuda',8)
-        with self.assertRaises(ValueError):
-            module.H3ParallelConfig.from_args(settings(),'npu',8)
+        self.assertEqual(module.H3ParallelConfig.from_args(settings(),'npu',8).cp_comm,'bf16')
 
     def test_common_tasks(self):
         for task in ('t2va','fl2va','ref2va'):

@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def strict_audio_convolution():
+def strict_audio_convolution(device=None):
+    if device is not None and torch.device(device).type != 'cuda':
+        yield
+        return
     previous = torch.backends.cudnn.allow_tf32
     torch.backends.cudnn.allow_tf32 = False
     try:
@@ -54,18 +57,21 @@ def register_encoder_stage(vae, weights, device):
     _apply_group_offloading_hook(vae, weights, config=config)
 
 
-def install_video_encoder(vae, group_getter, device):
+def install_video_encoder(vae, group_getter, device, *, stage_weights=True):
     from diffusers.hooks.group_offloading import ModuleGroup
     from .h3_cuda_precision import retain_module
 
+    accelerator = torch.get_device_module(torch.device(device).type)
     cpu = torch.device('cpu')
-    retain_module(vae.encoder, cpu)
-    retain_module(vae.quant_conv, cpu)
-    weights = ModuleGroup(modules=[vae.encoder, vae.quant_conv], offload_device=cpu,
-                          onload_device=device, offload_leader=vae.encoder,
-                          stream=torch.cuda.Stream(device=device), low_cpu_mem_usage=False)
-    weights.offload_()
-    register_encoder_stage(vae, weights, device)
+    weights = None
+    if stage_weights:
+        retain_module(vae.encoder, cpu)
+        retain_module(vae.quant_conv, cpu)
+        weights = ModuleGroup(modules=[vae.encoder, vae.quant_conv], offload_device=cpu,
+                              onload_device=device, offload_leader=vae.encoder,
+                              stream=accelerator.Stream(device=device), low_cpu_mem_usage=False)
+        weights.offload_()
+        register_encoder_stage(vae, weights, device)
     metrics = dict(calls=0, completed=0, clips=0, local_tiles=0, valid_tiles=0,
                    fallback_clips=0, h2d_seconds=0., return_master_seconds=0.)
     original_encode, original_clip = vae.encode, vae._encode_clip
@@ -109,9 +115,13 @@ def install_video_encoder(vae, group_getter, device):
         if torch.is_grad_enabled():
             raise ValueError('H3 parallel VAE encoder is inference-only')
         metrics['calls'] += 1
+        if weights is None:
+            result = original_encode(*args, **kwargs)
+            metrics['completed'] += 1
+            return result
         started = time.perf_counter()
         weights.onload_()
-        torch.cuda.current_stream(device).wait_stream(weights.stream)
+        accelerator.current_stream(device).wait_stream(weights.stream)
         weights.stream.synchronize()
         metrics['h2d_seconds'] += time.perf_counter()-started
         try:
@@ -128,7 +138,7 @@ def install_video_encoder(vae, group_getter, device):
     vae._h3_encoder_group = weights
 
 
-def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_profile):
+def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_profile, *, stage_weights=True):
     from diffusers.models.autoencoders.autoencoder_kl_minimax_h3_audio import (
         MiniMaxH3AudioDiagonalGaussianDistribution, MiniMaxH3AudioEncoderOutput)
     from diffusers.models.autoencoders.vae import DecoderOutput
@@ -152,9 +162,10 @@ def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_p
             return original_encode(sample, return_dict=return_dict)
         if torch.is_grad_enabled():
             raise ValueError('H3 parallel audio encoder is inference-only')
-        audio.to(device)
+        if stage_weights:
+            audio.to(device)
         try:
-            with strict_audio_convolution():
+            with strict_audio_convolution(device):
                 lo, hi, a, b = partition(total, halos['encoder_used'], group)
                 hidden = audio.encoder(sample[..., a*hop:b*hop].to(device, torch.float32))
                 hidden = gather_time(hidden[..., lo-a:hi-a], total, group)
@@ -163,7 +174,8 @@ def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_p
             metrics['encode_parallel'] += 1
             return MiniMaxH3AudioEncoderOutput(latent_dist=posterior) if return_dict else (posterior,)
         finally:
-            offload_audio(audio)
+            if stage_weights:
+                offload_audio(audio)
 
     @wraps(original_decode)
     def decode(latents, return_dict=True):
@@ -175,7 +187,7 @@ def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_p
         if not (400 <= total <= 420 or 600 <= total <= 620):
             return original_decode(latents, return_dict=return_dict)
         group = group_getter()
-        with strict_audio_convolution():
+        with strict_audio_convolution(device):
             lo, hi, a, b = partition(total, halos['decoder_used'], group)
             wave = original_decode(latents[..., a:b], return_dict=False)[0]
             local = wave[..., (lo-a)*audio.hop_length:(hi-a)*audio.hop_length]
@@ -190,21 +202,21 @@ def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_p
     audio._h3_parallel_metrics = metrics
 
 
-def install_condition_parallel(pipe, args, device):
+def install_condition_parallel(pipe, args, device, *, stage_weights=True):
     def group():
         manager = getattr(pipe.transformer, '_h3_condition_parallel_manager', getattr(pipe.transformer, 'parallel_manager', None))
-        if manager is None or manager.sp_group is None or manager.sp_size != 8:
-            raise ValueError('H3 condition parallelism requires the native initialized SP8 group')
+        if manager is None or manager.sp_group is None or manager.sp_size not in (2, 4, 8):
+            raise ValueError('H3 condition parallelism requires an initialized SP2/4/8 group')
         return manager.sp_group
 
     if getattr(args, 'h3_cuda_vision_sp', False):
         from .h3_vision_sp import install_vision_sp
         install_vision_sp(pipe.text_encoder.model.visual, group)
     if getattr(args, 'h3_cuda_vae_encoder_parallel', False):
-        install_video_encoder(pipe.vae, group, device)
+        install_video_encoder(pipe.vae, group, device, stage_weights=stage_weights)
     encoder = bool(getattr(args, 'h3_cuda_audio_encoder_parallel', False))
     decoder = getattr(args, 'h3_cuda_audio_decoder_parallel', 'none')
     if encoder or decoder != 'none':
-        install_audio_parallel(pipe.audio_vae, group, device, encoder, decoder)
+        install_audio_parallel(pipe.audio_vae, group, device, encoder, decoder, stage_weights=stage_weights)
     logger.info('Experimental H3 condition parallelism: vision=%s video_encoder=%s audio_encoder=%s audio_decoder=%s',
                 getattr(args, 'h3_cuda_vision_sp', False), getattr(args, 'h3_cuda_vae_encoder_parallel', False), encoder, decoder)

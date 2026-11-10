@@ -47,8 +47,7 @@ def configure(pipe, args, device):
         return
     pipe._h3_vae_decode_backend = OmniH3Decoder(args.h3_vae_model_path, device,
         trust_remote_code=args.h3_vae_trust_remote_code,
-        fp16_linears=(torch.device(device).type == "cuda" and
-                      getattr(args, "h3_cuda_precision", "none") in ("fp8-bf16", "fp8-sage")))
+        fp16_linears=True)
     logger.info("Experimental H3 VAE backend=native-stream; native tile parallelism, asynchronous RGB8 transfer and MP4 encoding")
 
 

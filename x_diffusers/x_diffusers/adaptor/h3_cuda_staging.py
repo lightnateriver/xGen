@@ -13,6 +13,7 @@ logger=logging.getLogger(__name__)
 
 
 def install_conditioning_staging(pipe,device,*,defer_until_dit=False):
+    accelerator=torch.get_device_module(torch.device(device).type)
     model=pipe.transformer
     encoder=pipe.text_encoder.model
     if getattr(encoder,'_h3_conditioning_staging_installed',False):
@@ -22,12 +23,12 @@ def install_conditioning_staging(pipe,device,*,defer_until_dit=False):
     original=encoder.forward
 
     def restore(event):
-        torch.cuda.synchronize();gc.collect();torch.cuda.empty_cache()
+        accelerator.synchronize();gc.collect();accelerator.empty_cache()
         event['status']='restoring'
-        started=time.perf_counter();model.to(device);torch.cuda.synchronize()
+        started=time.perf_counter();model.to(device);accelerator.synchronize()
         event['h2d_seconds']=time.perf_counter()-started
         metrics['h2d_seconds']+=event['h2d_seconds']
-        event.update(status='completed',allocated_after=torch.cuda.memory_allocated())
+        event.update(status='completed',allocated_after=accelerator.memory_allocated())
         logger.info('H3 conditioning staging (weights preserved, no reload/quantization): %s',event)
 
     if defer_until_dit:
@@ -39,14 +40,14 @@ def install_conditioning_staging(pipe,device,*,defer_until_dit=False):
 
     @wraps(original)
     def forward(*values,**kwargs):
-        event=dict(status='offloading',allocated_before=torch.cuda.memory_allocated())
+        event=dict(status='offloading',allocated_before=accelerator.memory_allocated())
         metrics['last']=event;metrics['calls']+=1
-        torch.cuda.synchronize()
-        started=time.perf_counter();model.to('cpu');torch.cuda.synchronize()
+        accelerator.synchronize()
+        started=time.perf_counter();model.to('cpu');accelerator.synchronize()
         event['d2h_seconds']=time.perf_counter()-started
         metrics['d2h_seconds']+=event['d2h_seconds']
-        gc.collect();torch.cuda.empty_cache()
-        event.update(status='encoding',allocated_during_encoding=torch.cuda.memory_allocated())
+        gc.collect();accelerator.empty_cache()
+        event.update(status='encoding',allocated_during_encoding=accelerator.memory_allocated())
         try:
             output=original(*values,**kwargs)
         except BaseException:
@@ -56,9 +57,9 @@ def install_conditioning_staging(pipe,device,*,defer_until_dit=False):
         if defer_until_dit:
             # ModularPipeline must still infer CUDA from its existing group
             # offload hooks, so reference pixels and request noise stay on CUDA.
-            if torch.device(pipe._execution_device).type!='cuda':
+            if torch.device(pipe._execution_device).type!=torch.device(device).type:
                 event['status']='invalid_execution_device_dit_on_cpu'
-                raise RuntimeError('Deferred H3 reference staging requires a CUDA pipeline execution device')
+                raise RuntimeError('Deferred H3 reference staging requires the pipeline execution device to match the accelerator')
             event.update(status='awaiting_reference_encoding',restore_boundary='before_first_dit')
             logger.info('H3 reference staging: DiT remains on CPU through reference encoding')
         else:

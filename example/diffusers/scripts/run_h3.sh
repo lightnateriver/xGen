@@ -52,8 +52,13 @@ if [[ $preset != none ]]; then
   precision=${H3_CUDA_PRECISION:-fp8-sage}
 fi
 
+default_steps=50
+if [[ $backend == npu && $resolution == 768p ]]; then default_steps=20; fi
+base_steps=${H3_BASE_STEPS:-$default_steps}
+[[ $base_steps =~ ^[1-9][0-9]*$ ]] || { echo "H3_BASE_STEPS must be a positive integer" >&2; exit 2; }
+points=$((base_steps + 1))
 base_transformer=${BASE_TRANSFORMER:-model-cache/base-t2va}
-base_adaln=${BASE_ADALN:-model-cache/t2va-51step.safetensors}
+base_adaln=${BASE_ADALN:-model-cache/t2va-${points}step.safetensors}
 case "$task" in
   t2va)
     [[ $# -eq 0 ]] || usage
@@ -68,7 +73,7 @@ case "$task" in
   r2va|ref2va)
     task=ref2va
     base_transformer=${BASE_TRANSFORMER:-model-cache/base-ref2va}
-    base_adaln=${BASE_ADALN:-model-cache/ref2va-51step.safetensors}
+    base_adaln=${BASE_ADALN:-model-cache/ref2va-${points}step.safetensors}
     if [[ $# -eq 0 ]]; then
       set -- inputs/ref01.png inputs/ref02.png inputs/ref03.png inputs/ref04.png inputs/ref05.png
     fi
@@ -112,10 +117,16 @@ if [[ $backend == npu ]]; then
       SECONDS_TO_GENERATE=$duration OUTPUT_VIDEO=$output PROMPT=$prompt \
       exec bash example/diffusers/scripts/infer_minimax_h3_refiner.sh --task_type "$task" "${input_args[@]}"
   fi
+  export TASK_QUEUE_ENABLE=${TASK_QUEUE_ENABLE:-2}
+  export COMBINED_ENABLE=${COMBINED_ENABLE:-1} MEMORY_FRAGMENTATION=${MEMORY_FRAGMENTATION:-1}
+  export ENCRYPTION_WEIGHT=${ENCRYPTION_WEIGHT:-false}
+  refiner_chunk=0
+  if [[ $task == ref2va ]]; then refiner_chunk=2048; fi
   launch=(--master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29530}")
   profile=(--transformer_path "$base_transformer" --adaln_cache_file "$base_adaln"
-    --atten laser --matmul_quant int8 --vae_matmul_quant int8 --rope_fused
-    --h3_vae_backend lightning --text_encoder_tp 8 --phaa_num 2)
+    --atten laser --matmul_quant int8 --vae_matmul_quant none --rope_fused
+    --h3_vae_backend native-stream --text_encoder_tp 8 --phaa_num 2
+    --h3_features full-parallel --h3_refiner_ff_chunk_size "$refiner_chunk")
 else
   if [[ ${H3_FAST:-0} == 1 ]]; then
     export XGEN_PHAA_DEVICE_JOIN=1 XGEN_PHAA_ASYNC_EXCHANGE=1
@@ -186,5 +197,5 @@ fi
 exec torchrun "${launch[@]}" --nproc_per_node=8 --max_restarts=0 "${XGEN_H3_BENCH_WORKER:-example/diffusers/infer.py}" \
   --model MiniMax-H3 --pretrained_model_name_or_path "$base_model" --task_type "$task" \
   --dtype bf16 --sp 8 --width "$width" --height "$height" --frames "$frames" --save_fps 24 \
-  --num_inference_steps "${H3_BASE_STEPS:-50}" --seed "${H3_SEED:-42}" --prompt="$prompt" --save_path "$output" \
+  --num_inference_steps "$base_steps" --seed "${H3_SEED:-42}" --prompt="$prompt" --save_path "$output" \
   "${profile[@]}" "${input_args[@]}" "${extra_args[@]}"

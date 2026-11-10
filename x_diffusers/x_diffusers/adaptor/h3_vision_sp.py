@@ -10,7 +10,10 @@ PAD_KEY = 'h3_reference_vision'
 
 
 @contextmanager
-def full_bf16_accumulation():
+def full_bf16_accumulation(device=None):
+    if device is not None and torch.device(device).type != 'cuda':
+        yield
+        return
     previous = torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
     try:
@@ -54,21 +57,34 @@ class VisionSP:
         from transformers.models.qwen3_vl import modeling_qwen3_vl as m
         from x_base import set_pad
 
-        if torch.is_grad_enabled() or not pixels.is_cuda:
-            raise ValueError('H3 vision SP is CUDA inference-only')
+        if torch.is_grad_enabled() or pixels.device.type not in ('cuda', 'npu'):
+            raise ValueError('H3 vision SP is CUDA/NPU inference-only')
         self.group = self.group_getter()
-        if dist.get_world_size(self.group) != 8 or model.config.num_heads % 8:
-            raise ValueError('H3 vision SP requires eight ranks and divisible heads')
+        peers = dist.get_world_size(self.group)
+        if peers not in (2, 4, 8) or model.config.num_heads % peers:
+            raise ValueError('H3 vision SP requires 2/4/8 ranks and divisible heads')
+        self.metrics['sp'] = peers
         self.metrics['calls'] += 1
-        with full_bf16_accumulation():
-            indices, weights = m.get_vision_interpolation_indices_and_weights(
-                grid, num_grid_per_side=model.num_grid_per_side, mode=model.interpolation_mode,
-                align_corners=model.interpolation_align_corners, spatial_merge_size=model.config.spatial_merge_size,
-                kwargs={})
+        with full_bf16_accumulation(pixels.device):
+            modern = hasattr(m, 'get_vision_interpolation_indices_and_weights')
+            if modern:
+                indices, weights = m.get_vision_interpolation_indices_and_weights(
+                    grid, num_grid_per_side=model.num_grid_per_side, mode=model.interpolation_mode,
+                    align_corners=model.interpolation_align_corners, spatial_merge_size=model.config.spatial_merge_size,
+                    kwargs={})
+            else:
+                # Transformers 5.14 used corner-major bilinear arrays; preserve
+                # its original sum axis rather than changing interpolation.
+                indices, weights = m.get_vision_bilinear_indices_and_weights(
+                    grid, num_grid_per_side=model.num_grid_per_side,
+                    spatial_merge_size=model.config.spatial_merge_size, kwargs={})
             positions = m.get_vision_position_ids(grid, model.spatial_merge_size, kwargs={})
-            cu, maxlen = m.get_vision_attention_seqlens(grid, model.config, kwargs={})
+            if modern:
+                cu, maxlen = m.get_vision_attention_seqlens(grid, model.config, kwargs={})
+            else:
+                cu, maxlen = m.get_vision_cu_seqlens(grid, kwargs={}), None
             hidden = model.patch_embed(pixels)
-            hidden = hidden + (model.pos_embed(indices) * weights[:, :, None]).sum(1).to(hidden.dtype)
+            hidden = hidden + (model.pos_embed(indices) * weights[:, :, None]).sum(1 if modern else 0).to(hidden.dtype)
             rotary = model.rotary_pos_emb(positions).reshape(hidden.shape[0], -1)
             embedding = torch.cat((rotary, rotary), dim=-1)
             self.metrics['tokens'] += hidden.shape[0]

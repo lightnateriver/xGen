@@ -26,6 +26,10 @@ MaaS V2 使用官网错误信封，旧 MaaS 接口返回 HTTP 400、`error=inval
 
 ## NPU Base
 
+v0.5 默认 **Laser INT8 + Stream**：SP8/text TP8/PHAA2、Base实际20步、通用full-parallel，R2VA另使用输入Refiner FFN chunk2048。先在示例JSON配置原生`video_vae`路径；其trust字段仅对你已确认可信的模型代码设为true。新配置的真实整网性能仅验证了5s单图R2VA，不能当作HTTP SLA。
+
+启动前使用 `TASK_QUEUE_ENABLE=2 COMBINED_ENABLE=1 MEMORY_FRAGMENTATION=1 ENCRYPTION_WEIGHT=false OMP_NUM_THREADS=8 HCCL_BUFFSIZE=512 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`；参数含义与回退见[默认方案](H3-NPU-DEFAULT.md)。
+
 先按 [模型准备](H3-DEPLOYMENT.md#4-模型与目录准备) 生成 Base Transformer 和 AdaLN 表。下面的服务接收 T2VA 和 I2VA。
 
 ```bash
@@ -34,7 +38,7 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
   --config example/diffusers/configs/h3_npu_base.example.json --host 127.0.0.1 --port 5001
 ```
 
-R2VA 单独启动。复制上述 JSON，修改 `task_type` 为 `ref2va`，`transformer_path` 为 `model-cache/base-ref2va`，`adaln_cache_file` 为 `model-cache/ref2va-51step.safetensors`。启动时将 `--config` 指向新文件，将 `--service-mode` 改为 `ref2va`。
+R2VA 单独启动。使用 `example/diffusers/configs/h3_npu_ref2va.example.json`，修改模型和VAE路径；该示例已配置Ref2VA权重、21点AdaLN表和输入Refiner FFN chunk2048。启动时将 `--config` 指向此文件，将 `--service-mode` 改为 `ref2va`。
 
 ## CUDA Base
 
@@ -89,7 +93,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
 
 ## H3 视频解码后端
 
-CUDA/NPU 共用 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 T2VA/I2VA/R2VA 配置默认 native-stream，示例 JSON 已包含原生 `video_vae` 路径及授权；使用前必须改为本地可信模型目录。NPU 在线默认仍是 Lightning。后端只在服务启动时选择，生成请求不能切换。
+CUDA/NPU 共用 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 T2VA/I2VA/R2VA 配置默认 native-stream，示例 JSON 已包含原生 `video_vae` 路径及授权；使用前必须改为本地可信模型目录。v0.5 NPU Base在线默认同样为Native-stream。后端只在服务启动时选择，生成请求不能切换。
 
 也可在原启动命令后追加：
 

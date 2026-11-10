@@ -100,7 +100,7 @@ def test_reference_audio_staging_always_returns_cpu(fails):
 def test_resident_service_rejects_transport_changes():
     manager=SimpleNamespace(pipe=object(),_h3_parallel_key=H3ParallelConfig('tp_cp',2,4,'bf16','bf16'))
     args=SimpleNamespace(h3_parallel_mode='tp_cp',h3_dit_tp=2,sp=4,h3_tp_comm='fp8',h3_cp_comm='bf16',
-                         h3_cuda_precision='fp8-sage',model='MiniMax-H3',task_type='ref2va')
+                         h3_cuda_precision='fp8-sage',model='MiniMax-H3',task_type='ref2va',h3_vae_backend='legacy')
     with patch.object(h3_cuda_precision.dist,'is_initialized',return_value=True),patch.object(h3_cuda_precision.dist,'get_world_size',return_value=8):
         with pytest.raises(ValueError,match='Restart the service'):
             h3_cuda_precision.validate_manager(manager,args,'cuda')

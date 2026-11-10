@@ -52,15 +52,20 @@ def test_lightning_sp1_does_not_silently_fall_back():
     with pytest.raises(ValueError,match='--sp greater than 1'):module.resolve_vae_backend(args)
 
 
-def test_server_keeps_npu_lightning_and_cuda_legacy_defaults():
+def test_server_npu_stream_defaults_and_independent_cuda_defaults():
     tree=ast.parse((ROOT.parent/'server/video/video_server.py').read_text(encoding='utf-8'))
     default=next(n for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='DEFAULT_MINIMAX_H3_CONFIG' for t in n.targets))
     values=ast.literal_eval(default.value)
-    assert values['h3_vae_backend']=='lightning' and values['vae_lightning']=='none'
+    assert values['h3_vae_backend']=='native-stream' and values['vae_lightning']=='none'
+    assert values['vae_matmul_quant']=='none' and values['matmul_quant']=='int8'
+    assert values['h3_features']=='full-parallel' and values['h3_cuda_refiner_ff_chunk_size']==0
+    assert values['phaa_num']==2 and values['num_inference_steps']==20
+    assert values['h3_vae_trust_remote_code'] is False
     updates=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute)
              and isinstance(n.func.value,ast.Name) and n.func.value.id=='DEFAULT_MINIMAX_H3_CONFIG' and n.func.attr=='update']
     cuda=ast.literal_eval(updates[0].args[0])
     assert cuda['h3_vae_backend'] is None and cuda['vae_lightning']=='none'
+    assert cuda['h3_features'] is None and cuda['num_inference_steps']==50
     args=SimpleNamespace(model='MiniMax-H3',sp=8,**{k:cuda[k] for k in ('h3_vae_backend','vae_lightning')})
     assert module.resolve_vae_backend(args)=='legacy'
 
@@ -100,3 +105,20 @@ def test_recommended_launchers_emit_native_backend_without_running_devices(tmp_p
     assert selected[-1]=='native-stream'
     assert args[args.index('--h3_vae_model_path')+1]=='weights/native/video_vae'
     assert '--h3_vae_trust_remote_code' in args
+
+
+def test_h3_json_alias_overrides_default_before_merge(tmp_path):
+    import json, os
+    from typing import Optional, Dict, Any
+    tree=ast.parse((ROOT.parent/'server/video/video_server.py').read_text(encoding='utf-8'))
+    cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='VideoGenerationService')
+    fn=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='_load_default_config')
+    scope=dict(Optional=Optional,Dict=Dict,Any=Any,os=os,json=json,
+               TEN_SECOND_CONFIG={k:None for k in ('ten_second_model_id_t2v','ten_second_model_path','ten_second_model_path_2','pusa_lora','pusa_lora2','joint_model_path','x_model_path','x_model_path_2','seedvr2_model_dir','seedvr2_model_name','frame_model_path')},
+               DEFAULT_MINIMAX_H3_CONFIG=dict(h3_cuda_refiner_ff_chunk_size=2048))
+    exec(compile(ast.Module(body=[fn],type_ignores=[]),'<load-config>','exec'),scope)
+    path=tmp_path/'config.json'
+    path.write_text(json.dumps(dict(model='MiniMax-H3',h3_refiner_ff_chunk_size=4096)))
+    config=scope['_load_default_config'](None,str(path))
+    assert config['h3_cuda_refiner_ff_chunk_size']==4096
+    assert 'h3_refiner_ff_chunk_size' not in config

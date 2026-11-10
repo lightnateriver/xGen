@@ -635,6 +635,11 @@ def parallelism_ability(pipe, args):
 
         configure_parallelism(pipe, args)
 
+    if is_minimax_h3 and getattr(args, 'h3_cuda_precision', 'none') == 'none':
+        from .h3_features import enabled, configure_components
+        if enabled(args):
+            configure_components(pipe, args, torch.device(device_type(), torch.get_device_module(device_type()).current_device()))
+
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).
     # ParallelManager.__init__ creates the TP group and writes it to
@@ -748,6 +753,10 @@ def update_pipe(pipe, args):
     check_args_conflict(args)
     operator_ability(pipe, args)
     general_ability(pipe, args)
+    if args.model == 'MiniMax-H3' and getattr(args, 'h3_cuda_precision', 'none') == 'none':
+        from .h3_features import enabled, configure_model
+        if enabled(args):
+            configure_model(pipe, args, torch.device(device_type(), torch.get_device_module(device_type()).current_device()))
     parallelism_ability(pipe, args)
     if getattr(args, 'h3_vae_backend', 'legacy') != 'legacy':
         from ..framework.vae.omni_decoder import configure

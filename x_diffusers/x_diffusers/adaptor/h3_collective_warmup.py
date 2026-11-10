@@ -13,8 +13,10 @@ def warmup_groups(manager, config):
     if not config.warmup_mib:
         return None
     started = time.perf_counter()
-    device = torch.device('cuda', torch.cuda.current_device())
-    free_before, _ = torch.cuda.mem_get_info(device)
+    from x_base.device import device_type
+    accelerator = torch.get_device_module(device_type())
+    device = torch.device(device_type(), accelerator.current_device())
+    free_before, _ = accelerator.mem_get_info(device)
     operations = []
     shared = getattr(config, 'mode', None) in ('tp_sp', 'tp_cp_shared')
     if manager.tp_size > 1 and shared:
@@ -33,7 +35,7 @@ def warmup_groups(manager, config):
         else:
             dist.reduce_scatter_tensor(send, receive, group=group)
             operations.append('tp.bf16_reduce_scatter')
-        torch.cuda.synchronize(device)
+        accelerator.synchronize(device)
         del scale, send, receive
     elif manager.tp_size > 1:
         group = manager.tp_group
@@ -45,13 +47,13 @@ def warmup_groups(manager, config):
             receive = torch.empty(send.numel() * manager.tp_size, device=device, dtype=send.dtype)
             dist.all_gather_into_tensor(receive, send, group=group)
             operations += ['tp.fp32_max', 'tp.uint8_all_gather']
-            torch.cuda.synchronize(device)
+            accelerator.synchronize(device)
             del scale, send, receive
         else:
             value = torch.zeros(262144, device=device, dtype=torch.bfloat16)
             dist.all_reduce(value, group=group)
             operations.append('tp.bf16_all_reduce')
-            torch.cuda.synchronize(device)
+            accelerator.synchronize(device)
             del value
     cp_bytes = 0
     if manager.sp_size > 1 and not (shared and manager.tp_size > 1):
@@ -61,11 +63,11 @@ def warmup_groups(manager, config):
         send = torch.zeros(count, device=device, dtype=dtype)
         receive = torch.empty_like(send)
         dist.all_to_all_single(receive, send, group=manager.sp_group)
-        torch.cuda.synchronize(device)
+        accelerator.synchronize(device)
         cp_bytes = count * itemsize
         operations.append('cp.all_to_all')
         del send, receive
-    free_after, _ = torch.cuda.mem_get_info(device)
+    free_after, _ = accelerator.mem_get_info(device)
     stats = dict(completed=True, calls=1, seconds=time.perf_counter()-started,
                  tp=manager.tp_size, cp=manager.sp_size, operations=operations,
                  cp_buffer_bytes=cp_bytes, free_before=free_before, free_after=free_after)

@@ -1,7 +1,7 @@
 """Pure-Ulysses local packed input/output, sharing the existing H3 block loop.
 
 Text refiner keeps its full text context. Only raw video/audio rows owned by
-this CP rank are projected. Final FP32 predictions, not hidden states, gather.
+this CP rank are projected. Gather final predictions in the original head dtype.
 No per-request tensors are cached on the model.
 """
 from dataclasses import dataclass
@@ -82,7 +82,7 @@ def gather_local_output(model, hidden, temb, span, timestep_indices, video_indic
     hidden = model.norm_out(hidden, temb, local_indices).to(model.proj_out.weight.dtype)
     video = model.proj_out(hidden)
     audio = model.audio_proj_out(hidden.to(model.audio_proj_out.weight.dtype))
-    if video.dtype != torch.float32 or audio.dtype != torch.float32:
+    if getattr(model, '_h3_cuda_precision', 'none') in ('fp8-bf16', 'fp8-sage') and (video.dtype != torch.float32 or audio.dtype != torch.float32):
         raise ValueError('H3 TP/CP final prediction heads must remain FP32')
     width = video.shape[-1]
     prediction = torch.cat((video, audio), dim=-1)

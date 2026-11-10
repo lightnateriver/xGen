@@ -14,7 +14,7 @@ BOOL_OPTIONS = (
 STARTUP_OPTIONS = BOOL_OPTIONS + (
     'h3_cuda_preset', 'h3_cuda_dit_residency', 'h3_cuda_input_refiner',
     'h3_cuda_input_refiner_attention', 'h3_cuda_input_refiner_ffn',
-    'h3_cuda_audio_decoder_parallel', 'h3_cuda_refiner_ff_chunk_size',
+    'h3_cuda_audio_decoder_parallel', 'h3_cuda_refiner_ff_chunk_size', 'h3_features',
 )
 
 
@@ -49,6 +49,10 @@ def local_io_default(mode):
 
 def resolve_options(args, backend):
     """Expand an explicit preset only into unspecified fields, then canonicalize."""
+    if not hasattr(args, '_h3_residency_explicit'):
+        args._h3_residency_explicit = getattr(args, 'h3_cuda_dit_residency', None) not in (None, 'inherit')
+    from .h3_features import resolve_defaults
+    resolve_defaults(args)
     preset = getattr(args, 'h3_cuda_preset', None) or 'none'
     if preset not in PRESETS:
         raise ValueError('Unknown H3 CUDA preset')
@@ -156,13 +160,18 @@ def bootstrap_preset_environment(preset):
 def startup_key(args):
     """Only startup state; duration, prompt and reference media remain per request."""
     values = tuple((name, getattr(args, name, None)) for name in STARTUP_OPTIONS)
-    return values + (('model', getattr(args, 'model', None)),
+    runtime = tuple((name, getattr(args, name, None)) for name in (
+        'sp', 'text_encoder_tp', 'dtype', 'atten', 'matmul_quant', 'vae_matmul_quant',
+        'phaa_num', 'rope_fused', 'transformer_path', 'adaln_cache_file'))
+    return values + runtime + (('_h3_residency_explicit', bool(getattr(args, '_h3_residency_explicit', False))),
+                     ('model', getattr(args, 'model', None)),
                      ('weights', getattr(args, 'pretrained_model_name_or_path', None)),
                      ('workflow', 'ref2va' if getattr(args, 'task_type', None) == 'ref2va' else 'fl2va'))
 
 
 def needs_resolution(args):
-    return (getattr(args, 'h3_cuda_precision', 'auto') != 'none'
+    return (getattr(args, 'h3_features', None) not in (None, 'none')
+            or getattr(args, 'h3_cuda_precision', 'auto') != 'none'
             or any(getattr(args, key, None) is not None for key in BOOL_OPTIONS)
             or getattr(args, 'h3_cuda_preset', None) not in (None, 'none')
             or getattr(args, 'h3_cuda_dit_residency', None) not in (None, 'inherit')

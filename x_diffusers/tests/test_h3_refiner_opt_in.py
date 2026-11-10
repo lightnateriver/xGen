@@ -2,7 +2,7 @@
 import argparse
 import ast
 import copy
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import importlib.util
 import math
 import os
@@ -56,7 +56,7 @@ class PortableBaseline(ast.NodeTransformer):
         return node
 
 
-BASELINE_COMMIT = 'ef1a3210ff7eea8c4d23227719352fb78e8e53cf'
+BASELINE_COMMIT = 'bc1209305717762419ba89a117db21b876c289a3'  # Published v0.4.
 
 
 def baseline(path):
@@ -76,7 +76,22 @@ class WithoutDocstrings(ast.NodeTransformer):
 
 
 def logic_tree(text):
-    return WithoutDocstrings().visit(ast.parse(text))
+    class PortableRegistration(ast.NodeTransformer):
+        def visit_ImportFrom(self, node):
+            if node.module == 'h3_features' and any(a.name == 'add_aliases' for a in node.names):
+                return None
+            return node
+        def visit_Expr(self, node):
+            if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == 'add_aliases':
+                return None
+            return node
+        def visit_If(self, node):
+            if any(isinstance(n, ast.ImportFrom) and n.module == 'h3_features' for n in ast.walk(node)):
+                condition=ast.unparse(node.test)
+                assert 'is_minimax_h3' in condition or 'MiniMax-H3' in condition
+                return None
+            return self.generic_visit(node)
+    return PortableRegistration().visit(WithoutDocstrings().visit(ast.parse(text)))
 
 
 class ContractTests(unittest.TestCase):
@@ -91,14 +106,22 @@ class ContractTests(unittest.TestCase):
         torch = Mock()
         namespace = dict(torch=torch, schedule_points=lambda steps: steps + 1)
         exec(compile(ast.Module(body=[draft], type_ignores=[]), str(source), 'exec'), namespace)
+        @contextmanager
+        def scope(model):
+            try:
+                yield
+            finally:
+                model._h3_conditioning_metrics = dict(cleared=True)
         modules = {
             'diffusers.utils': SimpleNamespace(load_image=Mock()),
             'x_diffusers.adaptor.h3_refiner_config': SimpleNamespace(native_padding=lambda *args: nullcontext()),
             'x_diffusers.adaptor.h3_references': SimpleNamespace(
                 load_references=Mock(), reference_conditioning=Mock(), select_adaln=Mock()),
+            'x_diffusers.adaptor.h3_conditioning': SimpleNamespace(request_conditioning=scope),
         }
-        for conditioning in ('both', 'video'):
+        for conditioning, precompute in (('both', False), ('video', False), ('both', True), ('video', True)):
             base = Mock(side_effect=RuntimeError('encode sentinel'))
+            base.transformer._h3_precompute_conditioning = precompute
             original = base._blocks
             base.blocks = SimpleNamespace(sub_blocks={'decode': object()})
             holder = Mock()
@@ -113,6 +136,8 @@ class ContractTests(unittest.TestCase):
             with patch.dict(sys.modules, modules), self.assertRaisesRegex(RuntimeError, 'encode sentinel'):
                 namespace['_draft'](runner, request, {'generation_frames': 124})
             self.assertIs(base._blocks, original)
+            if precompute:
+                self.assertTrue(base.transformer._h3_conditioning_metrics['cleared'])
             expected = ['audio.onload', 'base', 'audio.offload'] if conditioning == 'both' else ['base']
             self.assertEqual([call[0] for call in lifecycle.mock_calls], expected)
 
@@ -173,6 +198,7 @@ class ContractTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['test']):
             old = vars(namespace['parse_args']())
         now = vars(args())
+        self.assertIsNone(now.pop('h3_features'))
         self.assertEqual(old, now)
         self.assertIsNone(now['h3_nvfp4_checkpoint'])
         for flag in ('h3_nvfp4_resident','h3_nvfp4_compile','h3_cuda_vae_sp'):
@@ -348,6 +374,8 @@ def service_classes(source):
                    jsonify=lambda value:value,_resolve_input_file=lambda value:value,
                    MAAS_QUEUE_CAPACITY=10,MAAS_QUEUE_TIMEOUT_S=600,
                    H3_BASE_MAX_DURATION_S=contract.H3_BASE_MAX_DURATION_S,
+                   H3_MAX_PROMPT_LENGTH=contract.H3_MAX_PROMPT_LENGTH,
+                   device_type=lambda:'npu',
                    MMH3_RESOLUTION_MAP={'768p':{'16:9':(1344,768)},'1080p':{'16:9':(1920,1080)}})
     exec(compile(ast.fix_missing_locations(module),'service-methods','exec'),namespace)
     return namespace
@@ -362,6 +390,7 @@ class ServiceCompatibilityTests(unittest.TestCase):
     def instance(self,namespace,enabled):
         obj=namespace['VideoGenerationService'].__new__(namespace['VideoGenerationService'])
         obj.maas_fl2va_input=False
+        obj.maas=False
         obj.default_config=dict(model='MiniMax-H3',task_type='t2va',num_inference_steps=50,
                                 h3_refiner=enabled,vae_lightning='none',sp=8)
         return obj
@@ -408,7 +437,7 @@ class ServiceCompatibilityTests(unittest.TestCase):
         cls=self.new['VideoInferenceManager']
         manager=cls.__new__(cls);manager._h3_refiner_key=('loaded',)
         with self.assertRaisesRegex(ValueError,'Restart'):
-            manager.initialize_pipe(SimpleNamespace(h3_refiner=False))
+            manager.initialize_pipe(args(h3_refiner=False,h3_cuda_precision='none'))
 
 
 if __name__=='__main__':

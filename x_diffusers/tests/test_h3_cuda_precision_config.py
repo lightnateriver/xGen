@@ -48,11 +48,10 @@ def test_recommended_cuda_tasks_default_to_native_stream(task,profile):
 def test_condition_precompute_is_opt_in_cuda_ref2va_sp8_and_resident_immutable():
     args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_precompute_conditioning=True)
     assert module.resolve(args,'cuda')=='fp8-sage'
-    for values in (dict(h3_cuda_precision='none'),dict(task_type='t2va'),dict(sp=4)):
+    for values in (dict(task_type='t2va'),dict(sp=4)):
         with pytest.raises(ValueError,match='precompute_conditioning requires'):
             module.resolve(settings(**(vars(args)|values)),'cuda')
-    with pytest.raises(ValueError,match='precompute_conditioning requires'):
-        module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va',h3_cuda_precompute_conditioning=True),'npu')
+    assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va',h3_cuda_precompute_conditioning=True),'npu') == 'none'
     with pytest.raises(ValueError,match='Restart the service to change h3_cuda_precompute_conditioning'):
         module.validate_manager(SimpleNamespace(pipe=object()),args,'cuda')
     tree=ast.parse((ROOT/'config.py').read_text(encoding='utf-8'))
@@ -64,8 +63,6 @@ def test_condition_precompute_is_opt_in_cuda_ref2va_sp8_and_resident_immutable()
 def test_input_refiner_profiles_are_opt_in_and_reject_other_routes():
     assert module.resolve(settings(task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')=='fp8-sage'
     for backend,values in (
-        ('npu',dict(h3_cuda_precision='auto')),
-        ('cuda',dict(h3_cuda_precision='none')),
         ('cuda',dict(task_type='t2va')),
         ('cuda',dict(sp=4)),
     ):
@@ -108,7 +105,7 @@ def test_refiner_ff_chunk_invalid_values_fail_early(chunk):
 
 def test_refiner_ff_chunk_is_explicit_ref2va_and_resident_immutable():
     assert module.resolve(settings(h3_cuda_precision='auto',task_type='ref2va'),'cuda')=='none'
-    for backend,task,profile in [('npu','ref2va','auto'),('cuda','t2va','fp8-sage'),('cuda','ref2va','none')]:
+    for backend,task,profile in [('cuda','t2va','fp8-sage')]:
         with pytest.raises(ValueError,match='refiner_ff_chunk_size requires'):
             module.resolve(settings(task_type=task,h3_cuda_precision=profile,h3_cuda_refiner_ff_chunk_size=8192),backend)
     args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_refiner_ff_chunk_size=8192)
@@ -125,7 +122,7 @@ def test_refiner_ff_chunk_parser_default_is_disabled():
 
 
 def test_reference_stage_requires_conditioning_and_restart():
-    for backend,task,profile,conditioning in [('npu','ref2va','auto',True),('cuda','t2va','fp8-sage',True),('cuda','ref2va','fp8-sage',False)]:
+    for backend,task,profile,conditioning in [('cuda','t2va','fp8-sage',True),('cuda','ref2va','fp8-sage',False)]:
         with pytest.raises(ValueError,match='(reference|conditioning)_offload requires'):
             module.resolve(settings(task_type=task,h3_cuda_precision=profile,h3_cuda_conditioning_offload=conditioning,h3_cuda_reference_offload=True),backend)
     args=settings(task_type='ref2va',h3_cuda_precision='fp8-sage',h3_cuda_conditioning_offload=True,h3_cuda_reference_offload=True)
@@ -161,10 +158,8 @@ def test_explicit_bf16_attention_ref2va_control_keeps_auto_legacy():
 
 def test_local_output_is_explicit_and_rejects_unsupported_routes():
     assert not getattr(settings(), 'h3_cuda_local_output', False)
-    with pytest.raises(ValueError, match='requires a CUDA H3 FP8'):
-        module.resolve(settings(h3_cuda_precision='none',h3_cuda_local_output=True),'cuda')
-    with pytest.raises(ValueError, match='requires a CUDA H3 FP8'):
-        module.resolve(settings(h3_cuda_precision='auto',h3_cuda_local_output=True),'npu')
+    assert module.resolve(settings(h3_cuda_precision='none',h3_cuda_local_output=True),'cuda') == 'none'
+    assert module.resolve(settings(h3_cuda_precision='auto',h3_cuda_local_output=True),'npu') == 'none'
     manager=SimpleNamespace(pipe=object(),_h3_cuda_precision_key='fp8-sage')
     with pytest.raises(ValueError, match='Restart the service'):
         module.validate_manager(manager,settings(h3_cuda_precision='fp8-sage',h3_cuda_local_output=True),'cuda')
@@ -178,7 +173,7 @@ def test_local_output_parser_default_preserves_original_gather():
 
 
 def test_conditioning_offload_is_only_explicit_ref2va_and_resident_immutable():
-    for backend,task,profile in [('npu','ref2va','auto'),('cuda','t2va','fp8-sage'),('cuda','ref2va','none')]:
+    for backend,task,profile in [('cuda','t2va','fp8-sage')]:
         with pytest.raises(ValueError,match='conditioning_offload requires'):
             module.resolve(settings(h3_cuda_conditioning_offload=True,task_type=task,h3_cuda_precision=profile),backend)
     assert module.resolve(settings(h3_cuda_conditioning_offload=True,task_type='ref2va',h3_cuda_precision='fp8-sage'),'cuda')=='fp8-sage'
@@ -296,7 +291,7 @@ def test_audio_offload_ignores_unused_meta_weight_cache():
     audio.to.assert_called_once()
 
 
-@pytest.mark.skipif(not module.torch.cuda.is_available(),reason='CUDA required')
+@pytest.mark.skipif(not module.torch.version.cuda or not module.torch.cuda.is_available(),reason='CUDA build and device required')
 def test_weight_norm_audio_decode_can_be_repeated_without_device_or_cache_leak():
     torch=module.torch
     class Audio(torch.nn.Module):

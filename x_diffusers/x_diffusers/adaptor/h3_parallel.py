@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 def initialize(model, args):
     from x_base.sequence_parallelism.mesh import ParallelManager
 
-    config = H3ParallelConfig.from_args(args, 'cuda', dist.get_world_size())
+    from x_base.device import device_type
+    config = H3ParallelConfig.from_args(args, device_type(), dist.get_world_size())
     if config.mode not in ('tp_cp', 'tp_cp_shared', 'tp_sp'):
         return None
     if hasattr(model, '_h3_parallel_config'):
@@ -135,7 +136,8 @@ def attach_pipeline(pipe, args):
 
     model = pipe.transformer
     config = model._h3_parallel_config
-    if getattr(args, 'h3_cuda_vae_sp', False):
+    from .h3_features import enabled
+    if getattr(args, 'h3_cuda_vae_sp', False) or enabled(args):
         # VAE still spans all devices; it does not inherit DiT's smaller CP group.
         pipe._h3_vae_parallel_manager = (model.parallel_manager if config.mode == 'tp_cp_shared'
             else ParallelManager(1, 1, dist.get_world_size(), 1, register_tp_global=False))

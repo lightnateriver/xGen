@@ -30,7 +30,7 @@ print(json.dumps(dict(args=sys.argv[1:],env={k:os.environ.get(k) for k in keys})
     ('npu','t2va',None),('npu','i2va',None),('npu','r2va',None),
     ('cuda','t2va','fp8-sage'),('cuda','i2va','fp8-sage'),
 ])
-def test_launcher_profile_contract(launch_env,backend,task,precision):
+def test_launcher_profile_contract(launch_env,backend,task,precision,monkeypatch):
     env=launch_env
     if precision:env['H3_CUDA_PRECISION']=precision
     # Old transport settings are cleared; the Sage preset must restore its own.
@@ -49,7 +49,32 @@ def test_launcher_profile_contract(launch_env,backend,task,precision):
         assert actual['XGEN_PHAA_FP8'] is None
         assert actual['XGEN_H3_FUSED_OUTPUT_ADALN'] is None
         assert actual['PYTORCH_CUDA_ALLOC_CONF'] is None
+    assert args[args.index('--num_inference_steps')+1]==('20' if backend=='npu' else '50')
+    if backend=='npu':
+        assert args[args.index('--h3_vae_backend')+1]=='native-stream'
+        assert args[args.index('--vae_matmul_quant')+1]=='none'
+        assert args[args.index('--matmul_quant')+1]=='int8'
+        assert args[args.index('--h3_features')+1]=='full-parallel'
+        assert args[args.index('--h3_refiner_ff_chunk_size')+1]==('2048' if task=='r2va' else '0')
+        assert args[args.index('--adaln_cache_file')+1].endswith('-21step.safetensors')
+        # Validate the emitted recipe, including workflow-specific guards.
+        import sys
+        from x_diffusers.adaptor.config import parse_args
+        from x_diffusers.adaptor.h3_cuda_precision import resolve
+        monkeypatch.setattr(sys,'argv',['infer.py',*args[args.index('--model'):]])
+        parsed=parse_args()
+        assert resolve(parsed,'npu')=='none'
+
+
+def test_npu_explicit_steps_and_backend_rollback(launch_env):
+    launch_env['H3_BASE_STEPS']='50'
+    command=['bash','example/diffusers/scripts/run_h3.sh','npu','r2va','5','768p','ref.png',
+             '--','--h3_vae_backend','lightning','--vae_matmul_quant','int8',
+             '--h3_features','none','--h3_refiner_ff_chunk_size','0']
+    args=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))['args']
     assert args[args.index('--num_inference_steps')+1]=='50'
+    assert args[args.index('--adaln_cache_file')+1].endswith('-51step.safetensors')
+    assert args[-8:]==command[-8:]
 
 
 @pytest.mark.parametrize('backend,task,resolution',[

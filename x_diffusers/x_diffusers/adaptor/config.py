@@ -16,6 +16,8 @@ def parse_args(namespace=None, mode="infer", *, bootstrap_environment=True):
     if mode == "benchmark":
         parser = add_benchmark_args(parser)
 
+    from .h3_features import add_aliases
+    add_aliases(parser)
     args = parser.parse_args(namespace=namespace)
     if bootstrap_environment and getattr(args, 'h3_cuda_preset', None) not in (None, 'none'):
         from x_base.device import device_type

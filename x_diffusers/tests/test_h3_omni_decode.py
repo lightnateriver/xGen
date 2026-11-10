@@ -66,16 +66,25 @@ def test_all_three_backends_validate_on_both_devices(device_type,selected):
     omni_decoder.validate_options(options(h3_vae_backend=selected,**extra),device_type)
 
 
-@pytest.mark.parametrize('profile,expected',[('none',False),('fp8-bf16',True),('fp8-sage',True)])
-def test_native_cuda_recipe_reuses_fp16_linear_storage(monkeypatch,profile,expected):
+@pytest.mark.parametrize('backend',['cuda','npu'])
+@pytest.mark.parametrize('profile',['none','fp8-bf16','fp8-sage'])
+def test_native_backend_reuses_fp16_linear_storage_on_both_devices(monkeypatch,backend,profile):
     captured={}
     def construct(path,device,**kw):
         captured.update(kw);return SimpleNamespace(path=path)
     monkeypatch.setattr(omni_decoder,'OmniH3Decoder',construct)
     args=options(h3_vae_backend='native-stream',h3_vae_model_path='weights/video_vae',
                  h3_vae_trust_remote_code=True,h3_cuda_precision=profile)
-    omni_decoder.configure(SimpleNamespace(),args,'cuda:0')
-    assert captured['fp16_linears']==expected
+    omni_decoder.configure(SimpleNamespace(),args,backend+':0')
+    assert captured['fp16_linears'] is True
+
+
+def test_fp16_storage_preserves_non_linear_parameters():
+    from x_diffusers.framework.vae.h3_cuda_chunks import prepare_decoder_linears
+    decoder=torch.nn.Sequential(torch.nn.Linear(8,8),torch.nn.LayerNorm(8),torch.nn.Conv1d(8,8,1))
+    assert prepare_decoder_linears(decoder)==1
+    assert decoder[0].weight.dtype==decoder[0].bias.dtype==torch.float16
+    assert decoder[1].weight.dtype==decoder[2].weight.dtype==torch.float32
 
 
 @pytest.mark.parametrize('old,new', [('legacy','lightning'),('lightning','legacy')])

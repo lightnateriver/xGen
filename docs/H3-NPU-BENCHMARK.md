@@ -1,5 +1,7 @@
 # NPU 离线 H3 benchmark
 
+v0.5 Base 768P默认Laser INT8 + Stream与full-parallel。运行前还需设置`H3_VAE_MODEL_PATH`指向可信原生`video_vae`目录，以及`H3_VAE_TRUST_REMOTE_CODE=1`。Native阶段含H2D、解码、RGB8/D2H及编码封装；每rank另记录`native_vae`子项，不把它当作旧INT8 VAE的同精度对照。2K Refiner仍使用独立旧后端。见[默认方案](H3-NPU-DEFAULT.md)。
+
 从仓库根目录执行。使用 Linux、8 张空闲昇腾卡、`npu-smi`、FFmpeg 和 FFprobe。按 [NPU 部署教程](H3-DEPLOYMENT.md) 准备 Base 和 Refiner。分别为 FL2VA、Ref2VA 用 `--steps 20` 生成 AdaLN 表，对应 20 次实际 Base DiT。已有的 21 点表可直接复用。2K 另跑 3 次 Refiner。
 
 建议使用 `--manifest` 读取素材包的 `cases.json`，为每条用例指定自己的 prompt 和按顺序排列的参考文件。相对路径从清单目录解析。`--plan-only` 检查矩阵和输入哈希，不启动八卡进程。简单试跑也可以使用 `--inputs` 目录，按下表命名文件。

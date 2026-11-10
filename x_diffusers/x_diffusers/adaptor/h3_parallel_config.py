@@ -4,7 +4,7 @@ import os
 
 
 def add_arguments(parser):
-    group = parser.add_argument_group('Experimental CUDA H3 DiT parallelism')
+    group = parser.add_argument_group('Experimental H3 DiT parallelism')
     group.add_argument('--h3_parallel_mode', choices=('sp', 'tp_cp', 'tp_cp_shared', 'tp_sp'), default='sp')
     group.add_argument('--h3_dit_tp', type=int, default=1)
     group.add_argument('--h3_tp_comm', choices=('bf16', 'fp8'), default='bf16')
@@ -61,8 +61,8 @@ class H3ParallelConfig:
             if (tp, tp_comm, cp_comm, chunk_elements, warmup_mib) != (1, 'bf16', 'auto', 262144, 0):
                 raise ValueError('H3 DiT TP/communication options require --h3_parallel_mode tp_cp')
             return cls()
-        if backend != 'cuda' or getattr(args, 'model', None) != 'MiniMax-H3':
-            raise ValueError('tp_cp requires CUDA MiniMax-H3')
+        if backend not in ('cuda', 'npu') or getattr(args, 'model', None) != 'MiniMax-H3':
+            raise ValueError('tp_cp requires CUDA/NPU MiniMax-H3')
         if mode == 'tp_cp_shared':
             if type(tp) is not int or type(cp) is not int or (tp, cp, world_size) != (8, 8, 8):
                 raise ValueError('tp_cp_shared requires TP8 and CP8 on the same eight ranks')
@@ -78,14 +78,20 @@ class H3ParallelConfig:
         conflicts = ('h3_refiner', 'joint', 'fsdp', 'inf_vram_blocks_num', 'h3_nvfp4_checkpoint',
                      'h3_nvfp4_resident', 'h3_nvfp4_compile', 'h3_turbo8', 'h3_turbo_sla_lora',
                      'adaln_cache_file', 'transformer_path', 'lora_path_list', 'cache_dit')
+        if backend == 'npu':
+            conflicts = tuple(k for k in conflicts if k not in ('adaln_cache_file', 'transformer_path'))
+            if getattr(args, 'matmul_quant', 'none') != 'none':
+                raise ValueError('NPU DiT TP currently uses native BF16 Linear; INT8 TP needs a separate operator adapter')
+            if tp_comm != 'bf16' or cp_comm not in ('auto', 'bf16'):
+                raise ValueError('NPU TP/CP currently uses BF16 communication; FP8 packet kernels are CUDA-only')
         if any(getattr(args, key, None) for key in conflicts):
             raise ValueError('tp_cp does not support Refiner, packed weights, LoRA or external offload/cache recipes')
-        if getattr(args, 'h3_cuda_precision', 'none') not in ('fp8-bf16', 'fp8-sage'):
-            raise ValueError('tp_cp requires an explicit fp8-bf16 or fp8-sage precision profile')
+        if backend == 'cuda' and getattr(args, 'h3_cuda_precision', 'none') not in ('fp8-bf16', 'fp8-sage', 'none'):
+            raise ValueError('tp_cp requires an explicit none, fp8-bf16 or fp8-sage precision profile')
         if cp_comm == 'auto':
             phaa = getattr(args, 'h3_cuda_phaa_fp8', None)
             phaa = os.environ.get('XGEN_PHAA_FP8') == '1' if phaa is None else phaa
-            cp_comm = tp_comm if mode == 'tp_cp_shared' else ('fp8' if phaa else 'bf16')
+            cp_comm = tp_comm if mode == 'tp_cp_shared' else ('fp8' if backend == 'cuda' and phaa else 'bf16')
         if mode == 'tp_cp_shared' and cp_comm != tp_comm:
             raise ValueError('Shared TP/CP fuses layout boundaries and requires matching TP/CP wire dtypes')
         shared_ignored = ('XGEN_PHAA_GATHER_PRIORITY', 'XGEN_PHAA_DUAL_COMM', 'XGEN_PHAA_DEVICE_JOIN',

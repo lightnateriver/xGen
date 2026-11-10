@@ -7,13 +7,17 @@
   "sp": 8,
   "text_encoder_tp": 8,
   "phaa_num": 2,
-  "num_inference_steps": 50,
+  "num_inference_steps": 20,
   "fsdp": null,
   "atten": "laser",
   "matmul_quant": "int8",
-  "vae_matmul_quant": "int8",
-  "h3_vae_backend": "lightning",
+  "vae_matmul_quant": "none",
+  "h3_vae_backend": "native-stream",
   "rope_fused": true,
   "transformer_path": "model-cache/base-t2va",
-  "adaln_cache_file": "model-cache/t2va-51step.safetensors"
+  "adaln_cache_file": "model-cache/t2va-21step.safetensors",
+  "h3_features": "full-parallel",
+  "h3_vae_model_path": "weights/native/video_vae",
+  "h3_vae_trust_remote_code": true,
+  "h3_cuda_refiner_ff_chunk_size": 0
 }

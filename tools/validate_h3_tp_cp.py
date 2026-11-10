@@ -27,7 +27,7 @@ def error(actual, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
+    parser.add_argument('--device', choices=('cpu', 'cuda', 'npu'), default='cuda')
     parser.add_argument('--cp', type=int, default=1)
     parser.add_argument('--fp8-linear', action='store_true')
     parser.add_argument('--sage', action='store_true')
@@ -35,10 +35,15 @@ def main():
                         help='Use the normal FP8 resident preparation, owner AdaLN and fusions on the tiny model')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.device == 'cuda':
-        torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
-    dist.init_process_group('nccl' if args.device == 'cuda' else 'gloo')
-    device = torch.device(args.device, int(os.environ['LOCAL_RANK'])) if args.device == 'cuda' else torch.device('cpu')
+    if args.device == 'npu':
+        import torch_npu  # noqa: F401
+    if args.device == 'npu':
+        torch.npu.config.allow_internal_format = False
+        torch.npu.set_compile_mode(jit_compile=False)
+    if args.device != 'cpu':
+        torch.get_device_module(args.device).set_device(int(os.environ['LOCAL_RANK']))
+    dist.init_process_group({'cuda': 'nccl', 'npu': 'hccl', 'cpu': 'gloo'}[args.device])
+    device = torch.device(args.device, int(os.environ['LOCAL_RANK'])) if args.device != 'cpu' else torch.device('cpu')
     # Import the same adapters used by the normal inference entry point.
     import x_diffusers  # noqa: F401
     from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Transformer3DModel
@@ -84,7 +89,7 @@ def main():
     value = torch.arange(525, dtype=torch.float32, device=device).reshape(3,175)
     partial = (torch.sin(value+rank)*2).to(torch.bfloat16)
     reducer = FP8Reduction(chunk_elements=256)
-    if tp > 1:
+    if tp > 1 and args.device != 'npu':
         gathered = [torch.empty_like(partial) for _ in range(tp)]
         dist.all_gather(gathered, partial, group=manager.tp_group)
         result = reducer(partial, manager.tp_group)
@@ -97,7 +102,7 @@ def main():
     records = []
     # Test reusable models across changing shapes and layouts, including empty local
     # modalities, a CP tail pad, mixed reference/target timesteps and negative tags.
-    combinations = [(comm,cp_wire) for comm in (('bf16','fp8') if tp > 1 else ('bf16',))
+    combinations = [(comm,cp_wire) for comm in (('bf16','fp8') if tp > 1 and args.device != 'npu' else ('bf16',))
                     for cp_wire in (('bf16','fp8') if args.device == 'cuda' and args.cp > 1 else ('bf16',))]
     def make_fp8(model):
         attn = model.transformer_blocks[0].attn
@@ -165,7 +170,7 @@ def main():
                 expected = expected_model(**values)
                 start = time.perf_counter()
                 actual = model(**values)
-                if args.device == 'cuda': torch.cuda.synchronize()
+                if args.device != 'cpu': torch.get_device_module(args.device).synchronize()
                 call_seconds = time.perf_counter()-start
             assert all(x.dtype == torch.float32 and torch.isfinite(x).all() for x in actual)
             errors = [error(a,b) for a,b in zip(actual,expected)]
@@ -192,8 +197,9 @@ def main():
                                 rotary_channels=6*reference.config.rope_freq_dim),
                   status='passed',cases=records,reduction_probe=reducer.metrics,
                   scope='synthetic one-block H3; not full checkpoint, video quality or performance')
-    if args.device == 'cuda':
-        report.update(peak_allocated=torch.cuda.max_memory_allocated(),peak_reserved=torch.cuda.max_memory_reserved())
+    if args.device != 'cpu':
+        accelerator = torch.get_device_module(args.device)
+        report.update(peak_allocated=accelerator.max_memory_allocated(),peak_reserved=accelerator.max_memory_reserved())
     (args.output/f'rank-{rank}.json').write_text(json.dumps(report,indent=2))
     dist.barrier()
     if rank == 0: print(json.dumps(dict(status='passed',ranks=world,case_count=len(records))))

@@ -21,5 +21,7 @@
   "h3_refiner_weights": "./weights/refiner",
   "h3_refiner_prepared": "./model-cache/refiner",
   "h3_refiner_seconds": 5,
-  "h3_refiner_loading": "prefetch"
+  "h3_refiner_loading": "prefetch",
+  "h3_features": "none",
+  "h3_cuda_refiner_ff_chunk_size": 0
 }

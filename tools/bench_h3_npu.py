@@ -207,14 +207,16 @@ def worker():
                     return original(*values, **kwargs)
 
             self.pipe.transformer.forward = measured
-            original_decode = self.pipe.vae.decode
+            decode_target = getattr(self.pipe, '_h3_vae_decode_backend', None) or self.pipe.vae
+            decode_method = 'decode_video' if decode_target is not self.pipe.vae else 'decode'
+            original_decode = getattr(decode_target, decode_method)
 
             @wraps(original_decode)
             def decode(*values, **kwargs):
                 with self.telemetry.host_span("vae.decode"):
                     return original_decode(*values, **kwargs)
 
-            self.pipe.vae.decode = decode
+            setattr(decode_target, decode_method, decode)
 
     template = parse_args()
     init_env()
@@ -263,6 +265,7 @@ def worker():
             "peak_reserved_bytes": accelerator.max_memory_reserved(),
             "model_reused": reused, "prepare_seconds": manager.prepare_seconds,
             "base_dit_calls": manager.dit_calls if not args.h3_refiner else None,
+            "native_vae": getattr(getattr(manager.pipe, '_h3_vae_decode_backend', None), 'metrics', None),
             "phases": phases,
         })
         previous_pipe_id = id(manager.pipe)
@@ -427,7 +430,7 @@ def run_group(group, cases, args, publish):
     command = ["bash", str(LAUNCHER), "npu", task, str(first["seconds"]), first["resolution"], *first["media"]]
     config = dict(group=group, cards=8, sp=8, text_tp=8, phaa=2, base_steps=20, base_schedule_points=21,
                   refiner_steps=3 if first["resolution"] == "2k" else 0, attention="laser", dit_linear="int8",
-                  vae="Refiner BF16" if first["resolution"] == "2k" else "Base INT8 + decoder",
+                  vae="Refiner BF16" if first["resolution"] == "2k" else os.environ.get('H3_VAE_BACKEND', 'native-stream'),
                   adaln=table.name, seed=args.seed)
     config["request_memory_release"] = True
     samples = []

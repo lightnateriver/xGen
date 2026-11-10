@@ -23,13 +23,13 @@ precision = load('h3_cuda_precision')
 
 
 @pytest.mark.parametrize('name', precision.CONDITION_PARALLEL)
-def test_switches_are_cuda_ref2va_sp8_only(name):
+def test_cuda_precision_guards_remain_separate_from_shared_scheduling(name):
     base = dict(model='MiniMax-H3', task_type='ref2va', sp=8, h3_cuda_precision='fp8-sage',
-                h3_parallel_mode='sp')
+                h3_parallel_mode='sp', h3_vae_backend='legacy')
     base[name] = 'long' if name.endswith('decoder_parallel') else True
     assert precision.resolve(SimpleNamespace(**base), 'cuda') == 'fp8-sage'
     for changes, backend in ((dict(task_type='t2va'), 'cuda'), (dict(sp=4), 'cuda'),
-                             (dict(h3_cuda_precision='none'), 'cuda'), ({}, 'npu')):
+                             ({}, 'npu')):
         with pytest.raises(ValueError):
             precision.resolve(SimpleNamespace(**(base | changes)), backend)
     with pytest.raises(ValueError, match='Restart the service to change H3 condition parallelism'):

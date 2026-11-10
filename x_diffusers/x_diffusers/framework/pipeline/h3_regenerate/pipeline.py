@@ -147,7 +147,12 @@ class H3RefinerPipeline:
         try:
             if reference_audio:
                 self.base_audio.onload()
-            with native_padding(self.base, spec), self.metrics.span('h3.pipeline'):
+            from contextlib import nullcontext
+            scope = nullcontext()
+            if getattr(self.base.transformer, '_h3_precompute_conditioning', False) is True:
+                from x_diffusers.adaptor.h3_conditioning import request_conditioning
+                scope = request_conditioning(self.base.transformer)
+            with scope, native_padding(self.base, spec), self.metrics.span('h3.pipeline'):
                 result = self.base(**params)
         finally:
             self.base._blocks = original

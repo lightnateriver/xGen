@@ -241,19 +241,23 @@ DEFAULT_MINIMAX_H3_CONFIG = {
     "dtype": "bf16",
     "sp": 8,
     "fsdp": None,
-    "h3_vae_backend": "lightning",
+    "h3_vae_backend": "native-stream",
+    "h3_vae_model_path": None,
+    "h3_vae_trust_remote_code": False,
+    "h3_features": "full-parallel",
+    "h3_cuda_refiner_ff_chunk_size": 0,
     "vae_lightning": "none",  # Internal placeholder; H3 selection is resolved by the worker.
     "turbo_mode": "default",
     "inf_vram_blocks_num": 0,
     "atten": "laser",
     "matmul_quant": "int8",
-    "vae_matmul_quant": "int8",
+    "vae_matmul_quant": "none",
     "rope_fused": True,
     "text_encoder_tp": 8,
-    "phaa_num": 7,
-    "adaln_cache_file": "./weights/MiniMax-H3/adaln_cache/adaln_cache_8step.safetensors",
-    "transformer_path": "./weights/MiniMax-H3/transformer_adaln_cache",
-    "num_inference_steps": 50,
+    "phaa_num": 2,
+    "adaln_cache_file": "model-cache/t2va-21step.safetensors",
+    "transformer_path": "model-cache/base-t2va",
+    "num_inference_steps": 20,
     "save_fps": 24,
     "ten_second": False,
     "adopt_sr": False,
@@ -285,6 +289,8 @@ if device_type() == "cuda":
         "h3_cuda_precision": "auto", "phaa_num": 2, "h3_cuda_vae_sp": True,
         "atten": "none", "matmul_quant": "none", "vae_matmul_quant": "none",
         "h3_vae_backend": None, "vae_lightning": "none", "rope_fused": False,
+        "h3_features": None, "h3_cuda_refiner_ff_chunk_size": None,
+        "num_inference_steps": 50,
         "transformer_path": None, "adaln_cache_file": None,
     })
 
@@ -1194,11 +1200,12 @@ class VideoGenerationService:
         if config_path and os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 file_config = json.load(f)
-                config.update(file_config)
                 # If loading a MiniMax-H3 config, merge with defaults
                 if file_config.get("model", "").lower() == "minimax-h3":
+                    from x_diffusers.adaptor.h3_features import normalize_mapping
+                    file_config = normalize_mapping(file_config)
                     config.update(DEFAULT_MINIMAX_H3_CONFIG)
-                    config.update(file_config)
+                config.update(file_config)
 
         return config
 
@@ -2771,6 +2778,8 @@ class VideoGenerationService:
 
     def _config_to_arg_list(self, config: Dict[str, Any]) -> List[str]:
         from x_diffusers.adaptor.h3_cuda_options import BOOL_OPTIONS
+        from x_diffusers.adaptor.h3_features import normalize_mapping
+        config = normalize_mapping(config)
         excluded_keys = {'external_base_url'}
         arg_list = []
         for key, value in config.items():
@@ -3728,6 +3737,8 @@ def main():
     parser.add_argument('--turbo_mode', type=str, default="default", choices=["default", "faiz", "next_faiz"],
                        help="Use different turbo mode inference.")
 
+    from x_diffusers.adaptor.h3_features import add_aliases
+    add_aliases(parser)
     args = parser.parse_args()
     if args.maas and (args.maas_queue_capacity < 1 or args.maas_queue_timeout_s < 1):
         parser.error('MaaS queue capacity and timeout must be positive')

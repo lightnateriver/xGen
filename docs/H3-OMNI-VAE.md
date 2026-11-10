@@ -1,6 +1,6 @@
 # H3 Native-stream VAE Decode（实验性）
 
-H3 解码统一通过 `--h3_vae_backend` 选择，CUDA 与 NPU 共用三种后端。CUDA 推荐的 `fp8-bf16`、`fp8-sage`（T2VA/I2VA/R2VA）及 `sage-fp8-full-parallel` 默认选择 `native-stream`；其他离线配置默认 `legacy`。显式选择优先。选择后端需要重启常驻服务；不能在请求之间热切换权重或后端。
+H3 解码统一通过 `--h3_vae_backend` 选择，CUDA 与 NPU 共用三种后端。CUDA 推荐的 `fp8-bf16`、`fp8-sage`（T2VA/I2VA/R2VA）及 `sage-fp8-full-parallel` 默认选择 `native-stream`；v0.5 NPU Base推荐脚本和在线配置默认`native-stream`；其他低层离线配置默认 `legacy`。显式选择优先。选择后端需要重启常驻服务；不能在请求之间热切换权重或后端。
 
 `legacy` 表示沿用旧链路，并不自动启用 Lightning。常用配置如下：
 
@@ -12,7 +12,7 @@ H3 解码统一通过 `--h3_vae_backend` 选择，CUDA 与 NPU 共用三种后�
 
 H3 不再用 `--vae_lightning` 开启 Lightning；旧命令中的 `--vae_lightning decoder` 应替换成 `--h3_vae_backend lightning`。其他模型（如 Wan）继续保留原参数。内部复用原 VAEManager 和资源调度，不另建 Lightning 实现。
 
-在线服务可用同名 CLI 参数或配置 JSON 设置后端、模型路径及授权；显式 CLI 覆盖 JSON。NPU 在线预设仍用 `lightning`；CUDA 推荐示例已改为 `native-stream`。原 `--vae_matmul_quant none` 现在可显式覆盖 NPU 预设中的 INT8。修改后端需重启服务。
+在线服务可用同名 CLI 参数或配置 JSON 设置后端、模型路径及授权；显式 CLI 覆盖 JSON。v0.5 NPU Base在线预设使用 `native-stream`；CUDA 推荐示例已改为 `native-stream`。原 `--vae_matmul_quant none` 现在可显式覆盖 NPU 预设中的 INT8。修改后端需重启服务。
 
 ## 启动
 
@@ -59,15 +59,15 @@ onload、编码器清理或设备同步异常后仍尝试恢复 CPU master；清
 
 `pil` 文件输出直接写 MP4，由现有 H3 保存标志通知上层无需再次编码；目前只支持单请求单视频。`latent` 直接返回 latent，不加载 decoder 到设备。`pt` / `np` 输出使用 Omni 原生完整输出路径（先量化为 RGB8，再还原到 0–1 做张量后处理），会物化整段输出，因此不具有流式文件路径的内存优势，也不保留未量化的浮点像素精度。
 
-本版本支持 **CUDA 和昇腾原生 H3 VAE**，未开放 Refiner、替换式 NVFP4/Lite VAE 权重。它不引入 vLLM 运行时，复用已有 PyTorch、Transformers、PyAV、NumPy 和 Diffusers；可选 Triton 算子保留上游硬件判断。5090/SM120 不在上游 VAE 融合算子启用列表中，使用原生 FP32 权重与 FP16 autocast；其他 CUDA 硬件上的 SiLU reference fallback 不等同于 vLLM 的编译算子性能。
+本版本支持 **CUDA 和昇腾原生 H3 VAE**，未开放 Refiner、替换式 NVFP4/Lite VAE 权重。它不引入 vLLM 运行时，复用已有 PyTorch、Transformers、PyAV、NumPy 和 Diffusers；可选 Triton 算子保留上游硬件判断。5090/SM120 不在上游 VAE 融合算子启用列表中，使用混合权重存储（Linear FP16，其余 FP32）与 FP16 autocast；其他 CUDA 硬件上的 SiLU reference fallback 不等同于 vLLM 的编译算子性能。
 
-CUDA 推荐 FP8 配方额外复用原 decoder 的 Linear 存储策略：仅 `nn.Linear` 权重和 bias 预存为 FP16（与 FP16 autocast 的操作数类型一致），归一化、卷积和其他参数保留原生 FP32。它不把 VAE 改成 FP8；NPU 和未选 CUDA FP8 配方的原生 decoder 仍保留 FP32 权重。原始 FP32 整块 decoder 上卡与全常驻 DiT 组合曾在 32 GiB 显卡 OOM，不能直接套用单独 VAE 的容量结果。
+Native-stream 在 CUDA/NPU 上统一复用原 decoder 的 Linear 存储策略：仅 `nn.Linear` 权重和 bias 预存为 FP16（与 FP16 autocast 的操作数类型一致），归一化、卷积和其他参数保留原生 FP32。该策略独立于 DiT 精度配方，不把 VAE 改成 FP8；升级后需重启常驻进程以加载新的存储布局。原始 FP32 整块 decoder 上卡与全常驻 DiT 组合曾在 32 GiB 显卡 OOM，不能直接套用单独 VAE 的容量结果。
 
 两路 CUDA decoder 共用原有解码前准备回调：释放已完成 DiT 的请求内条件结果、回收空闲缓存，再暂存 decoder 权重；不会卸载 DiT。metrics 分列 `prepare_seconds`、`h2d_seconds`、`decode_output_seconds`、`offload_seconds` 和 `success`。
 
 昇腾路径使用当前 `torch_npu` 算子与设备 stream/event，保留原生 tile 和时间块算法；不启用 CUDA Triton 融合。已验证环境为 Torch 2.10.0、torch_npu 2.10.0.post4、Diffusers 0.40.0：完成八卡 910B3 组件矩阵及单卡 CPU master 暂存复用测试，另完成 910B1 小尺寸探针；尚未验证包含 DiT 的新后端整网容量。原 `--vae_matmul_quant int8` 仅适用于旧 VAE，不能作用于新原生权重，选择 native-stream 时须设为 `none`；DiT 的量化选择独立于此开关。
 
-原生 FP32 decoder 的显存比现有半精度暂存方案大。管线仍保留原 Diffusers VAE 供 encoder 使用，新 decoder 的 CPU master 是额外的主机内存占用。组件峰值、CPU 锁页内存和模型加载时间应单独报告；现有 DiT 常驻层数不自动调整。不能把组件通过当作任意常驻配置的整网容量保证。
+历史 FP32 整块 decoder 的显存比半精度暂存方案大；当前共享入口统一使用 Linear FP16 存储。管线仍保留原 Diffusers VAE 供 encoder 使用，新 decoder 的 CPU master 是额外的主机内存占用。组件峰值、CPU 锁页内存和模型加载时间应单独报告；现有 DiT 常驻层数不自动调整。不能把组件通过当作任意常驻配置的整网容量保证。
 
 两种 tile 几何不同，tile 内 self-attention 不等同于全画面全局 attention；overlap 不能恢复缺失的远距离 K/V。新后端与 Lightning 不承诺逐像素相同，需要对同一 latent 核对主体、接缝和时间连续性。
 
@@ -86,3 +86,5 @@ pytest x_diffusers/tests/test_h3_omni_decode.py -q
 设置 `XGEN_TEST_NATIVE_VAE` 为可信原生 `video_vae` 路径，可运行 CUDA 小尺寸解码、连续两次请求权重复用和失败后 CPU master 恢复测试。测试结果见 [CUDA 组件性能与精度](performance/h3-omni-vae.md)和 [910B3 三后端性能](performance/h3-vae-npu.md)。两份报告的音频与环境口径不同，不直接计算跨硬件加速比。
 
 默认切换后的回归、两次真实 CUDA 请求及实际 OOM 处理见 [提交验证记录](performance/h3-vae-release.md)。小尺寸 FP16 Linear 存储对比的 RGB8 最大差为 1，不宣称逐像素等价或继承旧 decoder 的人工精度认可。
+
+当前共享 Linear FP16 策略的八卡 910B1 整网复测见 [统一存储验证](performance/h3-native-shared-fp16.md)。历史表格的 FP32 存储口径保留，不与新配置混算。

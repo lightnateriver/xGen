@@ -59,7 +59,7 @@ def test_deferred_reference_stage_keeps_execution_device_and_restores_once(execu
     module.install_conditioning_staging(pipe,'cuda:0',defer_until_dit=True)
     with patch.object(torch.cuda,'synchronize'),patch.object(torch.cuda,'empty_cache'),patch.object(torch.cuda,'memory_allocated',return_value=0):
         if execution_device=='cpu':
-            with pytest.raises(RuntimeError,match='CUDA pipeline execution device'):pipe.text_encoder.model.forward(7)
+            with pytest.raises(RuntimeError,match='pipeline execution device'):pipe.text_encoder.model.forward(7)
             assert moves==['cpu']
             return
         for _ in range(2):

@@ -15,7 +15,7 @@ def add_aliases(parser):
     """Aliases use one argparse destination and preserve explicit --no-* values."""
     if '--h3_features' not in parser._option_string_actions:
         parser.add_argument('--h3_features', choices=('none', 'full-parallel'), default=None,
-                            help='Portable R2VA scheduling; preserves operator precision')
+                            help='Portable H3 T2VA/FL2VA/Ref2VA scheduling; preserves operator precision')
     for public, legacy in ALIASES.items():
         for prefix in ('--', '--no-'):
             old, new = prefix+legacy, prefix+public

@@ -216,10 +216,11 @@ def load_minimax_h3_pipe(args):
     configure_reference_image_size(pipe, args)
 
     # Keep automatic T2VA/FL2VA routing, but do not load the unused Ref2VA DiT
-    # from a combined repository into a resident CUDA precision pipeline.
+    # from a combined repository into a resident CUDA/portable H3 pipeline.
     component_options = ({"workflow": "fl2va"} if task_type in ("t2va", "fl2va")
                          and not getattr(args, "h3_refiner", False)
-                         and getattr(args, "h3_cuda_precision", "none") != "none" else {})
+                         and (getattr(args, "h3_cuda_precision", "none") != "none"
+                              or getattr(args, "h3_features", None) == "full-parallel") else {})
 
     # Load transformer from a custom checkpoint directory (full or pre-stripped).
     # from_pretrained is effectively strict=False: missing keys (e.g. adaln in

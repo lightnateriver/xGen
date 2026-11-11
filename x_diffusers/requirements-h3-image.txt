@@ -1,0 +1,3 @@
+# Optional H3 Image environment; leave the v0.5 video environment on its existing pin.
+# Official image integration, including mixed-precision PDD heads and the image VAE.
+diffusers @ git+https://github.com/huggingface/diffusers.git@0905b667fe3f37f43b6ef9c6e05ad20636206938

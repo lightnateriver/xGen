@@ -8,6 +8,8 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 ## 版本
 
+实验分支新增 [MiniMax-H3-Image NPU 四卡入口](docs/H3-IMAGE.md)：独立图像 VAE、六步 PDD、DiT SP4 与文本 TP4，支持文生图和参考图编辑。使用专用可选 Diffusers 依赖，详细配置和校验范围见该指南。
+
 v0.5 的八卡 CUDA H3 Base 默认采用 **Sage-FP8 全并行 Streaming + BF16 AdaLN 缓存表**，统一覆盖 T2VA、I2VA／首尾帧和 R2VA：主干 SP8、文本 FP8 TP8、FP8 Linear／PHAA、组件并行、50 层 DiT 常驻与 `native-stream` 解码。需先准备对应工作流的表及剔除 AdaLN 权重后的 checkpoint。[默认配置与差异](docs/H3-V05-CUDA-UPGRADE.md) · [AdaLN 准备与回退](docs/H3-CUDA-ADALN.md)
 
 原 [fp8-bf16 精度参考方案](docs/H3-CUDA-PRECISION.md) 和 [Sage-FP8 基础方案](docs/H3-CUDA-SAGE.md) 保留，可显式选择。新默认的技术解码、抽帧诊断与人工画面／音频验收分别记录，不沿用旧样例的人工认可结论。v0.5 NPU Base 统一采用 [Laser INT8 全并行 Streaming](docs/H3-NPU-DEFAULT.md)，覆盖T2VA/I2VA/R2VA，包含AdaLN查表和通用组件并行。

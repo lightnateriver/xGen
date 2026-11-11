@@ -10,7 +10,7 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 v0.5 的八卡 CUDA H3 Base 默认采用 **Sage-FP8 全并行 Streaming + BF16 AdaLN 缓存表**，统一覆盖 T2VA、I2VA／首尾帧和 R2VA：主干 SP8、文本 FP8 TP8、FP8 Linear／PHAA、组件并行、50 层 DiT 常驻与 `native-stream` 解码。需先准备对应工作流的表及剔除 AdaLN 权重后的 checkpoint。[默认配置与差异](docs/H3-V05-CUDA-UPGRADE.md) · [AdaLN 准备与回退](docs/H3-CUDA-ADALN.md)
 
-原 [fp8-bf16 精度参考方案](docs/H3-CUDA-PRECISION.md) 和 [Sage-FP8 基础方案](docs/H3-CUDA-SAGE.md) 保留，可显式选择。新默认的技术解码、抽帧诊断与人工画面／音频验收分别记录，不沿用旧样例的人工认可结论。v0.5 NPU Base 继续采用 Laser INT8 + Stream；本次 CUDA 默认调整不改变 NPU 配方。
+原 [fp8-bf16 精度参考方案](docs/H3-CUDA-PRECISION.md) 和 [Sage-FP8 基础方案](docs/H3-CUDA-SAGE.md) 保留，可显式选择。新默认的技术解码、抽帧诊断与人工画面／音频验收分别记录，不沿用旧样例的人工认可结论。v0.5 NPU Base 统一采用 [Laser INT8 全并行 Streaming](docs/H3-NPU-DEFAULT.md)，覆盖T2VA/I2VA/R2VA，包含AdaLN查表和通用组件并行。
 
 H3 视频 decoder 支持 CUDA/NPU 共用的 legacy、lightning、native-stream 三后端。CUDA 推荐的 T2VA/I2VA/R2VA 配方默认 native-stream，保留显式回退；v0.5 NPU Base 默认也使用 native-stream。[后端配置与验证范围](docs/H3-OMNI-VAE.md)
 
@@ -24,7 +24,7 @@ v0.4 的 `--maas` 提供 MiniMax-H3 V2 格式的生成、查询、列表及取�
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v0.5](../../tree/v0.5) | CUDA Base 默认 Sage-FP8 全并行 Streaming + AdaLN 表，覆盖 T2VA/I2VA/R2VA；保留旧精度回退。NPU Base 默认 Laser INT8 + Stream、20实际步、SP8，共用通用调度与 Stream FP16存储。 | [NPU默认与升级](docs/H3-NPU-DEFAULT.md) · [复测](docs/performance/h3-native-shared-fp16.md) · [通用适配](docs/H3-PORTABLE.md) |
+| [v0.5](../../tree/v0.5) | CUDA Base 默认 Sage-FP8 全并行 Streaming + AdaLN 表，覆盖 T2VA/I2VA/R2VA；保留旧精度回退。NPU Base 默认 Laser INT8全并行Streaming，覆盖T2VA/I2VA/R2VA、20实际步、SP8，共用组件调度与Stream FP16存储。 | [NPU默认与升级](docs/H3-NPU-DEFAULT.md) · [复测](docs/performance/h3-native-shared-fp16.md) · [通用适配](docs/H3-PORTABLE.md) |
 | [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用及组件并行，DiT 全程常驻；各项可独立关闭。新增统一 `--maas`、多模态输入校验、首尾帧、768P 自适应比例和公网素材下载。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [MaaS API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) |
 | [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |
 | [v0.3.1](../../tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](docs/performance/h3-cuda.md#v031-双设备冒烟) |
@@ -72,7 +72,7 @@ H3 的 `num_inference_steps` 直接填实际 Base DiT 次数，例如 20 或 50�
 按 [NPU 权重准备](docs/H3-DEPLOYMENT.md#4-模型与目录准备) 下载模型并生成 AdaLN 表。每条命令启动一个八卡任务。时长可以填写 `5`、`10` 或 `15`。
 
 ```bash
-# 768P：v0.5 默认 Laser INT8 + Stream / Base 20步
+# 768P：v0.5 默认 Laser INT8 全并行 Streaming / Base 20步
 export H3_VAE_MODEL_PATH=weights/native/video_vae
 export H3_VAE_TRUST_REMOTE_CODE=1
 bash example/diffusers/scripts/run_h3.sh npu t2va 5 768p
@@ -148,6 +148,8 @@ v0.5 NPU Base 默认使用 Laser attention、INT8 DiT Linear、Stream decoder、
 H3 在线、离线均在每条视频保存完、临时输出释放后同步设备并回收 PyTorch 空闲显存，保留常驻模型。日志记录回收耗时和前后显存；该策略对单条请求内部的峰值 OOM 不作保证，当前策略的完整设备矩阵待验证。
 
 ## B2/B3 性能
+
+最新v0.5 [Laser INT8全并行Streaming性能表](docs/performance/h3-npu-full-parallel-streaming.md)包含T2VA/I2VA 5/10/15秒六项新复测，以及既有R2VA单图/五图六项，保留阶段计数、显存与内存验证边界。
 
 [NPU 离线 benchmark](docs/H3-NPU-BENCHMARK.md) 提供 20 步矩阵、媒体检查和 HBM/RSS/PSS 采样。[2026-11-04 至 05 的完整实测](docs/performance/h3-npu-offline-20261105.md) 包含 35 项正式结果及预热、阶段耗时和内存数据。该批使用了现已移除的阶段性清理，不能当作当前「成片后回收」策略的回归结果。
 
@@ -246,7 +248,7 @@ H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|nativ
 
 ### NPU 在线
 
-v0.5 NPU Base配置默认20步、full-parallel与Stream。先在JSON配置自己的原生video_vae路径，并确认该模型代码可信；T2VA/I2VA/其他时长的默认启动配置可用，当前新的整网性能证据仅覆盖5s单图R2VA。要部署 R2VA，按 [NPU 在线配置](docs/H3-ONLINE.md#npu-base) 切换任务类型和 Ref2VA 权重。
+v0.5 NPU Base统一默认Laser INT8全并行Streaming，包含20实际步、匹配AdaLN、组件并行与Native-stream，覆盖T2VA/I2VA/R2VA。先在JSON配置可信原生video_vae路径；T2VA/I2VA的5/10/15秒常驻推理已复测，性能和验证边界见[完整表](docs/performance/h3-npu-full-parallel-streaming.md)。要部署 R2VA，按 [NPU 在线配置](docs/H3-ONLINE.md#npu-base) 切换任务类型和 Ref2VA 权重。
 
 ```bash
 XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=29530 \

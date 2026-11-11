@@ -28,7 +28,7 @@ MaaS V2 使用官网错误信封，旧 MaaS 接口返回 HTTP 400、`error=inval
 
 ## NPU Base
 
-v0.5 默认 **Laser INT8 + Stream**：SP8/text TP8/PHAA2、Base实际20步、通用full-parallel，R2VA另使用输入Refiner FFN chunk2048。先在示例JSON配置原生`video_vae`路径；其trust字段仅对你已确认可信的模型代码设为true。新配置的真实整网性能仅验证了5s单图R2VA，不能当作HTTP SLA。
+v0.5 默认 **Laser INT8全并行Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。T2VA/I2VA 5/10/15秒常驻推理复测与既有R2VA结果见[性能表](performance/h3-npu-full-parallel-streaming.md)，不作为HTTP SLA。
 
 启动前使用 `TASK_QUEUE_ENABLE=2 COMBINED_ENABLE=1 MEMORY_FRAGMENTATION=1 ENCRYPTION_WEIGHT=false OMP_NUM_THREADS=8 HCCL_BUFFSIZE=512 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`；参数含义与回退见[默认方案](H3-NPU-DEFAULT.md)。
 

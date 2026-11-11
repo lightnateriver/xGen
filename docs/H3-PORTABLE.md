@@ -4,7 +4,7 @@
 
 ## 开关与边界
 
-R2VA Base 768P 可以在原有启动参数后增加：
+T2VA/I2VA/R2VA Base 768P共用`--h3_features full-parallel`。推荐NPU入口同时默认Native-stream、AdaLN和Laser INT8；详见[NPU默认方案](H3-NPU-DEFAULT.md)。以下R2VA示例另指定FFN chunk2048，T2VA/I2VA保持0：
 
 ```bash
 --h3_features full-parallel --h3_refiner_ff_chunk_size 2048

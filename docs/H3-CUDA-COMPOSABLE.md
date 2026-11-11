@@ -61,6 +61,7 @@ H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage bash example/diffusers/scripts/ru
 | Audio Encoder 并行 | `--h3_cuda_audio_encoder_parallel` | 关 | 开 | 原 encode；halo 和完整因果投影随适配器生效 |
 | Audio Decoder 并行 | `--h3_cuda_audio_decoder_parallel none\|long` | none | long | none 为原 decode；long 仅在支持的长音频形状生效 |
 | FP8 PHAA 传输 | `--h3_cuda_phaa_fp8` | 继承原环境 | 开 | BF16 传输；`fp8-bf16` 主配方要求此项关 |
+| GPU 同步 FP8 peer 包对齐 | 环境变量 `XGEN_PHAA_FP8_ALIGN16` | 关 | 开 | 设为0并重启进程恢复；[作用范围与性能](H3-PHAA-FP8-ALIGNMENT.md) |
 | 去 BF16 临时连续副本 | `--h3_cuda_phaa_direct_pack` | 继承原环境，通常关 | 开 | 原 contiguous 后再打包；需要 FP8 PHAA，同组 TP8/CP8 不适用 |
 | DiT 驻留 | `--h3_cuda_dit_residency resident\|conditioning\|reference` | 继承原暂存开关 | resident | 后两项在条件／参考阶段暂存 CPU，有 D2H/H2D 时间代价 |
 | 输入 Refiner FFN 分块 | `--h3_cuda_refiner_ff_chunk_size` | 0 | 0 | 0 关闭；128..32768，128 的倍数；不是 2K Refiner |

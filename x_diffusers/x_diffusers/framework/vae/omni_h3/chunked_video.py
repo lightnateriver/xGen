@@ -363,11 +363,14 @@ class ChunkedVideoMP4Session:
         transfer_slots: int = 2,
         max_pending_bytes: int | None = _DEFAULT_MAX_PENDING_BYTES,
         skip_frames: int = 0,
+        frame_limit: int | None = None,
     ) -> None:
         if batch_frames <= 0:
             raise ValueError("batch_frames must be positive")
         if skip_frames < 0:
             raise ValueError("skip_frames must be non-negative")
+        if frame_limit is not None and (type(frame_limit) is not int or frame_limit < 1):
+            raise ValueError("frame_limit must be a positive integer or None")
         if max_pending_bytes is not None and (type(max_pending_bytes) is not int or max_pending_bytes <= 0):
             raise ValueError("max_pending_bytes must be a positive integer or None")
         self._value_range = value_range
@@ -379,6 +382,7 @@ class ChunkedVideoMP4Session:
         self._video_codec_options = video_codec_options
         self._crop = crop
         self._skip_frames = skip_frames
+        self._remaining_frames = frame_limit
         self._transfer_slots = transfer_slots
         self._max_pending_bytes = max_pending_bytes
         self._encoders: list[ChunkedMP4Encoder] = []
@@ -427,6 +431,11 @@ class ChunkedVideoMP4Session:
             chunk = chunk[:, :, skipped:]
             if not chunk.shape[2]:
                 return
+        if self._remaining_frames is not None:
+            if self._remaining_frames == 0:
+                return
+            chunk = chunk[:, :, :self._remaining_frames]
+            self._remaining_frames -= int(chunk.shape[2])
         self._pending.append(chunk)
         self._pending_frames += int(chunk.shape[2])
         if self._pending_frames >= self._batch_frames:

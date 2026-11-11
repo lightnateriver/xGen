@@ -8,6 +8,8 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 ## 版本
 
+v0.5 的 GPU **Sage-FP8 全并行 Streaming + AdaLN表** 组合默认包含 **PHAA FP8 Align16**，将同步 FP8 通信的每个 peer 包补齐到16字节，离线与在线启动均自动开启。需要关闭时，在启动前设置 `XGEN_PHAA_FP8_ALIGN16=0`，所有 rank 使用相同值。[配置与回退](docs/H3-PHAA-FP8-ALIGNMENT.md) · [12项在线性能对比](docs/performance/h3-cuda-phaa-align16.md)
+
 v0.5 的八卡 CUDA H3 Base 默认采用 **Sage-FP8 全并行 Streaming + BF16 AdaLN 缓存表**，统一覆盖 T2VA、I2VA／首尾帧和 R2VA：主干 SP8、文本 FP8 TP8、FP8 Linear／PHAA、组件并行、50 层 DiT 常驻与 `native-stream` 解码。需先准备对应工作流的表及剔除 AdaLN 权重后的 checkpoint。[默认配置与差异](docs/H3-V05-CUDA-UPGRADE.md) · [AdaLN 准备与回退](docs/H3-CUDA-ADALN.md)
 
 原 [fp8-bf16 精度参考方案](docs/H3-CUDA-PRECISION.md) 和 [Sage-FP8 基础方案](docs/H3-CUDA-SAGE.md) 保留，可显式选择。新默认的技术解码、抽帧诊断与人工画面／音频验收分别记录，不沿用旧样例的人工认可结论。v0.5 NPU Base 统一采用 [Laser INT8 全并行 Streaming](docs/H3-NPU-DEFAULT.md)，覆盖T2VA/I2VA/R2VA，包含AdaLN查表和通用组件并行。
@@ -198,6 +200,8 @@ B2 是历史测试组，芯片实际识别为 **910B1**。B3 为 **910B3**。两
 **冷**表示含进程启动、初始化和退出。**补**表示来自独立的常驻补测组。**—**表示该项已生成并补验收，完整 E2E 未保留。72 条均通过技术检查和完整音视频解码，人工画面与听音复核仍待记录。 [逐项数据](docs/performance/historical-pairs.csv) · [阶段拆分](docs/performance/historical-stages.csv)
 
 ## GPU 性能
+
+八卡20步、全部 BF16 AdaLN 表模式的[在线 Align16 对照表](docs/performance/h3-cuda-phaa-align16.md)覆盖 T2VA/I2VA/单图及五图 R2VA 的5/10/15秒。每项完整预热一次、正式一次，初始化另计，逐项列出推理、DiT、HTTP耗时和峰值显存，并注明历史节点差异。
 
 H3 VAE Decode 在 CUDA/NPU 均可选择 `--h3_vae_backend legacy|lightning|native-stream`。CUDA 推荐的 `fp8-bf16`、`fp8-sage` 和全并行预设默认 `native-stream`；NPU Base推荐脚本与在线预设默认 `native-stream`，其余低层离线入口保持既有选择逻辑，显式选择优先。H3 旧命令的 `--vae_lightning decoder` 需替换为 `--h3_vae_backend lightning`，其他模型的旧参数保留。实验性 [Native-stream 后端](docs/H3-OMNI-VAE.md)迁移原生 H3 tile 调度、分块输出、异步 D2H 和 MP4 编码，需要原生 `video_vae` 权重目录和显式授权。[组件实测对比](docs/performance/h3-omni-vae.md)包含性能、显存和精度验证范围。
 

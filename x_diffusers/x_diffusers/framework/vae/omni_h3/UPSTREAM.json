@@ -19,7 +19,8 @@
     "chunked_video.py": {
       "upstream": "utils/chunked_video.py",
       "upstream_sha256": "a9f775b2cc993c2f45162d3ee8cad71bee2f50fe103fa9072dbcf6f3d60ce652",
-      "adapted_sha256": "d916cf6432b230dd6b9f54747f6f750b9527df74388ad6b2f1a2143fd6d1c8dc"
+      "adapted_sha256": "415e58343b04305042dfd45ea5486df00d8869cdcfa347a7d93c49b2284699eb",
+      "adaptation": "Runtime imports and bounded transfer; optional output frame cap for online 15s delivery, disabled by default."
     },
     "media_utils.py": {
       "upstream": "utils/media_utils.py",

@@ -1,5 +1,7 @@
 # Sage-FP8 全并行 Streaming：768P 历史矩阵
 
+新增统一BF16 AdaLN表模式的[在线Align16性能对比](h3-cuda-phaa-align16.md)，覆盖同样12项组合。该表记录服务端推理和HTTP指标，本页继续保留离线历史口径。
+
 采集日期：2026-11-11。8×RTX 5090、原生 SP8、文本 FP8 TP8、PHAA2、50 层常驻、Sage attention、FP8 DiT Linear／双向通信、SAP、本地输入、条件复用及组件并行；视频后端 native-stream，seed42。每项完整预热20步，再正式20步，客户端串行执行。
 
 这些数据来自本次合并前的 CUDA 开发树，包含当时未提交的表和 FL2VA 适配，不能冒充合并后提交的完整性能重测。Torch2.12／CUDA13、Diffusers0.40、Transformers5.15、Sage2.2；原生 VAE Linear FP16存储／FP16 autocast。

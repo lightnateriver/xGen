@@ -131,6 +131,22 @@ def test_quantization_matches_native_rounding():
     assert quantize_chunk(pixels,(0.,1.)).flatten().tolist()==[0,128,255]
 
 
+@pytest.mark.parametrize('limit,expected', [(None, 12), (7, 7), (1, 1), (20, 12)])
+def test_frame_limit_crosses_chunk_boundaries_without_stopping_producer(limit,expected):
+    session=ChunkedVideoMP4Session(value_range=(0.,1.),fps=24,batch_frames=5,
+        transfer_slots=0,frame_limit=limit)
+    for _ in range(3):
+        session.push(torch.zeros(1,3,4,32,32))
+    result=session.finish()
+    assert session.frame_counts==[expected] and len(result[0])>100
+
+
+@pytest.mark.parametrize('value',[0,-1,True,1.5])
+def test_invalid_frame_limit_fails_before_encoder_start(value):
+    with pytest.raises(ValueError,match='frame_limit'):
+        ChunkedVideoMP4Session(value_range=(0.,1.),fps=24,frame_limit=value)
+
+
 def test_decoder_linear_storage_reuses_existing_fp16_policy_only_for_linears():
     from x_diffusers.framework.vae.h3_cuda_chunks import prepare_decoder_linears
     decoder=torch.nn.Sequential(torch.nn.Linear(4,4),torch.nn.LayerNorm(4),torch.nn.Linear(4,4))

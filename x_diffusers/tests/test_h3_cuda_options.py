@@ -18,7 +18,7 @@ def settings(**overrides):
 def clean_environment(monkeypatch):
     import os
     with patch.dict(os.environ):
-        for key in ('XGEN_PHAA_FP8','XGEN_PHAA_FP8_MIXED_STRIDES'):
+        for key in ('XGEN_PHAA_FP8','XGEN_PHAA_FP8_MIXED_STRIDES','XGEN_PHAA_FP8_ALIGN16'):
             os.environ.pop(key,None)
         yield
 
@@ -36,6 +36,32 @@ def test_preset_and_complete_explicit_off():
     assert not any(getattr(args,k) for k in options.BOOL_OPTIONS)
     assert args.h3_cuda_input_refiner=='none'
     assert args.h3_cuda_audio_decoder_parallel=='none'
+
+
+@pytest.mark.parametrize('task', ['t2va', 'fl2va', 'ref2va'])
+def test_default_cuda_full_preset_enables_peer_alignment(task):
+    import os
+    args=settings(task_type=task,h3_cuda_precision='auto',h3_cuda_preset=None)
+    options.resolve_options(args,'cuda')
+    assert args.h3_cuda_preset=='sage-fp8-full-parallel'
+    assert args._h3_cuda_env_updates['XGEN_PHAA_FP8_ALIGN16']=='1'
+    assert 'XGEN_PHAA_FP8_ALIGN16' not in os.environ
+    options.commit_environment(args)
+    assert os.environ['XGEN_PHAA_FP8_ALIGN16']=='1'
+
+
+def test_full_preset_respects_explicit_alignment_rollback(monkeypatch):
+    monkeypatch.setenv('XGEN_PHAA_FP8_ALIGN16','0')
+    args=settings()
+    options.resolve_options(args,'cuda')
+    assert args._h3_cuda_env_updates['XGEN_PHAA_FP8_ALIGN16']=='0'
+
+
+@pytest.mark.parametrize('backend,profile', [('cuda','fp8-sage'), ('cuda','fp8-bf16'), ('npu','none')])
+def test_other_recipes_do_not_default_to_peer_alignment(backend,profile):
+    args=settings(h3_cuda_preset=None,h3_cuda_precision=profile)
+    options.resolve_options(args,backend)
+    assert 'XGEN_PHAA_FP8_ALIGN16' not in args._h3_cuda_env_updates
 
 
 @pytest.mark.parametrize('sp',[False,True])

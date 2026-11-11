@@ -130,12 +130,16 @@ class OmniH3Decoder:
                         if audio.shape[0] > 2 and audio.shape[-1] <= 2:
                             audio = audio.T
                         audio = np.ascontiguousarray(audio)
+                    frame_limit = getattr(infer_info, '_h3_native_frame_limit', None)
+                    if frame_limit is not None and audio is not None:
+                        audio = audio[..., :round(frame_limit / infer_info.fps * self.sample_rate)]
                     height = int(getattr(infer_info, "save_height", 0) or infer_info.height)
                     width = int(getattr(infer_info, "save_width", 0) or infer_info.width)
                     session = ChunkedVideoMP4Session(value_range=self.vae.chunk_value_range,
                         fps=infer_info.fps, audio_waveforms=[audio] if audio is not None else None,
                         audio_sample_rate=self.sample_rate, batch_frames=17,
-                        video_codec_options={"preset": "fast", "crf": "10", "threads": "0"}, crop=(height, width))
+                        video_codec_options={"preset": "fast", "crf": "10", "threads": "0"}, crop=(height, width),
+                        frame_limit=frame_limit)
                     # Agree on encoder startup before any rank enters tile collectives.
                     error = None
                     owner = not dist.is_initialized() or dist.get_rank() == 0

@@ -44,6 +44,8 @@ R2VA 单独启动。使用 `example/diffusers/configs/h3_npu_ref2va.example.json
 
 ## CUDA Base
 
+GPU 的 Sage-FP8 全并行 Streaming 预设默认开启每 peer 16字节包对齐。关闭时在启动前设置 `export XGEN_PHAA_FP8_ALIGN16=0`，所有 rank 必须一致，修改后重启服务。配置与回退见[Align16指南](H3-PHAA-FP8-ALIGNMENT.md)，八卡20步T2VA/I2VA/R2VA的12项真实在线结果见[性能对比](performance/h3-cuda-phaa-align16.md)。
+
 默认配置为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-CUDA-ADALN.md)。准备完整 Base 模块、相应 FL2VA／Ref2VA 表及剔除权重后的 Transformer。T2VA 使用 `--service-mode t2va`，同时接受 T2VA / I2VA；只服务 I2VA 用 fl2va。R2VA 独立使用 ref2va 模式和对应资产。保留的 [fp8-bf16 JSON](../example/diffusers/configs/h3_cuda_bf16.example.json) 可直接回退原精度方案；改变配方需重启服务。
 
 ```bash

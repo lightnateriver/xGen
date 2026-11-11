@@ -41,6 +41,15 @@ class MaaSTests(unittest.TestCase):
     def tearDown(self):
         for job in self.service.maas_pending.values(): cleanup(job['data'])
 
+    def test_output_uses_configured_temp_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('video_server.tempfile.gettempdir',return_value=directory):
+                response=self.submit(dict(prompt='test',task_type='t2va'))
+            self.assertEqual(response.status_code,200,response.json)
+            job,_=self.service._claim_maas_task()
+            self.assertEqual(Path(job['save_path']).parent,Path(directory)/'generated_videos')
+            cleanup(job['data'])
+
     def test_modes_and_both_routes(self):
         for task,fields in [('t2va',{}),('fl2va',dict(first_frame=image())),
                             ('fl2va',dict(last_frame=image())),

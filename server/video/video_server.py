@@ -695,6 +695,10 @@ class VideoInferenceManager:
             "audio" if _has_audio else
             "none"
         )
+        if getattr(transformer, '_h3_cuda_adaln_table', False):
+            from x_diffusers.adaptor.h3_references import select_adaln
+            select_adaln(self.pipe, args, _needed_cond)
+            return
         if _cache._conditioning_type != _needed_cond:
             logger.info(f"[Rank {rank}] AdaLN cache conditioning_type "
                         f"switching: {_cache._conditioning_type} -> {_needed_cond}")
@@ -819,6 +823,8 @@ class VideoInferenceManager:
             output_keys += ["audio", "sampling_rate"]
 
         try:
+            if getattr(args, 'h3_vae_backend', None) == 'native-stream':
+                infer_info._h3_native_frame_limit = args.frames if args.frames == 360 else None
             if getattr(args, 'h3_attention', 'legacy') != 'legacy':
                 self.pipe.transformer._h3_attention_session.begin(args)
             with base_temporal_padding(self.pipe, infer_params["num_frames"]):
@@ -830,6 +836,10 @@ class VideoInferenceManager:
                     result = self.pipe(output=output_keys, **infer_params)
         finally:
             self._mmh3_cleanup(transformer, denoiser_patched, orig_denoiser_call)
+            infer_info._h3_native_frame_limit = None
+
+        if getattr(args, 'h3_vae_backend', None) == 'native-stream' and getattr(infer_info, '_route_b_saved', False):
+            result['_h3_native_saved_path'] = str(Path(infer_info.save_path).resolve())
 
         # --- SeedVR2 super-resolution post-processing ---
         if need_sr and self.sr_pipe is not None:
@@ -1976,7 +1986,7 @@ class VideoGenerationService:
                 task.v2_metadata = metadata
                 task.on_change = self.maas_v2.task_changed
                 task.on_change(task)
-            save_path = f"/tmp/generated_videos/video_{uuid.uuid4().hex}.mp4"
+            save_path = str(Path(tempfile.gettempdir()) / 'generated_videos' / f'video_{uuid.uuid4().hex}.mp4')
             self.tasks[task_id] = task
             if self.maas:
                 data['_maas_adopted'] = True
@@ -3066,6 +3076,18 @@ class VideoGenerationService:
 
     def _save_minimax_h3_output(self, output, save_path: str, args):
         """Save MiniMax-H3 video + audio into a single MP4 with embedded audio."""
+        native_path = output.get('_h3_native_saved_path')
+        if native_path:
+            if (getattr(args, 'h3_vae_backend', None) != 'native-stream'
+                    or native_path != str(Path(infer_info.save_path).resolve())):
+                raise ValueError('Native-stream output does not match this request')
+            source = Path(native_path)
+            if not source.is_file() or source.stat().st_size == 0:
+                raise ValueError('Native-stream output is missing or empty')
+            if source.resolve() != Path(save_path).resolve():
+                os.replace(source, save_path)
+            infer_info._route_b_saved = False
+            return
         if getattr(args, 'h3_refiner', False):
             if output.get('saved_path') != str(Path(save_path).resolve()):
                 raise RuntimeError('H3 Refiner did not finish the requested output')
@@ -3215,6 +3237,7 @@ class VideoGenerationService:
         logger.info("MaaS task %s completed timings_s=%s", task.task_id, timings)
 
     def _process_task(self, task_id: str, data: Dict[str, Any], save_path: str, *, maas_task=None):
+        native_pending = None
         try:
             if maas_task is None and not self._prepare_task(task_id):
                 return
@@ -3232,6 +3255,10 @@ class VideoGenerationService:
             infer_info.save_path = save_path
             
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            if maas_task is not None and getattr(args, 'h3_vae_backend', None) == 'native-stream':
+                with tempfile.NamedTemporaryFile(dir=Path(save_path).parent, prefix='.native-', suffix='.mp4', delete=False) as pending:
+                    native_pending = pending.name
+                infer_info.save_path = native_pending
 
             torch.cuda.synchronize()
             clock = time.monotonic if maas_task is not None else time.time
@@ -3287,6 +3314,8 @@ class VideoGenerationService:
                     self.shutdown = True
                     os._exit(1)
         finally:
+            if native_pending is not None:
+                Path(native_pending).unlink(missing_ok=True)
             _cleanup_temp_files()
             if self.maas:
                 from maas_media import cleanup

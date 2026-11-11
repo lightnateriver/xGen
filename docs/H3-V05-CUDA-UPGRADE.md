@@ -1,5 +1,7 @@
 # v0.5 CUDA 默认方案与提交范围
 
+GPU 的 Sage-FP8 全并行 Streaming 预设现默认包含同步 PHAA FP8 Align16，沿用现有 transport，设置 `XGEN_PHAA_FP8_ALIGN16=0` 可独立关闭。在线 native-stream 生成的文件通过既有原子发布器交付，在线15秒按360帧交付。该文件交付修复与批测配置一起验证。[Align16配置与回退](H3-PHAA-FP8-ALIGNMENT.md) · [12项在线性能及验证范围](performance/h3-cuda-phaa-align16.md)
+
 本次基于 v0.5 的 `1883308` 整理 CUDA 开发代码。保留其 NPU Laser INT8 + Stream 默认、跨设备组件调度和共用 VAE 实现。
 
 | 项目 | 原 v0.5 | 本次 |

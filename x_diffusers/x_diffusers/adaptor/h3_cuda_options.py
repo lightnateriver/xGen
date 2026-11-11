@@ -97,7 +97,7 @@ def resolve_options(args, backend):
         if getattr(args, 'h3_cuda_precision', 'auto') == 'auto':
             args.h3_cuda_precision = 'fp8-sage'
         for key, value in (('NCCL_MAX_CTAS', '2'), ('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True'),
-                           ('XGEN_H3_FUSED_OUTPUT_ADALN', '1')):
+                           ('XGEN_H3_FUSED_OUTPUT_ADALN', '1'), ('XGEN_PHAA_FP8_ALIGN16', '1')):
             environment[key] = os.environ.get(key, value)
     args.h3_cuda_preset = preset
     mode = getattr(args, 'h3_parallel_mode', 'sp')

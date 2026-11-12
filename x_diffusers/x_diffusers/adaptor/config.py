@@ -19,6 +19,11 @@ def parse_args(namespace=None, mode="infer", *, bootstrap_environment=True):
     from .h3_features import add_aliases
     add_aliases(parser)
     args = parser.parse_args(namespace=namespace)
+    from .h3_npu_options import resolve_h3_features
+    try:
+        resolve_h3_features(args)
+    except ValueError as error:
+        parser.error(str(error))
     if bootstrap_environment and (getattr(args, 'h3_cuda_preset', None) not in (None, 'none')
             or (args.model == 'MiniMax-H3' and args.h3_cuda_precision == 'auto')):
         from x_base.device import device_type
@@ -108,6 +113,8 @@ def add_minimax_h3_args(parser: argparse.ArgumentParser):
     from .h3_parallel_config import add_arguments
     add_arguments(parser)
     group = parser.add_argument_group(title="MiniMax-H3 args")
+    from .h3_npu_options import add_arguments as add_npu_fusions
+    add_npu_fusions(group)
     group.add_argument("--h3_cuda_precision", choices=["auto", "none", "fp8-bf16", "fp8-sage"], default="auto",
                        help="CUDA H3 Base defaults to FP8 Linear/BF16 attention and communication; fp8-sage selects CUDA recipe 2 (visual quality review pending). Auto preserves NPU, other models and explicit legacy recipes. Use none for the legacy CUDA path.")
     group.add_argument("--h3_cuda_linear_tp", type=int, choices=(1, 2), default=1,
@@ -214,9 +221,9 @@ def add_abilities_args(parser: argparse.ArgumentParser):
                         help='Enable Fully Sharded Data Parallel (FSDP). '
                              'The default is the all model, with options for text_encoder and transformer models')
     group.add_argument("--atten",
-                       choices=['none', 'sage', 'laser', 'rainfusion', 'sparse', 'mxfp4', 'sparge'],
+                       choices=['none', 'sage', 'laser', 'vc', 'rainfusion', 'sparse', 'mxfp4', 'sparge'],
                        default='none',
-                       help="Attention type: none (base), sage (A8W8), laser, rainfusion, sparse, mxfp4")
+                       help="Attention type: none (base), sage (A8W8), laser, vc (Ascend ExpCast), rainfusion, sparse, mxfp4, sparge")
     group.add_argument("--rainfusion_ratio", default=0.0, type=float,
                        help="The ratio of skip timesteps of rainfusion attention."
                             "If num_inference_steps is 40 and rainfusion_ratio is 0.375, the skip_timesteps is 15.")

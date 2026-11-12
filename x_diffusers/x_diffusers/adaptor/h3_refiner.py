@@ -4,6 +4,7 @@ import logging
 from shutil import which
 import time
 
+from .h3_npu_options import request_context, resolve_h3_features
 from .h3_refiner_config import model_key, validate_inputs, validate_settings
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 def prepare(manager, args):
     """Load once through the original loader/ability functions; borrow manager.pipe."""
     validate_settings(args)
+    resolve_h3_features(args)
     if getattr(manager, '_h3_refiner_failed', False):
         raise RuntimeError('H3 Refiner initialization failed; restart the worker before loading again')
     if getattr(manager, '_h3_refiner_key', None) is not None:
@@ -58,4 +60,5 @@ def infer(manager, args):
     prepare(manager, args)
     if getattr(args, 'h3_attention', 'legacy') != 'legacy':
         manager.pipe.transformer._h3_attention_session.begin(args)
-    return manager.sr_pipe(args)
+    with request_context(manager.pipe.transformer):
+        return manager.sr_pipe(args)

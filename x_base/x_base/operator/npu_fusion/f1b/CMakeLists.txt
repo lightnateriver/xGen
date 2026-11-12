@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+find_package(ASC REQUIRED)
+project(h3_swiglu_quant LANGUAGES ASC CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/H3Kernel.cmake")
+h3_add_kernel(h3_swiglu_quant op_extension/swiglu_quant_queued.asc)
+h3_add_kernel(h3_swiglu_quant_vector op_extension/swiglu_quant_vector_queued.asc)
+h3_add_kernel(h3_swiglu_quant_reuse op_extension/swiglu_quant_reuse_queued.asc)

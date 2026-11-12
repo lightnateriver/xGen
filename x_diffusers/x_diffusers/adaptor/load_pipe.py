@@ -449,6 +449,9 @@ def to_dtype(name: str):
 
 def load_pipe(args):
     backend = device_type()
+    from .h3_npu_options import validate as validate_npu_fusions
+
+    validate_npu_fusions(args, backend)
     from ..framework.vae.omni_decoder import validate_options
     from .h3_parallel_config import H3ParallelConfig
     from .h3_cuda_precision import resolve
@@ -495,6 +498,8 @@ def load_pipe(args):
         validate(args)
     from .h3_turbo_sla import validate_args
     validate_args(args)
+    if args.atten == "vc":
+        _apply_attention_backend(args)
     # 查看是否在自定义pipeline注册
     if is_registered_mappings(args.pretrained_model_name_or_path):
         return get_pipeline_cls_by_hf_class_name(args.pretrained_model_name_or_path, to_dtype(args.dtype))
@@ -531,16 +536,8 @@ def _apply_attention_backend(args):
         attention_manager.configure_cuda_attention(args.atten)
     elif args.atten == 'sparge':
         raise ValueError('SpargeAttention requires CUDA')
-    elif args.atten == 'sage':
-        attention_manager.enable_sage_attention()
-    elif args.atten == 'laser':
-        attention_manager.enable_laser_attention()
-    elif args.atten == 'rainfusion':
-        attention_manager.enable_rainfusion_attention()
-    elif args.atten == 'sparse':
-        attention_manager.enable_sparse_attention()
-    elif args.atten == 'mxfp4':
-        attention_manager.enable_mxfp4_attention()
+    else:
+        attention_manager.configure_npu_attention(args.atten)
 
 
 def _apply_matmul_quant(pipe, args):
@@ -768,6 +765,9 @@ def update_pipe(pipe, args):
     if getattr(args, 'h3_attention', 'legacy') != 'legacy':
         from ..framework.transformer.h3_attention import install
         install(pipe.transformer, args)
+    from .h3_npu_options import configure_model as configure_npu_fusions
+
+    configure_npu_fusions(pipe, args, device_type())
     return pipe
 
 

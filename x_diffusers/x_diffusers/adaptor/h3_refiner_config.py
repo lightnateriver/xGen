@@ -53,7 +53,7 @@ def model_key(args):
               'adaln_cache_file', 'num_inference_steps', 'dtype', 'sp', 'text_encoder_tp',
               'matmul_quant', 'vae_matmul_quant', 'atten', 'phaa_num', 'rope_fused',
               'h3_refiner_weights', 'h3_refiner_prepared', 'h3_refiner_loading',
-              'h3_attention', 'h3_veda_predictor', 'h3_turbo8', 'h3_nvfp4_checkpoint')
+              'h3_attention', 'h3_veda_predictor', 'h3_turbo8', 'h3_nvfp4_checkpoint', 'h3_fused_ops')
     return tuple(getattr(args, name, None) for name in fields)
 
 

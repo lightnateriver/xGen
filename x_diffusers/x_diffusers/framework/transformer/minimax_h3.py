@@ -42,6 +42,18 @@ from diffusers.models.transformers.transformer_minimax_h3 import (
 from diffusers.modular_pipelines.modular_pipeline import SequentialPipelineBlocks
 from diffusers.utils import apply_lora_scale
 
+from .h3_npu_fusion import (
+    _h3_model,
+    _h3_phaa,
+    _h3_project_output,
+    _h3_project_qkv,
+    _h3_rope,
+    configure_h3_fused_ops,
+    h3_block_forward,
+    h3_inference_context,
+    project_text,
+)
+
 from x_base import (
     ParallelManager,
     all_to_all_before_attn,
@@ -54,7 +66,6 @@ from x_base import (
     split_sequence,
     is_phaa_enabled,
     get_phaa_split_num,
-    run_phaa_attention,
 )
 
 
@@ -123,7 +134,11 @@ class AscendMiniMaxH3AttnProcessor:
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # --- projections (identical to the upstream processor) ---
-        if attn.fused_projections:
+        model = _h3_model(attn)
+        projected = _h3_project_qkv(attn, hidden_states)
+        if projected is not None:
+            query, key, value = projected
+        elif attn.fused_projections:
             query, key, value = attn.to_qkv(hidden_states).chunk(3, dim=-1)
         else:
             query = attn.to_q(hidden_states)
@@ -155,7 +170,9 @@ class AscendMiniMaxH3AttnProcessor:
                 from x_base.operator.h3_partial_rope import try_h3_partial_rope
 
                 rotated = try_h3_partial_rope(query, key, *rotary_emb)
-            query, key = rotated if rotated is not None else _rope_minimax_h3(query, key, *rotary_emb)
+            query, key = rotated if rotated is not None else _h3_rope(
+                model, query, key, *rotary_emb, fallback=_rope_minimax_h3,
+            )
         parallel_manager = getattr(attn, "parallel_manager", None)
         sp_size = parallel_manager.sp_size if parallel_manager is not None else 1
         if getattr(attn, '_h3_tp_cp', False) and sp_size > 1:
@@ -259,8 +276,8 @@ class AscendMiniMaxH3AttnProcessor:
         key = key.flatten(-2)
         value = value.flatten(-2)
 
-        hidden_states = run_phaa_attention(
-            query, key, value,
+        hidden_states = _h3_phaa(
+            attn, query, key, value,
             comm_stream=self.comm_stream,
             sp_group=sp_group,
             sp_size=sp_size,
@@ -281,7 +298,7 @@ class AscendMiniMaxH3AttnProcessor:
             scatter_stream=getattr(attn, '_h3_phaa_scatter_stream', None),
         )
 
-        hidden_states = attn.to_out[0](hidden_states)
+        hidden_states = _h3_project_output(attn.to_out[0], hidden_states)
         hidden_states = attn.to_out[1](hidden_states)
         return hidden_states
 
@@ -451,13 +468,11 @@ def _project_modalities(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Project video, audio, and text modalities. Returns (video_embeds, audio_embeds, text_embeds)."""
     if getattr(self, '_h3_precompute_conditioning', False):
-        from .h3_conditioning import project_conditioning
-        text_embeds = project_conditioning(self, encoder_hidden_states)
+        text_embeds = project_text(self, encoder_hidden_states)
     video_embeds = self.proj_in(hidden_states.to(self.proj_in.weight.dtype))
     audio_embeds = self.audio_proj_in(audio_hidden_states.to(self.audio_proj_in.weight.dtype))
     if not getattr(self, '_h3_precompute_conditioning', False):
-        text_embeds = self.context_embedder(encoder_hidden_states.to(self.context_embedder.weight.dtype))
-        text_embeds = self.token_refiner(text_embeds)
+        text_embeds = project_text(self, encoder_hidden_states)
     return video_embeds, audio_embeds, text_embeds
 
 
@@ -615,6 +630,9 @@ def _mmh3_forward_with_sp(
 
 
 MiniMaxH3Transformer3DModel.forward = _mmh3_forward_with_sp
+MiniMaxH3Transformer3DModel.configure_fused_ops = configure_h3_fused_ops
+MiniMaxH3Transformer3DModel.inference_context = h3_inference_context
+MiniMaxH3TransformerBlock.forward = h3_block_forward
 
 
 _original_adaln_forward = MiniMaxH3AdaLayerNormModulation.forward

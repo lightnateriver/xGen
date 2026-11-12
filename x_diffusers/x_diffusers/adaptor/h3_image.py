@@ -15,6 +15,10 @@ def validate_options(args, world_size):
         raise ValueError("Use pure SP1/SP2/SP4 or pure DiT TP2/TP4")
     if args.text_encoder_tp not in (1, world_size):
         raise ValueError("text_encoder_tp must be 1 or the distributed world size")
+    text_int8 = getattr(args, "image_text_int8", False)
+    text_resident = getattr(args, "image_text_resident", False)
+    if (text_int8 or text_resident) and (world_size != 1 or args.text_encoder_tp != 1):
+        raise ValueError("Experimental Image text quantization/residency requires one NPU and text_encoder_tp=1")
     if args.num_inference_steps != 6:
         raise ValueError("MiniMax-H3-Image has exactly six PDD sampling steps")
     if args.width <= 0 or args.height <= 0 or args.width * args.height > 20 * 1024**2:
@@ -88,7 +92,14 @@ def load_pipeline(args):
     if getattr(args, "image_swiglu", "none") != "none":
         from ..framework.transformer.h3_image_optimizations import install_image_swiglu
         install_image_swiglu(pipe.transformer, args.image_swiglu)
-    if args.text_encoder_tp > 1:
+    if getattr(args, "image_text_int8", False):
+        if backend != "npu":
+            raise ValueError("Image text INT8 requires NPU")
+        from ..framework.transformer.h3_image_optimizations import quantize_image_text_encoder
+        quantize_image_text_encoder(pipe.text_encoder)
+    if getattr(args, "image_text_resident", False):
+        pipe.text_encoder.to(device)
+    elif args.text_encoder_tp > 1:
         pipe._xgen_image_tp_manager = ParallelManager(1, 1, 1, tp_size=args.text_encoder_tp)
         enable_tp(pipe.text_encoder, args.text_encoder_tp, target_layers=range(50))
         pipe.text_encoder.to(device)
@@ -189,7 +200,8 @@ def run_image(args, pipe=None):
                   optimization_options={name: getattr(args, name, None) for name in (
                       "image_adaln_table", "image_resident", "image_int8", "image_dit_tp", "image_fused_qkv",
                       "image_condition_cache", "image_refiner_sp", "image_vision_sp", "image_vae_parallel",
-                      "image_ff_chunk", "image_swiglu", "image_fused_rope", "image_laser_dense_tail", "image_rgb8_output", "image_local_input")},
+                      "image_ff_chunk", "image_swiglu", "image_fused_rope", "image_laser_dense_tail", "image_rgb8_output", "image_local_input",
+                      "image_text_int8", "image_text_resident")},
                   peak_allocated_bytes=peak.item())
     if rank == 0:
         Path(args.save_path).with_suffix(".json").write_text(json.dumps(result, indent=2) + "\n")

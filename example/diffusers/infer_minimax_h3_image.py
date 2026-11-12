@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--image_ff_chunk", type=int, default=0)
     parser.add_argument("--image_laser_dense_tail", type=int, default=0)
     parser.add_argument("--image_swiglu", choices=("none", "native", "triton"), default="none")
-    for name in ("image_adaln_table", "image_resident", "image_int8", "image_fused_qkv", "image_condition_cache", "image_vae_parallel", "image_vision_sp", "image_refiner_sp", "image_fused_rope", "image_rgb8_output", "image_local_input"):
+    for name in ("image_adaln_table", "image_resident", "image_int8", "image_fused_qkv", "image_condition_cache", "image_vae_parallel", "image_vision_sp", "image_refiner_sp", "image_fused_rope", "image_rgb8_output", "image_local_input", "image_text_int8", "image_text_resident"):
         parser.add_argument("--" + name, action="store_true")
     args = parser.parse_args()
     if args.warmup < 0 or args.repeat < 1:

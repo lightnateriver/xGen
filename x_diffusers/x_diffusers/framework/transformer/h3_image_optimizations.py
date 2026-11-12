@@ -73,6 +73,27 @@ def quantize_image_blocks(transformer):
 
 
 @torch.no_grad()
+def quantize_image_text_encoder(text_encoder):
+    """W8A8 only the retained Qwen decoder projections, before offload hooks or TP."""
+    from x_base.config import QuantLayerConfig
+    from x_base.operator.matmul import enable_weight_quant_linear
+    projections = ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+                   "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")
+    names = [f"model.language_model.layers.{i}.{projection}"
+             for i in range(len(text_encoder.model.language_model.layers)) for projection in projections]
+    if not names or any(not isinstance(text_encoder.get_submodule(name), nn.Linear) for name in names):
+        raise ValueError("Image text quantization requires unsharded Qwen decoder Linear projections")
+    before = sum(p.numel() * p.element_size() for p in text_encoder.parameters())
+    enable_weight_quant_linear(text_encoder, QuantLayerConfig(include_patterns=names), dtype="w8a8")
+    if any(text_encoder.get_submodule(name).weight.dtype != torch.int8 for name in names):
+        raise RuntimeError("Some Image text decoder projections were not quantized")
+    text_encoder._xgen_image_text_quantization = dict(
+        dtype="dynamic-w8a8", projection_count=len(names), parameter_bytes_before=before,
+        parameter_bytes_after=sum(p.numel() * p.element_size() for p in text_encoder.parameters()),
+        scope="Retained decoder attention/MLP linears only; embedding, norm, vision and lm_head unchanged")
+
+
+@torch.no_grad()
 def fuse_image_qkv(transformer):
     for block in transformer.transformer_blocks:
         attn = block.attn

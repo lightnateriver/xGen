@@ -10,6 +10,8 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 v0.6 新增 [MiniMax-H3-Image 四卡接入](docs/H3-IMAGE.md)与[已验证的NPU常驻优化](docs/H3-IMAGE-NPU-OPTIMIZATIONS.md)：独立图像VAE、六步PDD、SP4/文本TP4、主DiT W8A8、AdaLN预计算和组件并行，覆盖文生图与最多16张参考图编辑。[40项性能与输入Shape](docs/performance/h3-image-npu-40cases.md) · [v0.6发布说明](docs/H3-V06-RELEASE.md)
 
+v0.6 音视频 NPU 增加默认关闭的 **VC ExpCast＋Ascend 融合**：在原 Laser INT8 全并行 Native-stream 配方上显式追加 `--atten vc --h3-opts all`。八卡 910B3、单图 R2VA 5s/10s、20 步样例 E2E 相对同机 Laser 降低 10.01% / 12.22%，画面和声音已验收。原视频默认、CUDA 与 H3-Image 配方保留。[开启与回退](docs/H3-NPU-FUSIONS.md) · [性能与验证范围](docs/performance/h3-v06-npu-vc-fusions.md)
+
 v0.5 的 GPU **Sage-FP8 全并行 Streaming + AdaLN表** 组合默认包含 **PHAA FP8 Align16**，将同步 FP8 通信的每个 peer 包补齐到16字节，离线与在线启动均自动开启。需要关闭时，在启动前设置 `XGEN_PHAA_FP8_ALIGN16=0`，所有 rank 使用相同值。[配置与回退](docs/H3-PHAA-FP8-ALIGNMENT.md) · [12项在线性能对比](docs/performance/h3-cuda-phaa-align16.md)
 
 v0.5 的八卡 CUDA H3 Base 默认采用 **Sage-FP8 全并行 Streaming + BF16 AdaLN 缓存表**，统一覆盖 T2VA、I2VA／首尾帧和 R2VA：主干 SP8、文本 FP8 TP8、FP8 Linear／PHAA、组件并行、50 层 DiT 常驻与 `native-stream` 解码。需先准备对应工作流的表及剔除 AdaLN 权重后的 checkpoint。[默认配置与差异](docs/H3-V05-CUDA-UPGRADE.md) · [AdaLN 准备与回退](docs/H3-CUDA-ADALN.md)
@@ -28,7 +30,7 @@ v0.4 的 `--maas` 提供 MiniMax-H3 V2 格式的生成、查询、列表及取�
 
 | 分支 | 核心变化 | 文档 |
 |---|---|---|
-| [v0.6](../../tree/v0.6) | 在最新v0.5基础上增加MiniMax-H3-Image六步文生图/参考图编辑与四卡NPU W8A8常驻方案；保留视频默认与GPU Align16。 | [图像入口](docs/H3-IMAGE.md) · [优化](docs/H3-IMAGE-NPU-OPTIMIZATIONS.md) · [40项性能](docs/performance/h3-image-npu-40cases.md) |
+| [v0.6](../../tree/v0.6) | 在最新v0.5基础上增加MiniMax-H3-Image六步文生图/参考图编辑与四卡NPU W8A8常驻方案，以及默认关闭的音视频VC＋Ascend融合；保留视频默认与GPU Align16。 | [图像入口](docs/H3-IMAGE.md) · [优化](docs/H3-IMAGE-NPU-OPTIMIZATIONS.md) · [40项性能](docs/performance/h3-image-npu-40cases.md) · [VC融合实测](docs/performance/h3-v06-npu-vc-fusions.md) |
 | [v0.5](../../tree/v0.5) | CUDA Base 默认 Sage-FP8 全并行 Streaming + AdaLN 表，覆盖 T2VA/I2VA/R2VA；保留旧精度回退。NPU Base 默认 Laser INT8全并行Streaming，覆盖T2VA/I2VA/R2VA、20实际步、SP8，共用组件调度与Stream FP16存储。 | [NPU默认与升级](docs/H3-NPU-DEFAULT.md) · [复测](docs/performance/h3-native-shared-fp16.md) · [通用适配](docs/H3-PORTABLE.md) |
 | [v0.4](../../tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用及组件并行，DiT 全程常驻；各项可独立关闭。新增统一 `--maas`、多模态输入校验、首尾帧、768P 自适应比例和公网素材下载。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](docs/H3-CUDA-COMPOSABLE.md) · [实测性能](docs/performance/h3-cuda5090-full-parallel.md) · [MaaS API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) |
 | [v0.3.2-maas](../../tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](docs/H3-CUDA-PRECISION.md) · [CUDA 方案二](docs/H3-CUDA-SAGE.md) · [API](server/video/MAAS-API.md) · [在线启动](docs/H3-ONLINE.md) · [benchmark](docs/H3-NPU-BENCHMARK.md) · [升级说明](docs/H3-UPGRADE.md) |

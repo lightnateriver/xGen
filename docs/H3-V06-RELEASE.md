@@ -25,3 +25,9 @@ v0.6以最新v0.5提交 `ca6b6f0adcca48e523d8b81f32c9b784c577f095` 为基线，�
 ## 合并结果
 
 唯一文本冲突在README版本介绍：同时保留v0.5 GPU Align16说明和v0.6 Image入口。运行代码无冲突，未覆盖v0.5的视频执行模块、配置和测试。
+
+## 2026-11-12：可选音视频 VC＋Ascend 融合
+
+将 v0.5_op 的 VC ExpCast 与融合算子迁入现有视频适配层，沿用 Manager、组件调度、PHAA 和 Native-stream，不增加独立推理引擎。新能力通过 `--atten vc --h3-opts all` 显式开启，默认关闭；H3-Image 执行文件与依赖配置保留。
+
+同机八卡 910B3、单图 R2VA 5s/10s、20 次实际 DiT，在原 Laser INT8 全并行 Native-stream 基线上 E2E 降低 10.01% / 12.22%。设备算子及媒体技术检查通过，两个时长的画面和声音已由评审者确认可接受。[性能、显存、实际命中与验证范围](performance/h3-v06-npu-vc-fusions.md) · [构建、启用与回退](H3-NPU-FUSIONS.md)。

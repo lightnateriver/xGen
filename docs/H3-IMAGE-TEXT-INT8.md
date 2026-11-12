@@ -2,6 +2,8 @@
 
 The released v0.6 text encoder uses BF16 weights: TP splits the decoder projections but does not quantize them. This opt-in experiment adds `--image_text_int8` and `--image_text_resident` for Ascend NPU inference with text TP equal to the distributed world size. Defaults remain disabled. Single-NPU and TP4 checkpoint runs are documented below; TP2 is admitted by validation but has not been benchmarked with text INT8.
 
+The selected NPU deployment retains this decoder W8A8 option. `example/diffusers/scripts/run_h3_image_npu.sh` enables it together with the resident SP4/text-TP4 recipe; generic CLI defaults remain unchanged. The choice favors lower NPU memory usage, without a claim of stable acceleration on the measured short prompt. See the [selected NPU deployment](H3-IMAGE-NPU-OPTIMIZATIONS.md#selected-npu-deployment).
+
 `image_text_int8` dynamically quantizes the retained 50 Qwen decoder layers' attention q/k/v/o and MLP gate/up/down projections: 350 modules. Embeddings, RMSNorm, vision tower and lm_head retain their original precision. Linear activations/weights use W8A8 and outputs remain BF16; attention stays dense SDPA. The existing xGen NPU dynamic-quant/matmul operator is reused. Optional TP sharding precedes quantization of each owned weight shard. The TP modules retain their communication group and gather/reduce behavior; row-parallel bias is added once after reduction. Quantization precedes offload hooks. With TP greater than one the text encoder is already resident, so the INT8 flag alone isolates the precision change.
 
 Use the [Image environment](H3-IMAGE.md#环境与权重) and [resident DiT options](H3-IMAGE-NPU-OPTIMIZATIONS.md), then select:

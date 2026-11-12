@@ -2,9 +2,24 @@
 
 This is the six-step Image checkpoint, separate from H3 audio/video workflows. Keep the pinned Diffusers source from `requirements-h3-image.txt`. The original BF16 SP4/offload path remains available when the opt-in flags are absent.
 
-## Measured configuration
+## Selected NPU deployment
 
-The full matrix uses four 64-GiB Ascend 910B1 cards, SP4, Qwen text TP4, BF16 interfaces, dynamic W8A8 DiT attention/FFN linears, and the checkpoint's original mixed-precision VAE. It keeps the six PDD heads, FP32 patch input/timestep/output projections, CPU seed 42, and the original tile geometry/overlap blending.
+The selected NPU recipe retains Qwen3-VL decoder W8A8 with resident text TP4, alongside the resident W8A8 DiT and SP4 optimizations below. The NPU-specific launcher sets these options without changing the generic CLI defaults or the CUDA/video recipes:
+
+```bash
+export H3_IMAGE_MODEL="$MODEL_ROOT"
+bash example/diffusers/scripts/run_h3_image_npu.sh \
+  --prompt 'A product photograph of a green ceramic bowl on a neutral background.' \
+  --width 4096 --height 4096 --save_path "$OUTPUT_PNG"
+```
+
+Keep the pinned Diffusers source on `PYTHONPATH` and select four idle NPUs before launch. The launcher reuses the existing SP4/text-TP4 entry point and adds `--image_text_int8` plus the resident DiT, AdaLN/cache, refiner/vision/VAE parallelism, FFN chunk2048, RGB8 and local-input flags. Text TP4 is already resident; `--image_text_resident` is unnecessary. For reusable Python workers, retain `image_text_int8=True` in startup arguments and load the pipeline once per rank.
+
+The matched 4096x4096 T2I comparison measured 14.752s BF16 versus 14.617s W8A8 reused means (three samples each), without evidence of stable latency improvement. Peak allocated memory falls from 37.254 to 31.759 GiB per NPU. Only the retained 50 Qwen decoder layers' 350 attention/MLP projections are W8A8; embedding, norm, vision tower and lm_head retain their original precision. See [text W8A8 scope and measurements](H3-IMAGE-TEXT-INT8.md). TP4 text INT8 has been checkpoint-tested on this short-text T2I case, not the full 40-case matrix or reference editing.
+
+## Historical full-matrix configuration
+
+The full matrix uses four 64-GiB Ascend 910B1 cards, SP4, BF16 Qwen text TP4, BF16 interfaces, dynamic W8A8 DiT attention/FFN linears, and the checkpoint's original mixed-precision VAE. It keeps the six PDD heads, FP32 patch input/timestep/output projections, CPU seed 42, and the original tile geometry/overlap blending. The command below reproduces that historical text-BF16 configuration; the selected NPU launcher above additionally enables text W8A8.
 
 ```bash
 export XGEN_DEVICE=npu
@@ -27,7 +42,7 @@ torchrun --nproc_per_node=4 --master_port=29746 \
 
 For multiple requests, call `load_pipeline(args)` once per rank and reuse the returned pipeline with `run_image(args, pipe)`. Startup flags belong to the resident worker configuration. Change prompts, reference paths and output sizes between requests, with the same startup flags. Request caches clear on both success and failure; cached media results never carry into the next request.
 
-The AdaLN table is evaluated from this checkpoint's exact six-step one-row/two-row timestep layouts at initialization. It releases the large AdaLN projection weights. It is not the 21-/51-point video table. W8A8 applies only to the main block attention/FFN linears; text encoder, token refiner, AdaLN tables, VAE and PDD heads are not described as INT8.
+The AdaLN table is evaluated from this checkpoint's exact six-step one-row/two-row timestep layouts at initialization. It releases the large AdaLN projection weights. It is not the 21-/51-point video table. In the historical full-matrix configuration, W8A8 applies only to the main block attention/FFN linears; its text encoder, token refiner, AdaLN tables, VAE and PDD heads are not described as INT8. The selected NPU recipe adds the separately measured decoder text W8A8 option.
 
 `--image_local_input` projects only each SP rank's owned image rows and scatters them into an in-place local packed buffer. Request-local refined text rows replace the larger intermediate condition caches. This avoids the full-width packed input allocation observed in the first matrix's largest combination. Output projection was already local to each SP rank before the low-dimensional PDD-head gather. The flag requires SP; it is separate from DiT TP.
 

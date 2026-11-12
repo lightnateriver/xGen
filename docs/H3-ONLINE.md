@@ -6,6 +6,8 @@
 
 ## 选择服务
 
+R2VA Base 可在服务启动时显式加 `--h3_condition_overlap`，或在启动 JSON 中设置 `"h3_condition_overlap": true`；CUDA/NPU 使用相同配置，默认均关闭。它是启动选项，修改后需重启，不能按生成请求切换。配套 `h3_condition_overlap_timeout` 默认600秒，仅约束条件分支等待，不是生成超时。适用边界、回退和 NPU 待实测状态见[说明](H3-CONDITION-OVERLAP.md)。
+
 | 服务 | 任务 | 分辨率 | 请求时长 |
 |---|---|---|---|
 | NPU Base | T2VA、I2VA、R2VA | 768P | 4 至 15 秒，接受整数 |

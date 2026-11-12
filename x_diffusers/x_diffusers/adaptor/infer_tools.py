@@ -5,6 +5,7 @@ import random
 from itertools import product
 import time
 from copy import deepcopy
+from contextlib import nullcontext
 import torch.distributed as dist
 import math
 import numpy as np
@@ -541,9 +542,13 @@ class InferenceManager(object):
             self.pipe.transformer._h3_attention_session.begin(args)
         from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
         from .h3_npu_options import request_context
+        condition_context = nullcontext()
+        if getattr(args, 'h3_condition_overlap', False):
+            from .h3_condition_overlap import request_context as overlap_context
+            condition_context = overlap_context(self.pipe, args)
 
         with (base_temporal_padding(self.pipe, infer_params["num_frames"]),
-              request_context(self.pipe.transformer)):
+              request_context(self.pipe.transformer), condition_context):
             if getattr(args, 'h3_cuda_precompute_conditioning', False):
                 from .h3_conditioning import request_conditioning
                 with request_conditioning(self.pipe.transformer):
@@ -848,6 +853,10 @@ class InferenceManager(object):
 
     def _prepare_pipeline(self, args):
         """抽离出的公共逻辑：处理 pipeline 重建、LoRA 更新和设备分配"""
+        if (getattr(args, 'h3_condition_overlap', False)
+                or getattr(self, '_h3_condition_overlap_key', (False,))[0]):
+            from .h3_condition_overlap import validate_manager
+            validate_manager(self, args, device_type())
         from .h3_cuda_options import needs_resolution
         if needs_resolution(args) or getattr(self, '_h3_cuda_precision_key', None) in ('fp8-bf16', 'fp8-sage'):
             from .h3_cuda_precision import validate_manager

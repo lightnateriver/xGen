@@ -449,6 +449,9 @@ def to_dtype(name: str):
 
 def load_pipe(args):
     backend = device_type()
+    if getattr(args, 'h3_condition_overlap', False):
+        from .h3_condition_overlap import validate
+        validate(args, backend)
     from .h3_npu_options import validate as validate_npu_fusions
 
     validate_npu_fusions(args, backend)

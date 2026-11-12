@@ -1,4 +1,5 @@
 """Hardware-neutral H3 scheduling options; CUDA spellings remain compatible."""
+import argparse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,11 @@ ALIASES = {'h3_'+name: 'h3_cuda_'+name for name in BOOL_FIELDS + VALUE_FIELDS}
 
 def add_aliases(parser):
     """Aliases use one argparse destination and preserve explicit --no-* values."""
+    if '--h3_condition_overlap' not in parser._option_string_actions:
+        parser.add_argument('--h3_condition_overlap', action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS,
+                            help='EXPERIMENTAL: overlap Ref2VA text/vision and reference VAE encoding on CUDA/NPU; defaults off')
+        parser.add_argument('--h3_condition_overlap_timeout', type=float, default=argparse.SUPPRESS,
+                            help='Seconds to join reference encoding/CPU collectives (default600); not a DiT or whole-request timeout')
     if '--h3_features' not in parser._option_string_actions:
         parser.add_argument('--h3_features', choices=('none', 'full-parallel'), default=None,
                             help='Portable H3 T2VA/FL2VA/Ref2VA scheduling; preserves operator precision')

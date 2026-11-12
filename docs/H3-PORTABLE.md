@@ -4,6 +4,8 @@
 
 ## 开关与边界
 
+R2VA Base 另有独立的 `--h3_condition_overlap`，CUDA/NPU 共用，**默认关闭**，也不随 `full-parallel` 自动开启。它把参考 VAE 与 Qwen3-VL 编码重叠，可能增加峰值显存；原 offload 与算子精度保留。开启、回退、等待时间与验证范围见[条件准备重叠](H3-CONDITION-OVERLAP.md)。
+
 T2VA/I2VA/R2VA Base 768P共用`--h3_features full-parallel`。推荐NPU入口同时默认Native-stream、AdaLN和Laser INT8；详见[NPU默认方案](H3-NPU-DEFAULT.md)。以下R2VA示例另指定FFN chunk2048，T2VA/I2VA保持0：
 
 ```bash

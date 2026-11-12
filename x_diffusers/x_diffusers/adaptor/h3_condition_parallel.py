@@ -78,7 +78,8 @@ def install_video_encoder(vae, group_getter, device, *, stage_weights=True):
 
     @wraps(original_clip)
     def encode_clip(pixels):
-        group = group_getter()
+        transport = getattr(vae, '_h3_overlap_transport', None)
+        group = group_getter() if transport is None else transport.group
         world, rank = dist.get_world_size(group), dist.get_rank(group)
         if not vae.use_tiling:
             metrics['fallback_clips'] += 1
@@ -100,7 +101,10 @@ def install_video_encoder(vae, group_getter, device, *, stage_weights=True):
         slots, batch = math.ceil(total / world), pixels.shape[0]
         payload = torch.cat(local + [torch.zeros_like(local[0])] * (slots-len(local)), dim=0).contiguous()
         received = [torch.empty_like(payload) for _ in range(world)]
-        dist.all_gather(received, payload, group=group)
+        if transport is None:
+            dist.all_gather(received, payload, group=group)
+        else:
+            transport.gather(received, payload)
         tiles = [received[t % world][(t // world)*batch:(t // world+1)*batch] for t in range(total)]
         rows = [tiles[i:i+len(xs)] for i in range(0, total, len(xs))]
         ratio = vae.spatial_compression_ratio

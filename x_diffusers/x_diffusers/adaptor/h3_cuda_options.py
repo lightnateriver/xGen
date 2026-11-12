@@ -16,6 +16,7 @@ STARTUP_OPTIONS = BOOL_OPTIONS + (
     'h3_cuda_input_refiner_attention', 'h3_cuda_input_refiner_ffn',
     'h3_cuda_audio_decoder_parallel', 'h3_cuda_refiner_ff_chunk_size', 'h3_features',
     'h3_cuda_adaln_mode', 'h3_cuda_adaln_dir', 'h3_reference_image_short_edge',
+    'h3_condition_overlap', 'h3_condition_overlap_timeout',
 )
 
 

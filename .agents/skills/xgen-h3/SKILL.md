@@ -24,6 +24,8 @@ Resolve the repository root from this skill's location. Run the documented comma
 
 For offline use, start with the [one-command examples](../../../README.md#离线生成):
 
+R2VA Base has an independent experimental `--h3_condition_overlap` flag shared by CUDA/NPU, default **off** even under full-parallel presets. For the shell launcher, append `-- --h3_condition_overlap` after reference files. For HTTP, set it only in startup arguments/config, then restart to change it. The reference VAE branch overlaps Qwen preparation; existing precision/offload remain, peak memory can increase. `--h3_condition_overlap_timeout` defaults to600seconds for condition waits, not DiT or total generation. See [scope and validation](../../../docs/H3-CONDITION-OVERLAP.md); do not claim NPU hardware acceptance from CUDA measurements.
+
 ```bash
 bash example/diffusers/scripts/run_h3.sh npu t2va 5 768p
 bash example/diffusers/scripts/run_h3.sh npu r2va 15 2k

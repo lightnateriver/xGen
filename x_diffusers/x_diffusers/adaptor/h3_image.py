@@ -9,6 +9,14 @@ import torch.distributed as dist
 from x_base.device import device_type
 
 
+def resolve_image_text_options(args, backend):
+    """Default Image decoder W8A8 on NPU, preserving explicit precision choices."""
+    if getattr(args, "image_text_int8", None) is None:
+        args.image_text_int8 = backend == "npu"
+    if args.image_text_int8 and backend != "npu":
+        raise ValueError("Image text INT8 requires NPU")
+
+
 def validate_options(args, world_size):
     dit_tp = getattr(args, "image_dit_tp", 1)
     if world_size not in (1, 2, 4) or args.sp * dit_tp != world_size or (args.sp > 1 and dit_tp > 1):
@@ -43,6 +51,10 @@ def validate_options(args, world_size):
 @torch.inference_mode(False)
 @torch.no_grad()
 def load_pipeline(args):
+    backend = device_type()
+    resolve_image_text_options(args, backend)
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    validate_options(args, world)
     try:
         from diffusers import MiniMaxH3ImageModularPipeline
     except ImportError as error:
@@ -52,10 +64,7 @@ def load_pipeline(args):
     from ..framework.transformer.minimax_h3_image import enable_h3_image_sp
     from .load_pipe import _truncate_text_encoder
 
-    backend = device_type()
     device = torch.device(backend, torch.get_device_module(backend).current_device())
-    world = dist.get_world_size() if dist.is_initialized() else 1
-    validate_options(args, world)
     root = str(Path(args.pretrained_model_name_or_path).resolve())
     pipe = MiniMaxH3ImageModularPipeline.from_pretrained(root, local_files_only=True)
     pipe.load_components(dtype=torch.bfloat16, pretrained_model_name_or_path=root, local_files_only=True)
@@ -96,8 +105,6 @@ def load_pipeline(args):
         pipe._xgen_image_tp_manager = ParallelManager(1, 1, 1, tp_size=args.text_encoder_tp)
         enable_tp(pipe.text_encoder, args.text_encoder_tp, target_layers=range(50))
     if getattr(args, "image_text_int8", False):
-        if backend != "npu":
-            raise ValueError("Image text INT8 requires NPU")
         from ..framework.transformer.h3_image_optimizations import quantize_image_text_encoder
         quantize_image_text_encoder(pipe.text_encoder)
     if getattr(args, "image_text_resident", False) or args.text_encoder_tp > 1:
@@ -136,10 +143,11 @@ def run_image(args, pipe=None):
     from PIL import Image
     from x_base import attention_manager
 
+    backend = device_type()
+    resolve_image_text_options(args, backend)
     world = dist.get_world_size() if dist.is_initialized() else 1
     rank = dist.get_rank() if dist.is_initialized() else 0
     validate_options(args, world)
-    backend = device_type()
     device_module = torch.get_device_module(backend)
     if args.atten == "laser":
         if backend != "npu":

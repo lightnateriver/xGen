@@ -10,6 +10,8 @@ xGen 是面向昇腾 NPU 和 NVIDIA GPU 的音视频生成引擎。你可以用�
 
 v0.6 新增 [MiniMax-H3-Image 四卡接入](docs/H3-IMAGE.md)与[已验证的NPU常驻优化](docs/H3-IMAGE-NPU-OPTIMIZATIONS.md)：独立图像VAE、六步PDD、SP4/文本TP4、主DiT W8A8、AdaLN预计算和组件并行，覆盖文生图与最多16张参考图编辑。[40项性能与输入Shape](docs/performance/h3-image-npu-40cases.md) · [v0.6发布说明](docs/H3-V06-RELEASE.md)
 
+MiniMax-H3-Image 的 **NPU Qwen3-VL 解码器现默认 W8A8**，命令行和Python加载入口均生效；CUDA默认BF16。`--no-image_text_int8` 可回退BF16文本。四卡4K短文本实测每卡峰值allocated减少约5.49 GiB，未证明稳定提速；40项历史矩阵使用文本BF16。[范围、性能与回退](docs/H3-IMAGE-TEXT-INT8.md)。
+
 v0.6 音视频 NPU 增加默认关闭的 **VC ExpCast＋Ascend 融合**：在原 Laser INT8 全并行 Native-stream 配方上显式追加 `--atten vc --h3-opts all`。八卡 910B3、单图 R2VA 5s/10s、20 步样例 E2E 相对同机 Laser 降低 10.01% / 12.22%，画面和声音已验收。原视频默认、CUDA 与 H3-Image 配方保留。[开启与回退](docs/H3-NPU-FUSIONS.md) · [性能与验证范围](docs/performance/h3-v06-npu-vc-fusions.md)
 
 v0.5 的 GPU **Sage-FP8 全并行 Streaming + AdaLN表** 组合默认包含 **PHAA FP8 Align16**，将同步 FP8 通信的每个 peer 包补齐到16字节，离线与在线启动均自动开启。需要关闭时，在启动前设置 `XGEN_PHAA_FP8_ALIGN16=0`，所有 rank 使用相同值。[配置与回退](docs/H3-PHAA-FP8-ALIGNMENT.md) · [12项在线性能对比](docs/performance/h3-cuda-phaa-align16.md)

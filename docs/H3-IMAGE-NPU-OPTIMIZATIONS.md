@@ -1,10 +1,10 @@
 # MiniMax-H3-Image: v0.6 resident Ascend deployment
 
-This is the six-step Image checkpoint, separate from H3 audio/video workflows. Keep the pinned Diffusers source from `requirements-h3-image.txt`. The original BF16 SP4/offload path remains available when the opt-in flags are absent.
+This is the six-step Image checkpoint, separate from H3 audio/video workflows. Keep the pinned Diffusers source from `requirements-h3-image.txt`. NPU Qwen decoder W8A8 is now the default in the CLI and Python loader. Use `--no-image_text_int8` to restore BF16 text; other optimization flags retain their explicit configuration.
 
 ## Selected NPU deployment
 
-The selected NPU recipe retains Qwen3-VL decoder W8A8 with resident text TP4, alongside the resident W8A8 DiT and SP4 optimizations below. The NPU-specific launcher sets these options without changing the generic CLI defaults or the CUDA/video recipes:
+The selected NPU recipe uses default Qwen3-VL decoder W8A8 with resident text TP4, alongside the resident W8A8 DiT and SP4 optimizations below. The NPU-specific launcher sets the complete recipe. CUDA text defaults to BF16, and audio/video recipes are separate:
 
 ```bash
 export H3_IMAGE_MODEL="$MODEL_ROOT"
@@ -34,7 +34,7 @@ torchrun --nproc_per_node=4 --master_port=29746 \
   --prompt "Replace the background in <Picture 1> with a plain gray backdrop." \
   --image_path_list "$REFERENCE_JPG" --save_path "$OUTPUT_PNG" \
   --width 2048 --height 2048 --num_inference_steps 6 --seed 42 \
-  --sp 4 --text_encoder_tp 4 --atten none \
+  --sp 4 --text_encoder_tp 4 --atten none --no-image_text_int8 \
   --image_adaln_table --image_resident --image_int8 \
   --image_condition_cache --image_refiner_sp --image_vision_sp \
   --image_vae_parallel --image_ff_chunk 2048 --image_rgb8_output --image_local_input

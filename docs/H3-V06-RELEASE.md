@@ -6,7 +6,7 @@ v0.6以最新v0.5提交 `ca6b6f0adcca48e523d8b81f32c9b784c577f095` 为基线，�
 
 使用[图像专用可选Diffusers依赖](H3-IMAGE.md#环境与权重)，固定提交 `0905b667fe3f37f43b6ef9c6e05ad20636206938`。推荐[四卡W8A8常驻命令](H3-IMAGE-NPU-OPTIMIZATIONS.md)：SP4/text TP4、dense SDPA、六步AdaLN表、DiT常驻、条件缓存、refiner/vision/VAE tile并行、FFN chunk2048、RGB8输出与本地输入投影。
 
-这些是图像入口显式启用的优化。省略优化开关保留BF16卸载路径。视频的NPU Laser INT8 Streaming默认、CUDA Sage-FP8/AdaLN默认及GPU PHAA Align16继承v0.5；Image不使用视频AdaLN表、音频VAE或MP4 Streaming。v0.6表示Git发布分支，独立Python子包沿用原有包版本。
+除NPU文本W8A8默认开启外，这些是图像入口显式启用的优化。使用 `--no-image_text_int8` 并省略其他优化开关可保留原BF16卸载路径。视频的NPU Laser INT8 Streaming默认、CUDA Sage-FP8/AdaLN默认及GPU PHAA Align16继承v0.5；Image不使用视频AdaLN表、音频VAE或MP4 Streaming。v0.6表示Git发布分支，独立Python子包沿用原有包版本。
 
 ## 已完成的硬件验证
 
@@ -31,3 +31,11 @@ v0.6以最新v0.5提交 `ca6b6f0adcca48e523d8b81f32c9b784c577f095` 为基线，�
 将 v0.5_op 的 VC ExpCast 与融合算子迁入现有视频适配层，沿用 Manager、组件调度、PHAA 和 Native-stream，不增加独立推理引擎。新能力通过 `--atten vc --h3-opts all` 显式开启，默认关闭；H3-Image 执行文件与依赖配置保留。
 
 同机八卡 910B3、单图 R2VA 5s/10s、20 次实际 DiT，在原 Laser INT8 全并行 Native-stream 基线上 E2E 降低 10.01% / 12.22%。设备算子及媒体技术检查通过，两个时长的画面和声音已由评审者确认可接受。[性能、显存、实际命中与验证范围](performance/h3-v06-npu-vc-fusions.md) · [构建、启用与回退](H3-NPU-FUSIONS.md)。
+
+## 2026-11-12：Image NPU Qwen3-VL 默认 W8A8
+
+基于最新v0.6（包含上述VC融合更新）合入Image文本W8A8及TP分片兼容。Image命令行和Python加载入口在NPU上默认量化保留的50层Qwen解码器350个attention/MLP投影；embedding、norm、vision和lm_head保留原精度。CUDA默认BF16，显式 `--no-image_text_int8` 或Python `image_text_int8=False` 可回退。TP4文本原本常驻，TP1是否常驻继续由独立选项决定；不修改视频默认。
+
+四卡910B1、89-token文本、4096×4096、六步PDD，各组加载一次并运行1次首请求＋3次复用：文本BF16/W8A8复用均值14.752/14.617秒，峰值allocated37.254/31.759 GiB每卡。主要收益是省显存，未证明稳定提速。该硬件验证发生在默认值调整前，量化及TP执行文件沿用实测实现；默认配置、显式回退、CUDA隔离及最新v0.6兼容性另做CPU回归。40项旧矩阵的文本精度仍为BF16，不将它重标为文本INT8验证。[精度范围与实测](H3-IMAGE-TEXT-INT8.md) · [部署与回退](H3-IMAGE-NPU-OPTIMIZATIONS.md)。
+
+[本次合并验证摘要](performance/h3-image-text-w8a8-default-validation.json)：257项测试及13个服务子测试通过，9项CUDA硬件／checkpoint检查跳过；另有24项BF16 SP4本地输入张量对照、每rank12项文本TP4通信对照和DiT TP／FFN分块／VAE拼接检查通过。CPU验证使用原始RMSNorm，旧版兼容测试提供原发布Git对象；原始失败记录与修复后日志分别保留。

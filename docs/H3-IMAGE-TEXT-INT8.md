@@ -1,8 +1,8 @@
-# Experimental H3 Image text W8A8
+# H3 Image NPU text W8A8
 
-The released v0.6 text encoder uses BF16 weights: TP splits the decoder projections but does not quantize them. This opt-in experiment adds `--image_text_int8` and `--image_text_resident` for Ascend NPU inference with text TP equal to the distributed world size. Defaults remain disabled. Single-NPU and TP4 checkpoint runs are documented below; TP2 is admitted by validation but has not been benchmarked with text INT8.
+MiniMax-H3-Image defaults to Qwen decoder W8A8 on NPU, for both the CLI and Python `load_pipeline`/`run_image` entry points. An absent or `None` `image_text_int8` option resolves to `True` on NPU and `False` on CUDA; explicit booleans take precedence. Use `--no-image_text_int8` (Python: `image_text_int8=False`) to restore BF16 text. Explicit text INT8 on CUDA is rejected before loading checkpoints. This default applies only to H3 Image, not H3 audio/video. Text TP must equal the distributed world size when text INT8 is enabled. Single-NPU and TP4 checkpoint runs are documented below; TP2 is admitted by validation but has not been benchmarked with text INT8.
 
-The selected NPU deployment retains this decoder W8A8 option. `example/diffusers/scripts/run_h3_image_npu.sh` enables it together with the resident SP4/text-TP4 recipe; generic CLI defaults remain unchanged. The choice favors lower NPU memory usage, without a claim of stable acceleration on the measured short prompt. See the [selected NPU deployment](H3-IMAGE-NPU-OPTIMIZATIONS.md#selected-npu-deployment).
+`example/diffusers/scripts/run_h3_image_npu.sh` combines the default decoder W8A8 option with the resident SP4/text-TP4 recipe. The choice favors lower NPU memory usage, without a claim of stable acceleration on the measured short prompt. The separate `image_text_resident` option remains disabled by default: TP4 text is already resident, while TP1 retains its offload policy unless explicitly requested. See the [selected NPU deployment](H3-IMAGE-NPU-OPTIMIZATIONS.md#selected-npu-deployment).
 
 `image_text_int8` dynamically quantizes the retained 50 Qwen decoder layers' attention q/k/v/o and MLP gate/up/down projections: 350 modules. Embeddings, RMSNorm, vision tower and lm_head retain their original precision. Linear activations/weights use W8A8 and outputs remain BF16; attention stays dense SDPA. The existing xGen NPU dynamic-quant/matmul operator is reused. Optional TP sharding precedes quantization of each owned weight shard. The TP modules retain their communication group and gather/reduce behavior; row-parallel bias is added once after reduction. Quantization precedes offload hooks. With TP greater than one the text encoder is already resident, so the INT8 flag alone isolates the precision change.
 
@@ -34,7 +34,7 @@ Text parameter storage falls from 49.418 to 26.726 GiB (45.92%). Reused pipeline
 
 Both requests complete all six steps with one visible NPU and unchanged pipeline/representative DiT/text storage. Outputs decode as 4096x4096 and pass file/pixel hash checks. Visual review found normal content and lighting, with changed object geometry/reflections versus BF16. This is not pixel parity, and long prompts, reference-image editing and other dimensions have not been validated. Only the combined INT8-plus-resident text configuration was measured; INT8 with text offload is unmeasured.
 
-Omit both flags for the released v0.6 behavior. The text flags are an experiment on a separate branch, not part of the existing v0.6 published defaults.
+The initial v0.6 release used BF16 text; the NPU default now selects decoder W8A8. For a BF16-text comparison, explicitly pass `--no-image_text_int8`; omit `--image_text_resident` if reproducing the original TP1 text offload policy. The performance figures above are historical measurements, not a rerun of the current default-resolution code.
 
 ## Four-NPU TP4 measured scope
 

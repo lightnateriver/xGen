@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+find_package(ASC REQUIRED)
+project(h3_partial_rope LANGUAGES ASC CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/H3Kernel.cmake")
+h3_add_kernel(h3_partial_rope op_extension/partial_rope_queued.asc)

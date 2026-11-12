@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+find_package(ASC REQUIRED)
+project(h3_nq2 LANGUAGES ASC CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/H3Kernel.cmake")
+h3_add_kernel(h3_norm_affine_quant2 op_extension/nq2_queued.asc)
+h3_add_kernel(h3_norm_affine_quant2_cached op_extension/nq2_queued.asc)
+target_compile_definitions(h3_norm_affine_quant2_cached PRIVATE H3_NQ2_CACHED=1)

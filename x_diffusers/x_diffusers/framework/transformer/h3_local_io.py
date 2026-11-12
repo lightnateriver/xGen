@@ -53,11 +53,9 @@ def prepare_local(model, video, audio, text, positions, text_indices, video_indi
     if peers > 1:
         set_pad('mmh3_seq', len(positions), manager.sp_group)
     # The text refiner is a separate full-context transformer, not token-wise.
-    if getattr(model, '_h3_precompute_conditioning', False):
-        from .h3_conditioning import project_conditioning
-        embeds = project_conditioning(model, text)
-    else:
-        embeds = model.token_refiner(model.context_embedder(text.to(model.context_embedder.weight.dtype)))
+    from .h3_npu_fusion import project_text
+
+    embeds = project_text(model, text)
     hidden = embeds.new_zeros((embeds.shape[0], span.length, embeds.shape[-1]))
     source, target = span.indices(text_indices)
     hidden.index_copy_(1, target, embeds.index_select(1, source))

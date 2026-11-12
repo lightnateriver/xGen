@@ -97,6 +97,8 @@ class AttentionManager:
         self.cuda_attention = None
         self.is_laser_attention = False
         self.is_sparse_attention = False
+        self.is_vc_attention = False
+        self._vc_backend = None
 
         # rainfusion
         self.is_rainfusion_attention = False
@@ -105,6 +107,33 @@ class AttentionManager:
         self.rf_sparsity = 0.64
         self.rf_used_len = None  # meaningful seq len (without SP padding); None = use Sq
         self.t_idx = -1
+
+    def configure_npu_attention(self, backend):
+        methods = {
+            "sage": "enable_sage_attention",
+            "laser": "enable_laser_attention",
+            "rainfusion": "enable_rainfusion_attention",
+            "sparse": "enable_sparse_attention",
+            "mxfp4": "enable_mxfp4_attention",
+            "vc": "enable_vc_attention",
+        }
+        enable = getattr(self, methods.get(backend, ""), None)
+        if backend != "none" and enable is None:
+            raise ValueError(f"Unsupported NPU attention backend: {backend}")
+        for name in methods:
+            flag = f"is_{name}_attention"
+            if hasattr(self, flag):
+                setattr(self, flag, False)
+        if enable is not None:
+            enable()
+
+    def enable_vc_attention(self):
+        from .vc_attention import VCAttention
+
+        if self._vc_backend is None:
+            self._vc_backend = VCAttention()
+        self._vc_backend.initialize()
+        self.is_vc_attention = True
 
     def enable_rainfusion_attention(self):
         self.is_rainfusion_attention = True
@@ -344,6 +373,10 @@ class AttentionManager:
                     ))
                 return output
             return self.cuda_attention(query, key, value, **kwargs)
+        if self.is_vc_attention:
+            return self._vc_backend(query, key, value, fallback=base_attention_infer,
+                                    attn_mask=attn_mask, dropout_p=dropout_p,
+                                    is_causal=is_causal, scale=scale)
         if self.is_sage_attention:
             return sage_attention_infer(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
                                         is_causal=is_causal, scale=scale)

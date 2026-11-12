@@ -71,6 +71,8 @@ H3 的 `num_inference_steps` 直接填实际 Base DiT 次数，例如 20 或 50�
 
 按 [NPU 权重准备](docs/H3-DEPLOYMENT.md#4-模型与目录准备) 下载模型并生成 AdaLN 表。每条命令启动一个八卡任务。时长可以填写 `5`、`10` 或 `15`。
 
+768P Base 可选用 VC ExpCast Attention 和 Ascend H3 融合算子。安装与开关见 [NPU 融合算子](docs/H3-NPU-FUSIONS.md)。
+
 ```bash
 # 768P：v0.5 默认 Laser INT8 + Stream / Base 20步
 export H3_VAE_MODEL_PATH=weights/native/video_vae

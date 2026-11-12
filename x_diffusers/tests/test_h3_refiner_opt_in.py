@@ -199,10 +199,35 @@ class ContractTests(unittest.TestCase):
             old = vars(namespace['parse_args']())
         now = vars(args())
         self.assertIsNone(now.pop('h3_features'))
+        self.assertIsNone(now.pop('h3_reference_image_short_edge'))
+        self.assertIsNone(now.pop('h3_opts'))
+        self.assertEqual(now.pop('h3_fused_ops'), ())
+        for key in tuple(now):
+            if key.startswith('h3_opt_'):
+                self.assertIsNone(now.pop(key))
         self.assertEqual(old, now)
         self.assertIsNone(now['h3_nvfp4_checkpoint'])
         for flag in ('h3_nvfp4_resident','h3_nvfp4_compile','h3_cuda_vae_sp'):
             self.assertFalse(now[flag])
+
+    def test_vc_and_h3_fusions_are_independent_opt_in_settings(self):
+        from _h3_test.h3_npu_options import H3_FUSION_FEATURES, validate
+
+        command = ['test', '--model', 'MiniMax-H3', '--atten', 'vc', '--h3-opts', 'rope',
+                   '--h3-opt-swiglu', '--no-h3_opt_rope']
+        with patch.object(sys, 'argv', command), patch.dict(os.environ, {'H3_OPT_FEATURES': 'all'}):
+            selected = config.parse_args(bootstrap_environment=False)
+        self.assertEqual(selected.atten, 'vc')
+        self.assertEqual(validate(selected, 'npu'), ('swiglu',))
+        with self.assertRaisesRegex(ValueError, 'require NPU MiniMax-H3'):
+            validate(selected, 'cuda')
+        selected.h3_opts = 'none'
+        selected.h3_opt_swiglu = None
+        with self.assertRaisesRegex(ValueError, 'VC-Attention requires Ascend NPU'):
+            validate(selected, 'cuda')
+        selected.h3_opts = 'all'
+        selected.h3_opt_rope = None
+        self.assertEqual(validate(selected, 'npu'), H3_FUSION_FEATURES)
 
     def test_exact_native_padding_and_output_counts(self):
         for seconds, generation, latent in [(5,124,37),(10,243,72),(15,362,107)]:
@@ -326,12 +351,19 @@ class ContractTests(unittest.TestCase):
 class LegacyCompatibilityTests(unittest.TestCase):
     def test_non_h3_paths_match_previous_release(self):
         # H3 steps and request cleanup intentionally change. Compare the actual
-        # Wan branches, and the untouched CLI/VAE, against a fixed release.
+        # Wan branches and untouched CLI/VAE code against a fixed release.
         for path in ('x_diffusers/x_diffusers/adaptor/config.py',
                      'x_diffusers/x_diffusers/framework/vae/minimax_h3.py'):
             with self.subTest(path=path):
-                old=ast.dump(logic_tree(baseline(path)),include_attributes=False)
-                new=ast.dump(logic_tree((ROOT/path).read_text(encoding='utf-8')),include_attributes=False)
+                old_tree = logic_tree(baseline(path))
+                new_tree = logic_tree((ROOT/path).read_text(encoding='utf-8'))
+                if path.endswith('/config.py'):
+                    updated = {'parse_args', 'add_minimax_h3_args', 'add_abilities_args'}
+                    for tree in (old_tree, new_tree):
+                        tree.body = [node for node in tree.body if not (
+                            isinstance(node, ast.FunctionDef) and node.name in updated)]
+                old=ast.dump(old_tree,include_attributes=False)
+                new=ast.dump(new_tree,include_attributes=False)
                 self.assertEqual(old,new,'Default-path AST changed: '+path)
         for path, name in (('x_diffusers/x_diffusers/adaptor/infer_tools.py', 'InferenceManager'),
                            ('server/video/video_server.py', 'VideoInferenceManager')):

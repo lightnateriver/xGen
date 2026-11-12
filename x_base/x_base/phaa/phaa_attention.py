@@ -63,6 +63,7 @@ def run_phaa_attention(
     tail_first=False,
     device_join=False,
     async_options=None,
+    local_ops=None,               # optional NPU packing and attention callbacks
 ) -> torch.Tensor:
     """PHAA core: split heads into chunks, overlap all2all with flash attention.
 
@@ -100,6 +101,11 @@ def run_phaa_attention(
     # --- prepare shapes ---
     W_S = sp_size
     fa_split_num = phaa_split_num
+    if local_ops is not None and (query.device.type not in ("npu", "privateuseone") or fp8_transport):
+        raise ValueError("PHAA local fusion callbacks require NPU tensor transport")
+    if local_ops is not None and local_ops.merge_outputs is not None and extra_attn_fn is not None:
+        raise ValueError("PHAA fused merge requires a single attention output")
+
     B, Sq, H = query.shape
     Skv = key.shape[1]
     D = head_dim
@@ -167,6 +173,8 @@ def run_phaa_attention(
                      for cs in chunk_sizes]
     if direct_return:
         output = torch.empty((B, Sq, H), device=query.device, dtype=query.dtype)
+    elif local_ops is not None and local_ops.allocate_outputs is not None:
+        output_a2a_bufs = local_ops.allocate_outputs(query)
     else:
         output_a2a_bufs = [torch.empty((W_S, Sq, B, cs * D), device=query.device, dtype=query.dtype)
                           for cs in chunk_sizes]
@@ -179,22 +187,25 @@ def run_phaa_attention(
             torch.empty((W_S, Sq, B, cs * D), device=query.device, dtype=query.dtype)
             for cs in chunk_sizes]
 
-    # --- prepare input: split head dim into per-chunk tensors ---
-    # (B, S, H) → (B, S, heads, D) → (B, S, W_S, heads_per_device, D)
-    query = query.unflatten(-1, (heads, D)).unflatten(2, (W_S, heads_per_device))
-    key = key.unflatten(-1, (heads, D)).unflatten(2, (W_S, heads_per_device))
-    value = value.unflatten(-1, (heads, D)).unflatten(2, (W_S, heads_per_device))
+    if local_ops is not None and local_ops.prepare_inputs is not None:
+        query_chunks, key_chunks, value_chunks = local_ops.prepare_inputs(query, key, value)
+    else:
+        # --- prepare input: split head dim into per-chunk tensors ---
+        # (B, S, H) → (B, S, heads, D) → (B, S, W_S, heads_per_device, D)
+        query = query.unflatten(-1, (heads, D)).unflatten(2, (W_S, heads_per_device))
+        key = key.unflatten(-1, (heads, D)).unflatten(2, (W_S, heads_per_device))
+        value = value.unflatten(-1, (heads, D)).unflatten(2, (W_S, heads_per_device))
 
-    query_chunks = []
-    key_chunks = []
-    value_chunks = []
-    c_offset = 0
-    for c in range(fa_split_num):
-        cs = chunk_sizes[c]
-        for chunks, tensor in ((query_chunks, query), (key_chunks, key), (value_chunks, value)):
-            view = tensor[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4)
-            chunks.append(view if fp8_transport else view.contiguous())
-        c_offset += cs
+        query_chunks = []
+        key_chunks = []
+        value_chunks = []
+        c_offset = 0
+        for c in range(fa_split_num):
+            cs = chunk_sizes[c]
+            for chunks, tensor in ((query_chunks, query), (key_chunks, key), (value_chunks, value)):
+                view = tensor[:, :, :, c_offset:c_offset + cs, :].permute(2, 1, 0, 3, 4)
+                chunks.append(view if fp8_transport else view.contiguous())
+            c_offset += cs
 
     def gather_chunk(index):
         outputs = (query_a2a_bufs[index], key_a2a_bufs[index], value_a2a_bufs[index])
@@ -254,7 +265,8 @@ def run_phaa_attention(
             value_ = torch.cat([v_ref_chunk, value_], dim=2)
 
         if attention_fn is None:
-            hidden_states_buf[step] = attention_manager.attention(
+            attention = local_ops.attention if local_ops is not None and local_ops.attention is not None else attention_manager.attention
+            hidden_states_buf[step] = attention(
                 query_, key_, value_, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
             ).type_as(query)
         else:
@@ -270,7 +282,9 @@ def run_phaa_attention(
             )
             out_full[:, :, num_ref_global:, :] = hidden_states_buf[step]
             hidden_states_buf[step] = out_full
-        if not fused_return_pack:
+        if local_ops is not None and local_ops.restore_output is not None:
+            hidden_states_buf[step] = local_ops.restore_output(hidden_states_buf[step], chunk_size=cs)
+        elif not fused_return_pack:
             hidden_states_buf[step] = reshape_after_attention(hidden_states_buf[step])
         fa_is_finished[step].record()
 
@@ -336,6 +350,9 @@ def run_phaa_attention(
 
     if direct_return:
         return output
+
+    if local_ops is not None and local_ops.merge_outputs is not None:
+        return local_ops.merge_outputs(output_a2a_bufs)
 
     # Assemble output: per-chunk (W_S, Sq, B, cs*D) → (B, Sq, heads*D)
     output_chunks = [buf.permute(2, 1, 0, 3) for buf in output_a2a_bufs]

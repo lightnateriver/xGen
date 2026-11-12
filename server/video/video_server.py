@@ -821,7 +821,10 @@ class VideoInferenceManager:
         try:
             if getattr(args, 'h3_attention', 'legacy') != 'legacy':
                 self.pipe.transformer._h3_attention_session.begin(args)
-            with base_temporal_padding(self.pipe, infer_params["num_frames"]):
+            from x_diffusers.adaptor.h3_npu_options import request_context
+
+            with (base_temporal_padding(self.pipe, infer_params["num_frames"]),
+                  request_context(transformer)):
                 if getattr(args, 'h3_cuda_precompute_conditioning', False):
                     from x_diffusers.adaptor.h3_conditioning import request_conditioning
                     with request_conditioning(transformer):
@@ -2790,7 +2793,7 @@ class VideoGenerationService:
             elif isinstance(value, bool):
                 if value:
                     arg_list.append(f'--{key}')
-                elif key in BOOL_OPTIONS:
+                elif key in BOOL_OPTIONS or key.startswith('h3_opt_'):
                     arg_list.append(f'--no-{key}')
             elif isinstance(value, list):
                 arg_list.append(f'--{key}')

@@ -1,0 +1,22 @@
+include_guard(GLOBAL)
+set(CMAKE_CXX_STANDARD 17)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+execute_process(COMMAND ${Python3_EXECUTABLE} -c "import torch; print(torch.utils.cmake_prefix_path)"
+                OUTPUT_VARIABLE TORCH_PREFIX OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE TORCH_STATUS)
+if(NOT TORCH_STATUS EQUAL 0)
+    message(FATAL_ERROR "Cannot import torch with ${Python3_EXECUTABLE}")
+endif()
+find_package(Torch REQUIRED HINTS ${TORCH_PREFIX})
+execute_process(COMMAND ${Python3_EXECUTABLE} -c "import os,torch_npu; print(os.path.dirname(torch_npu.__file__))"
+                OUTPUT_VARIABLE NPU_PATH OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE NPU_STATUS)
+if(NOT NPU_STATUS EQUAL 0)
+    message(FATAL_ERROR "Cannot import torch_npu with ${Python3_EXECUTABLE}")
+endif()
+
+function(h3_add_kernel target source)
+    add_library(${target} SHARED ${source})
+    target_include_directories(${target} PRIVATE ${TORCH_INCLUDE_DIRS} ${NPU_PATH}/include "$ENV{ASCEND_HOME_PATH}/include")
+    target_link_directories(${target} PRIVATE ${NPU_PATH}/lib "$ENV{ASCEND_HOME_PATH}/lib64")
+    target_link_libraries(${target} PRIVATE ${TORCH_LIBRARIES} torch_npu ascendcl ascendc_runtime tiling_api register platform unified_dlog dl m graph_base)
+    target_compile_options(${target} PRIVATE ${TORCH_CXX_FLAGS} $<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-2201>)
+endfunction()

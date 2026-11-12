@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+find_package(ASC REQUIRED)
+project(h3_swiglu LANGUAGES ASC CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/H3Kernel.cmake")
+h3_add_kernel(h3_phaa_layout op_extension/layout_queued.asc)
+set_property(SOURCE op_extension/layout_queued.asc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/op_kernel/layout_kernel.asc")

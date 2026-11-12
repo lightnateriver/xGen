@@ -540,7 +540,10 @@ class InferenceManager(object):
         if getattr(args, 'h3_attention', 'legacy') != 'legacy':
             self.pipe.transformer._h3_attention_session.begin(args)
         from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
-        with base_temporal_padding(self.pipe, infer_params["num_frames"]):
+        from .h3_npu_options import request_context
+
+        with (base_temporal_padding(self.pipe, infer_params["num_frames"]),
+              request_context(self.pipe.transformer)):
             if getattr(args, 'h3_cuda_precompute_conditioning', False):
                 from .h3_conditioning import request_conditioning
                 with request_conditioning(self.pipe.transformer):
@@ -892,8 +895,13 @@ class InferenceManager(object):
                 fuse_lora=args.fuse_lora,
                 weights_list=args.lora_scale_weight_list
             )
-            if device_type() == "cuda" and args.atten != self.init_args.atten:
-                attention_manager.configure_cuda_attention(args.atten)
+            if args.atten != self.init_args.atten:
+                from .load_pipe import _apply_attention_backend
+
+                _apply_attention_backend(args)
+            from .h3_npu_options import configure_model as configure_npu_fusions
+
+            configure_npu_fusions(self.pipe, args, device_type())
 
         if not consistent:
             self.pipe = pipe_to_device(self.pipe, args)

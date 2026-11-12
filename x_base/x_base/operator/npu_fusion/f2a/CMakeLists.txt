@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+find_package(ASC REQUIRED)
+project(h3_gate_residual LANGUAGES ASC CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/H3Kernel.cmake")
+h3_add_kernel(h3_gate_residual op_extension/gate_residual_queued.asc)
+h3_add_kernel(h3_gate_residual_cached op_extension/gate_residual_cached_queued.asc)

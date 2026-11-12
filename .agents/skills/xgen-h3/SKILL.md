@@ -1,6 +1,6 @@
 ---
 name: xgen-h3
-description: Deploy xGen MiniMax-H3 and generate audio-video from text, a first frame, or reference images. Use for selecting CUDA or Ascend NPU, 768P or 2K, 5/10/15-second profiles, offline torchrun, or the xGen HTTP/MaaS service.
+description: Deploy xGen MiniMax-H3 video or MiniMax-H3-Image. Use for selecting CUDA or Ascend NPU, video profiles, six-step image generation/reference editing, offline torchrun, or the xGen HTTP/MaaS service.
 ---
 
 # Run xGen MiniMax-H3
@@ -11,6 +11,7 @@ Resolve the repository root from this skill's location. Run the documented comma
 
 | Route | Supported launch examples |
 |---|---|
+| NPU MiniMax-H3-Image | v0.6 separate six-step image pipeline: four-card SP4/text TP4, optional W8A8 resident DiT, image AdaLN table, refiner/vision/VAE tile parallelism, FFN chunks, RGB8 and local input packing. Dense SDPA is the validated full-matrix backend; pure Laser produced black images. Use the separate pinned Image Diffusers environment. Read the Image optimization guide; video Streaming/AdaLN tables are not Image assets |
 | CUDA 5090 default T2VA/I2VA/R2VA | `cuda` or `cuda-5090` Base 768P selects Sage-FP8 full-parallel + native-stream + BF16 AdaLN tables: SP8, FP8 Linear/text TP8, PHAA direct packing, SAP/local input, request-local conditioning reuse and component parallelism. All50 DiT blocks stay resident. Prepare workflow-specific stripped checkpoints and matched tables first. Scope:8 GPUs; technical decoding and human quality review remain separate. See the composable guide for disable flags and rollback |
 | NPU offline Base | T2VA/I2VA/R2VA 768P defaults to Laser INT8 full-parallel Streaming: SP8/text TP8/PHAA2,20 actual steps with matched21-point AdaLN, resident DiT, local IO, request-local condition reuse, Token Refiner SP/BF16 and component parallelism. Native-stream owns decoder tile parallelism; do not pass the CUDA-only VAE SP flag. T2VA/I2VA FFN chunk0; R2VA chunk2048. Real validation scope is recorded in the NPU default guide |
 | NPU offline Refiner | T2VA/I2VA/R2VA 2K uses its separate Base+Refiner launcher and assets, with5/10/15-second examples |

@@ -36,6 +36,12 @@ else:
     sys.exit(1)
 
 install_requires = load_requirements(_req_file)
+_profile = os.environ.get("X_DIFFUSERS_PROFILE", "video")
+if _profile == "h3-image":
+    install_requires = [dep for dep in install_requires if not dep.startswith("diffusers")]
+    install_requires += load_requirements("requirements-h3-image.txt")
+elif _profile != "video":
+    sys.exit(f"Unknown X_DIFFUSERS_PROFILE: {_profile}; expected video or h3-image")
 
 setup(
     name="x_diffusers",

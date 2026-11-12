@@ -17,8 +17,8 @@ def validate_options(args, world_size):
         raise ValueError("text_encoder_tp must be 1 or the distributed world size")
     text_int8 = getattr(args, "image_text_int8", False)
     text_resident = getattr(args, "image_text_resident", False)
-    if (text_int8 or text_resident) and (world_size != 1 or args.text_encoder_tp != 1):
-        raise ValueError("Experimental Image text quantization/residency requires one NPU and text_encoder_tp=1")
+    if (text_int8 or text_resident) and args.text_encoder_tp != world_size:
+        raise ValueError("Image text quantization/residency requires text_encoder_tp equal to world size")
     if args.num_inference_steps != 6:
         raise ValueError("MiniMax-H3-Image has exactly six PDD sampling steps")
     if args.width <= 0 or args.height <= 0 or args.width * args.height > 20 * 1024**2:
@@ -92,16 +92,15 @@ def load_pipeline(args):
     if getattr(args, "image_swiglu", "none") != "none":
         from ..framework.transformer.h3_image_optimizations import install_image_swiglu
         install_image_swiglu(pipe.transformer, args.image_swiglu)
+    if args.text_encoder_tp > 1:
+        pipe._xgen_image_tp_manager = ParallelManager(1, 1, 1, tp_size=args.text_encoder_tp)
+        enable_tp(pipe.text_encoder, args.text_encoder_tp, target_layers=range(50))
     if getattr(args, "image_text_int8", False):
         if backend != "npu":
             raise ValueError("Image text INT8 requires NPU")
         from ..framework.transformer.h3_image_optimizations import quantize_image_text_encoder
         quantize_image_text_encoder(pipe.text_encoder)
-    if getattr(args, "image_text_resident", False):
-        pipe.text_encoder.to(device)
-    elif args.text_encoder_tp > 1:
-        pipe._xgen_image_tp_manager = ParallelManager(1, 1, 1, tp_size=args.text_encoder_tp)
-        enable_tp(pipe.text_encoder, args.text_encoder_tp, target_layers=range(50))
+    if getattr(args, "image_text_resident", False) or args.text_encoder_tp > 1:
         pipe.text_encoder.to(device)
     else:
         apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device=torch.device("cpu"),

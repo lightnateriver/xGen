@@ -74,23 +74,81 @@ def quantize_image_blocks(transformer):
 
 @torch.no_grad()
 def quantize_image_text_encoder(text_encoder):
-    """W8A8 only the retained Qwen decoder projections, before offload hooks or TP."""
+    """W8A8 retained Qwen decoder projections after optional TP sharding, before offload."""
     from x_base.config import QuantLayerConfig
-    from x_base.operator.matmul import enable_weight_quant_linear
+    from x_base.operator.matmul import WeightQuantLinearModule, enable_weight_quant_linear
+    from x_base.tensor_parallelism.layers import ColumnParallelLinear, RowParallelLinear
     projections = ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
                    "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")
     names = [f"model.language_model.layers.{i}.{projection}"
              for i in range(len(text_encoder.model.language_model.layers)) for projection in projections]
-    if not names or any(not isinstance(text_encoder.get_submodule(name), nn.Linear) for name in names):
-        raise ValueError("Image text quantization requires unsharded Qwen decoder Linear projections")
+    types = (nn.Linear, ColumnParallelLinear, RowParallelLinear)
+    if not names or any(not isinstance(text_encoder.get_submodule(name), types) for name in names):
+        raise ValueError("Image text quantization requires Qwen decoder Linear or TP projections")
     before = sum(p.numel() * p.element_size() for p in text_encoder.parameters())
-    enable_weight_quant_linear(text_encoder, QuantLayerConfig(include_patterns=names), dtype="w8a8")
+    plain = [name for name in names if isinstance(text_encoder.get_submodule(name), nn.Linear)]
+    if plain:
+        enable_weight_quant_linear(text_encoder, QuantLayerConfig(include_patterns=plain), dtype="w8a8")
+    tp_count = 0
+    for name in names:
+        layer = text_encoder.get_submodule(name)
+        if not isinstance(layer, (ColumnParallelLinear, RowParallelLinear)):
+            continue
+        # Quantize the already-owned weight shard. Keep the TP module, group and bias.
+        quant = WeightQuantLinearModule(layer.weight.detach().cpu(), None)
+        layer.weight = quant.weight
+        layer.register_parameter("antiquant_scale", quant.antiquant_scale)
+        layer.forward = MethodType(_image_text_column_quant_forward if isinstance(layer, ColumnParallelLinear)
+                                   else _image_text_row_quant_forward, layer)
+        layer._xgen_image_text_quantized_tp = True
+        tp_count += 1
+        del quant
+        torch.npu.empty_cache()
     if any(text_encoder.get_submodule(name).weight.dtype != torch.int8 for name in names):
         raise RuntimeError("Some Image text decoder projections were not quantized")
     text_encoder._xgen_image_text_quantization = dict(
-        dtype="dynamic-w8a8", projection_count=len(names), parameter_bytes_before=before,
+        dtype="dynamic-w8a8", projection_count=len(names), tp_projection_count=tp_count, parameter_bytes_before=before,
         parameter_bytes_after=sum(p.numel() * p.element_size() for p in text_encoder.parameters()),
         scope="Retained decoder attention/MLP linears only; embedding, norm, vision and lm_head unchanged")
+
+
+def _image_text_tp_quant_linear(layer, x, include_bias):
+    from types import SimpleNamespace
+    from x_base.operator.matmul import WeightQuantLinearModule
+    for name in ("weight", "antiquant_scale", "bias"):
+        value = getattr(layer, name)
+        if value is not None and value.device != x.device:
+            value.data = value.data.to(x.device)
+    proxy = SimpleNamespace(weight=layer.weight, antiquant_scale=layer.antiquant_scale,
+                            bias=layer.bias if include_bias else None)
+    return WeightQuantLinearModule.forward(proxy, x)
+
+
+def _image_text_column_quant_forward(self, x):
+    import torch.distributed as dist
+    output = _image_text_tp_quant_linear(self, x, True)
+    if self.gather_output and self._tp_world_size() > 1:
+        outputs = [torch.empty_like(output) for _ in range(self._tp_world_size())]
+        dist.all_gather(outputs, output, group=self._tp_group())
+        output = torch.cat(outputs, dim=-1)
+    return output
+
+
+def _image_text_row_quant_forward(self, x):
+    import torch.distributed as dist
+    if not self.input_is_parallel and self._tp_world_size() > 1:
+        chunk = x.shape[-1] // self._tp_world_size()
+        x = x[..., self._tp_rank() * chunk:(self._tp_rank() + 1) * chunk]
+    # Row-parallel bias is added once, after the reduction, exactly as in BF16 TP.
+    output = _image_text_tp_quant_linear(self, x, False)
+    if self._tp_world_size() > 1:
+        if self.reduce_fn is None:
+            dist.all_reduce(output, group=self._tp_group())
+        else:
+            output = self.reduce_fn(output, self._tp_group())
+    if self.bias is not None:
+        output = output + self.bias
+    return output
 
 
 @torch.no_grad()

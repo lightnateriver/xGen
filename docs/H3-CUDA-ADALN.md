@@ -13,7 +13,7 @@ export XGEN_DEVICE=cuda
 export PYTHONPATH="$PWD/x_base:$PWD/x_diffusers"
 CUDA_VISIBLE_DEVICES=0 python tools/adaln_cache/prepare_cuda_adaln.py \
   --model_path weights/h3-fl2va/transformer \
-  --model_variant FL2VA --steps 20 50 \
+  --model_variant FL2VA --steps 20 \
   --output_dir weights/h3-fl2va/xgen-adaln/fl2va/tables \
   --strip_output weights/h3-fl2va/xgen-adaln/fl2va/transformer
 ```
@@ -23,12 +23,12 @@ R2VA 需独立准备，不能混用 FL2VA 权重或表：
 ```bash
 CUDA_VISIBLE_DEVICES=0 python tools/adaln_cache/prepare_cuda_adaln.py \
   --model_path weights/h3-ref2va/transformer_ref \
-  --model_variant Ref2VA --steps 20 50 \
+  --model_variant Ref2VA --steps 20 \
   --output_dir weights/h3-ref2va/xgen-adaln/ref2va/tables \
   --strip_output weights/h3-ref2va/xgen-adaln/ref2va/transformer
 ```
 
-`20`、`50` 是实际 DiT 次数。默认视频／音频 scheduler shift 为 12／3。工具只将时间 MLP 和当前投影放到一张 CUDA 卡，并校验查表输出；仍需足够磁盘保存剔除后的 Transformer。权重、表和测试素材不随 Git 仓库发布。
+`20` 是本页推荐的实际 DiT 次数；需要兼容 50 步时可显式使用 `--steps 20 50` 同时生成两套表。默认视频／音频 scheduler shift 为 12／3。工具只将时间 MLP 和当前投影放到一张 CUDA 卡，并校验查表输出；仍需足够磁盘保存剔除后的 Transformer。权重、表和测试素材不随 Git 仓库发布。
 
 FL2VA 表保存无视觉／有视觉条件，Ref2VA 表保存无参考／视频类／音频类／两类同时存在的完整时间批次。图片和参考视频共享固定视觉条件时间 0.999；参考音频也使用固定条件时间。这些是模型内部时间值，与文件时长不同。prompt、参考图数量和输出秒数不改变时间表；权重、步数、时间序列、scheduler shift 或相关 LoRA 改变时需重新匹配。
 

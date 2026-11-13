@@ -1,12 +1,17 @@
-# Experimental CUDA input Token Refiner
+# CUDA input Token Refiner
 
-The default input Token Refiner remains replicated BF16 with native SDPA.
-These options apply only to explicit CUDA FP8 Ref2VA profiles with eight-way
-SP. They do not change the main DiT's attention, FP8 Linear, PHAA or wire dtype.
+The current eight-GPU CUDA H3 Base `sage-fp8-full-parallel` preset enables
+input Token Refiner SP, BF16 cuDNN attention and FP8 FFN for
+T2VA/FL2VA/Ref2VA. Without this preset or explicit options, the underlying path
+retains replicated BF16 with native SDPA. Parameter defaults and preset values
+are different; see the [current configuration table](H3-CUDA-COMPOSABLE.md#独立控制项).
+These options do not change the main DiT's attention, FP8 Linear, PHAA or wire dtype.
+Measurements below are historical Ref2VA experiments, not new validation of
+all workflows or the current native-stream preset.
 
 | Option | Input Token Refiner |
 |---|---|
-| `--h3_cuda_input_refiner none` | Original path; default and rollback |
+| `--h3_cuda_input_refiner none` | Original path without the full-parallel preset; explicit rollback |
 | `--h3_cuda_input_refiner cudnn-sp` | Ulysses SP8 with forced BF16 cuDNN attention; BF16 FFN |
 | `--h3_cuda_input_refiner cudnn-sp-fp8` | Same SP/cuDNN path with four W8A8 FP8 FFN projections across the two blocks |
 
@@ -37,8 +42,9 @@ on context size, collective overhead and temporary buffers; a speedup is not
 guaranteed for short contexts. This does not make BF16 intermediate FFN
 activations FP8.
 
-The feature is inference-only. `tp_cp`, NPU and other tasks are rejected when
-explicitly enabled. Restart resident workers to change the profile; disable
+The CUDA cuDNN/FP8 recipe is inference-only; NPU uses separate native
+attention/BF16 FFN settings. TP/CP experiments have separate layout constraints.
+Restart resident workers to change the profile; disable
 the option and restart to restore the original path. cuDNN is forced rather
 than silently falling back. The synthetic gate in
 `tools/validate_h3_input_refiner.py` checks padding, BF16 SP equivalence, FP8

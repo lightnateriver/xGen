@@ -39,3 +39,15 @@ v0.6以最新v0.5提交 `ca6b6f0adcca48e523d8b81f32c9b784c577f095` 为基线，�
 四卡910B1、89-token文本、4096×4096、六步PDD，各组加载一次并运行1次首请求＋3次复用：文本BF16/W8A8复用均值14.752/14.617秒，峰值allocated37.254/31.759 GiB每卡。主要收益是省显存，未证明稳定提速。该硬件验证发生在默认值调整前，量化及TP执行文件沿用实测实现；默认配置、显式回退、CUDA隔离及最新v0.6兼容性另做CPU回归。40项旧矩阵的文本精度仍为BF16，不将它重标为文本INT8验证。[精度范围与实测](H3-IMAGE-TEXT-INT8.md) · [部署与回退](H3-IMAGE-NPU-OPTIMIZATIONS.md)。
 
 [本次合并验证摘要](performance/h3-image-text-w8a8-default-validation.json)：257项测试及13个服务子测试通过，9项CUDA硬件／checkpoint检查跳过；另有24项BF16 SP4本地输入张量对照、每rank12项文本TP4通信对照和DiT TP／FFN分块／VAE拼接检查通过。CPU验证使用原始RMSNorm，旧版兼容测试提供原发布Git对象；原始失败记录与修复后日志分别保留。
+
+## R2VA 条件准备重叠（实验性）
+
+新增 CUDA/NPU 共用的 `--h3_condition_overlap`，默认关闭，不随全并行预设自动开启。复用原 Ref2VA 文本／参考 VAE block，条件准备完成后进入原 DiT，不改变精度、步数或 offload 策略。CPU 契约回归 251 通过、7 跳过；八卡 CUDA 五图 5／10 秒各 1 步接入、条件张量逐位对照及视频技术检查通过，不能视为完整步数质量或长期稳定性验收。NPU 真机验证仍待完成。[配置与回退](H3-CONDITION-OVERLAP.md) · [验证范围](performance/h3-condition-overlap.md)
+
+## 2026-11-13：文档与 20 步推荐示例
+
+首页精简为推荐方案、安装、离线／在线启动与性能摘要；完整入口见[文档目录](README.md)，旧性能表迁到[历史汇总](performance/h3-historical-overview.md)，原始数值和计时／精度状态保留。修正旧文档中 CUDA/NPU 默认、Token Refiner 参数默认与预设值、在线验证范围的过时描述。
+
+当前推荐视频命令显式选择 20 次实际 Base DiT。CUDA Base、MaaS 和 NPU Refiner 示例 JSON 改为 20 步，Refiner 示例的 Base 表路径同步改为 21 点版本；NPU Base／Ref2VA 与 CUDA Ref2VA 示例原本已为 20 步。2K Refiner 仍为独立 3 步，H3-Image 仍为 6 步。**没有修改运行实现、低层默认参数或历史 50 步能力，也没有重新跑性能矩阵。** 已部署配置不会被自动重写，更新示例时须准备匹配资产并重启服务。
+
+本轮完成 287 个仓库内链接及标题锚点检查、251 项 CPU 回归（7 项跳过）、22 条模拟启动命令和 6 份推荐 JSON 的 20 步配对检查。模拟命令拦截 torchrun，不加载权重或执行 GPU/NPU 推理；不能代替硬件回归。原生 VAE 下载目录另已核对官方固定版本，其余既有外部链接未做全量重新访问。历史首页性能表按原数值和原计时／验收说明迁移，未覆盖底层报告或 CSV。

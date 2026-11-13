@@ -4,11 +4,11 @@
 
 v0.5 八卡 CUDA Base / MaaS 默认改为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-V05-CUDA-UPGRADE.md)，需相应表及剔除权重后的 Transformer。原 [fp8-bf16](H3-CUDA-PRECISION.md) 作为精度参考保留，可显式选择；本页 NVFP4 为独立历史路线。用 `--h3_cuda_precision none --h3_cuda_preset none` 回到旧路径。
 
-CUDA 第二套标准方案为 [Sage-FP8](H3-CUDA-SAGE.md)：相同 FP8 Linear、Sage attention、FP8 双向通信、输出调制融合和 expandable segments。八卡 5090 的 5/10/15 秒 T2VA / I2VA、20 步实测更快，人工画面与听音待审核。通用脚本用 `H3_CUDA_PRECISION=fp8-sage` 一次选择完整组合，原默认方案继续保留。
+保留的 Sage-FP8 基础方案见 [历史配置](H3-CUDA-SAGE.md)：相同 FP8 Linear、Sage attention、FP8 双向通信、输出调制融合和 expandable segments。八卡 5090 的 5/10/15 秒 T2VA / I2VA、20 步实测更快，人工画面与听音待审核。该基础方案与当前全并行默认不同；以下示例显式关闭全并行预设。新部署优先使用 [20 步当前视频教程](H3-VIDEO-QUICKSTART.md)。
 
 ```bash
-H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
-H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
+H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
+H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
 ```
 
 ## 环境和模型

@@ -7,7 +7,7 @@
   "sp": 8,
   "text_encoder_tp": 8,
   "phaa_num": 2,
-  "num_inference_steps": 50,
+  "num_inference_steps": 20,
   "fsdp": null,
   "atten": "none",
   "matmul_quant": "none",

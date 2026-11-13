@@ -51,3 +51,11 @@ v0.6以最新v0.5提交 `ca6b6f0adcca48e523d8b81f32c9b784c577f095` 为基线，�
 当前推荐视频命令显式选择 20 次实际 Base DiT。CUDA Base、MaaS 和 NPU Refiner 示例 JSON 改为 20 步，Refiner 示例的 Base 表路径同步改为 21 点版本；NPU Base／Ref2VA 与 CUDA Ref2VA 示例原本已为 20 步。2K Refiner 仍为独立 3 步，H3-Image 仍为 6 步。**没有修改运行实现、低层默认参数或历史 50 步能力，也没有重新跑性能矩阵。** 已部署配置不会被自动重写，更新示例时须准备匹配资产并重启服务。
 
 本轮完成 287 个仓库内链接及标题锚点检查、251 项 CPU 回归（7 项跳过）、22 条模拟启动命令和 6 份推荐 JSON 的 20 步配对检查。模拟命令拦截 torchrun，不加载权重或执行 GPU/NPU 推理；不能代替硬件回归。原生 VAE 下载目录另已核对官方固定版本，其余既有外部链接未做全量重新访问。历史首页性能表按原数值和原计时／验收说明迁移，未覆盖底层报告或 CSV。
+
+## 2026-11-13：NPU 768P Base 默认 VC 全并行
+
+按当前推荐方案，将 `run_h3.sh npu ... 768p`、`h3_npu_base.example.json` 和 `h3_npu_ref2va.example.json` 默认选择改为 VC＋Ascend 融合：`atten=vc`、`h3_opts=all`。保留 20 步、SP8／文本 TP8、INT8 Linear、PHAA2、AdaLN 表、full-parallel 与 Native-stream；不改变算子数值实现。CUDA、H3-Image、2K 及低层 CLI 的未指定默认保持原样。上方较早发布记录中的“默认关闭／保持旧默认”仅描述对应历史提交。
+
+首页以当前 VC 方案为 NPU 推荐入口；旧 attention 的性能继续作为历史对照，不能重标。当前硬件性能和人工视听认可仍仅覆盖八卡 910B3、单图 R2VA 5／10 秒、20 步；本次默认切换不等于补齐其他场景硬件验证。启动前需安装 VC／融合库并核查命中日志，独立关闭和显式回退见 [NPU 默认方案](H3-NPU-DEFAULT.md)。Benchmark 的配置记录同步区分 768P VC／融合与 2K 旧配方。
+
+默认切换的 CPU 回归为 297 项通过、7 项跳过，另做 22 条模拟启动和 6 份推荐 JSON 检查。覆盖默认选择、显式历史回退、融合列表／单项覆盖、真实 HTTP 参数构造及 CUDA／2K 隔离。Benchmark 的 3 项独立 CPU 测试检查忙卡预检不会启动进程、配置记录与旧报告字段缺失兼容；原始性能 CSV 与算子数值实现未改变。本轮不加载模型或重新执行 GPU/NPU 硬件性能测试。

@@ -5,15 +5,15 @@
 | 设备与用途 | 当前配方 | 进一步说明 |
 |---|---|---|
 | 八卡 RTX 5090，768P Base | Sage-FP8 全并行、BF16 AdaLN 表、Native-stream；SP8、文本 FP8 TP8、PHAA2、DiT 全常驻 | [CUDA 配方与单项开关](H3-CUDA-COMPOSABLE.md) |
-| 八卡昇腾，768P Base | Laser、DiT INT8、AdaLN 表、全并行、Native-stream；SP8、文本 TP8、PHAA2 | [NPU 默认方案](H3-NPU-DEFAULT.md) |
-| 八卡 910B3，已评审的单图 R2VA 5s/10s | 在上述 NPU 配方上显式选择 VC＋融合 | [开启、构建与回退](H3-NPU-FUSIONS.md) |
+| 八卡昇腾，768P Base | VC＋Ascend 融合、DiT INT8、AdaLN 表、全并行、Native-stream；SP8、文本 TP8、PHAA2 | [NPU 默认方案](H3-NPU-DEFAULT.md) |
+| 八卡 910B3，已评审范围 | 单图 R2VA 5s/10s、20 步 | [性能与验收范围](performance/h3-v06-npu-vc-fusions.md) |
 | 八卡昇腾，2K | 20 次 Base DiT＋3 次 Refiner，独立 legacy VAE 链路 | [2K 资产与部署](H3-DEPLOYMENT.md) |
 
 CUDA 当前组合已有 12 项真实在线 20 步技术验证，完整动态、口型和听音人工复核待完成。NPU VC 的画面与声音认可仅覆盖已评审的单图 R2VA 5s/10s 样例。详细结果见[性能索引](performance/README.md)，不要把不同设备或历史配方的数值直接比较。
 
 ## 准备模型和输入
 
-准备 Linux、八张可用设备、匹配的 PyTorch/CUDA 或 CANN/torch-npu，以及支持 H.264/AAC 的 FFmpeg 和 FFprobe。CUDA Sage 配方需要兼容的 SageAttention、Triton、Diffusers 和 Transformers；NPU 依赖与可选算子见[NPU 构建说明](H3-NPU-FUSIONS.md)。
+准备 Linux、八张可用设备、匹配的 PyTorch/CUDA 或 CANN/torch-npu，以及支持 H.264/AAC 的 FFmpeg 和 FFprobe。CUDA Sage 配方需要兼容的 SageAttention、Triton、Diffusers 和 Transformers；NPU 默认方案需先安装 VC 和融合算子，见[NPU 构建说明](H3-NPU-FUSIONS.md)。
 
 ```bash
 python -m pip install --no-deps -e ./x_base -e ./x_diffusers
@@ -105,16 +105,16 @@ bash example/diffusers/scripts/run_h3.sh npu i2va 10 768p inputs/first-frame.png
 bash example/diffusers/scripts/run_h3.sh npu r2va 15 768p inputs/ref01.png
 ```
 
-NPU 的 DiT Linear 为 INT8，VAE `matmul_quant=none`，不是 CUDA FP8 配方。R2VA 输入 Token Refiner 使用 chunk2048，T2VA/I2VA 使用 chunk0；无需手工拼接这些默认参数。
+NPU 默认 VC＋Ascend 融合全并行，DiT Linear 为 INT8，VAE `matmul_quant=none`，不是 CUDA FP8 配方。R2VA 输入 Token Refiner 使用 chunk2048，T2VA/I2VA 使用 chunk0；无需手工拼接这些默认参数。
 
-可选 VC＋Ascend 融合需要先按[构建说明](H3-NPU-FUSIONS.md)安装依赖，然后显式开启：
+默认已经选择 VC＋Ascend 融合，需先按[构建说明](H3-NPU-FUSIONS.md)安装。需要保留 VC、独立关闭新增融合时：
 
 ```bash
 bash example/diffusers/scripts/run_h3.sh npu r2va 5 768p inputs/ref01.png -- \
-  --atten vc --h3-opts all
+  --h3-opts none
 ```
 
-已评审的性能与质量范围为八卡 910B3、单图 R2VA、5s/10s、20 步。`all` 是请求开启各项，实际命中由形状、后端及已安装库决定；看各 rank 的命中与回退日志。原默认仍为 Laser；回退用 `--atten laser --h3-opts none`。详见[同机性能与验收范围](performance/h3-v06-npu-vc-fusions.md)。
+已评审的性能与质量范围为八卡 910B3、单图 R2VA、5s/10s、20 步。`all` 是请求开启各项，实际命中由形状、后端及已安装库决定；看各 rank 的命中与回退日志。需要回退历史 attention 和原算子时用 `--atten laser --h3-opts none`。详见[同机性能与验收范围](performance/h3-v06-npu-vc-fusions.md)。
 
 ## 2K：独立 Base → Refiner 链路
 
@@ -154,7 +154,7 @@ XGEN_DEVICE=npu torchrun --nproc_per_node=8 --master_addr=127.0.0.1 --master_por
   --config example/diffusers/configs/h3_npu_base.example.json --host 127.0.0.1 --port 5001
 ```
 
-NPU R2VA 将最后一条的服务模式改为 `ref2va`，配置改为 `h3_npu_ref2va.example.json`。在线 VC 使用该 JSON 的本地副本，设置 `"atten": "vc"`、`"h3_opts": "all"` 后重启；不要将离线的 `--atten`／`--h3-opts` 直接追加到服务启动命令。其真实 HTTP 性能需单独验证。
+NPU R2VA 将最后一条的服务模式改为 `ref2va`，配置改为 `h3_npu_ref2va.example.json`。两份 NPU 示例 JSON 已默认设置 `"atten": "vc"`、`"h3_opts": "all"`；改变配方后需重启。不要将离线的 `--atten`／`--h3-opts` 直接追加到服务启动命令。其真实 HTTP 性能需单独验证。
 
 普通 Base 使用 `/generate`、`/status/<task_id>`、`/download/<task_id>`。T2VA/I2VA 实例的 `t2va` 模式同时接受两类请求，R2VA 单独部署。请求示例、4～15 秒整数时长及媒体限制见[在线指南](H3-ONLINE.md)；20 步部署的请求也填 20，或省略步数使用匹配的配置/表。
 

@@ -1,8 +1,10 @@
 # MiniMax-H3 NPU 融合算子与 VC-Attention
 
+当前 NPU 768P Base 推荐入口默认采用 VC＋Ascend 融合全并行 Streaming，20 步及匹配 AdaLN 表。先完成下方安装，再使用[默认启动方案](H3-NPU-DEFAULT.md)。低层 CLI 的未指定默认、CUDA、H3-Image 和 2K 独立链路不随此入口改变。
+
 ## 编译与安装
 
-融合算子来自 `xgen_optimized_full_source_20261107_v5.zip`。在目标 Ascend 910B（`dav-2201`）的 Linux aarch64 环境中构建。压缩包使用 CANN 9.1、Python 3.12、PyTorch 2.10 及匹配的 `torch_npu`。构建还需要 CMake、C++17 工具链和 CANN 的 AscendC 开发组件。
+融合算子源码随仓库的 `x_base/x_base/operator/npu_fusion/` 提供。在目标 Ascend 910B（`dav-2201`）的 Linux aarch64 环境中构建。已验证环境使用 CANN 9.1、Python 3.12、PyTorch 2.10 及匹配的 `torch_npu`。构建还需要 CMake、C++17 工具链和 CANN 的 AscendC 开发组件。
 
 ```bash
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -31,7 +33,7 @@ XGEN_NPU_META=1 python x_base/tests/test_npu_fusion_meta.py
 bash example/diffusers/scripts/run_h3.sh npu t2va 5 768p -- --h3-opts rope,swiglu,gate_residual,norm_quant
 ```
 
-融合默认关闭。`--h3-opts all` 请求全部九项，`--h3-opts none` 清空列表。也可用 `H3_OPT_FEATURES=all,-text_cache` 设置默认列表。CLI 列表覆盖环境变量，`--h3-opt-rope`、`--no-h3-opt-rope` 等单项参数覆盖列表。在线服务在启动 JSON 中用 `"h3_opts": "rope,swiglu"` 配置。
+低层 CLI 在没有显式列表或环境设置时，融合默认关闭；推荐的 NPU 768P Base 脚本及在线示例现在显式设置 `h3_opts=all`。`--h3-opts all` 请求全部九项，`--h3-opts none` 清空列表。低层未传列表时，也可用 `H3_OPT_FEATURES=all,-text_cache` 设置默认列表；推荐入口已有显式 `all`，需用 `-- --h3-opts ...` 或修改在线 JSON 来覆盖。CLI 列表覆盖环境变量，`--h3-opt-rope`、`--no-h3-opt-rope` 等单项参数覆盖列表。在线服务在启动 JSON 中用 `"h3_opts": "rope,swiglu"` 配置。
 
 `swiglu`、`norm_quant`、`shared_qkv` 和 `merge_quant` 需要匹配的 INT8 投影。PHAA 布局和合并量化需要 SP4 / PHAA7 / 56 头 / D128，常用的 SP8 / PHAA2 会使用原生布局。`laser_preprocess` 需要兼容的 MindIE Laser 版本及匹配的 PHAA 分块。启用了 v0.5 请求内条件预计算的配方直接复用现有缓存。
 
@@ -56,11 +58,11 @@ bash example/diffusers/scripts/run_h3.sh npu t2va 5 768p -- --atten vc --h3-opts
 
 VC 使用 INT8 QK、FP16 ExpCast 和 FP16 PV。支持 D64/D128 的 FP16 或 BF16 BNSD dense attention。mask、causal、dropout、梯度输入或 VC 初始化失败时使用原生 SDPA。VC 自带预处理，`laser_preprocess` 会转交给 VC。检查 `[VC_ATTENTION] enabled=expcast` 确认实际命中，并在部署前核对输出画面和音频质量。
 
-## v0.6 的对照与回退
+## v0.6 默认配方、对照与回退
 
-迁移保留 v0.6 的 H3-Image 独立入口和依赖配置。以下选项用于 H3 音视频；不改变 H3-Image 默认的 SDPA 配方，也不改变既有视频示例的默认值。
+迁移保留 v0.6 的 H3-Image 独立入口和依赖配置。以下选项用于 H3 音视频；不改变 H3-Image 默认的 SDPA 配方。当前 NPU 768P Base 推荐脚本和在线 JSON 已默认 VC＋Ascend 融合；2K、CUDA 和低层显式旧配置不受本次切换影响。
 
-NPU 768P 示例已有的基线是 **Laser + DiT INT8 + full-parallel + Native-stream**。测试 VC 时保持这些选项、SP8、文本 TP8、PHAA2、权重、prompt、seed、输入图片和实际 DiT 次数一致，只覆盖 attention 和新增融合开关。不要用 BF16 Linear 或旧版 VAE 路径作为优化前的基线。
+历史 NPU 768P 对照基线是 **Laser + DiT INT8 + full-parallel + Native-stream**。测试 VC 时保持这些选项、SP8、文本 TP8、PHAA2、权重、prompt、seed、输入图片和实际 DiT 次数一致，只覆盖 attention 和新增融合开关。不要用 BF16 Linear 或旧版 VAE 路径作为优化前的基线。
 
 在已配置模型、Ref2VA Transformer、对应 AdaLN 和原生 VAE 的环境中，可用同一单图运行下面三种配方；输入路径和权重通过原有环境变量指定：
 

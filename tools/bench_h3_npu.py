@@ -429,7 +429,9 @@ def run_group(group, cases, args, publish):
         env["BASE_TRANSFORMER"] = env.get("BENCH_REF_TRANSFORMER", "model-cache/base-ref2va")
     command = ["bash", str(LAUNCHER), "npu", task, str(first["seconds"]), first["resolution"], *first["media"]]
     config = dict(group=group, cards=8, sp=8, text_tp=8, phaa=2, base_steps=20, base_schedule_points=21,
-                  refiner_steps=3 if first["resolution"] == "2k" else 0, attention="laser", dit_linear="int8",
+                  refiner_steps=3 if first["resolution"] == "2k" else 0,
+                  attention="vc" if first["resolution"] == "768p" else "laser",
+                  h3_opts="all" if first["resolution"] == "768p" else "none", dit_linear="int8",
                   vae="Refiner BF16" if first["resolution"] == "2k" else os.environ.get('H3_VAE_BACKEND', 'native-stream'),
                   adaln=table.name, seed=args.seed)
     config["request_memory_release"] = True
@@ -525,7 +527,8 @@ def markdown_event(kind, record):
         return (f'\n## {record["group"]}\n\n'
                 f'{record["cards"]} 卡 · {chips} · SP{record["sp"]} · 文本 TP{record["text_tp"]} · PHAA{record["phaa"]}'
                 f' · Base DiT {record["base_steps"]} 步 · Refiner {record["refiner_steps"]} 步'
-                f' · {record["attention"]} · DiT {record["dit_linear"]} · {record["vae"]}'
+                f' · {record["attention"]} · 融合请求 `{record.get("h3_opts", "未记录")}`'
+                f' · DiT {record["dit_linear"]} · {record["vae"]}'
                 f' · seed {record["seed"]} · AdaLN `{record["adaln"]}`'
                 f' · 每条成片后显存回收 {"开启" if record["request_memory_release"] else "关闭"}\n\n'
                 '| 用例 | 计时口径 | 模型 | 推理及保存 s | 请求 wall s | 首次初始化 s | Base DiT / Refiner DiT / VAE / 封装等待 s | HBM 峰值 GiB/卡 |'

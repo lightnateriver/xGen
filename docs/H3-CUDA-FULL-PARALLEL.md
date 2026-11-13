@@ -6,6 +6,6 @@
 
 自 v0.5 起，八卡 CUDA Base 的 T2VA/I2VA/R2VA 推荐入口统一采用该预设；`cuda` 与 `cuda-5090` 的 Base 768P 默认相同。TP/CP 为独立实验选项，不包含在全并行 SP8 预设内。
 
-CUDA 推荐 T2VA/I2VA/R2VA 的视频 decoder 默认 native-stream，需可信原生 `video_vae` 目录和显式授权。旧精度配方继续保留，后端可用 `--h3_vae_backend legacy|lightning|native-stream` 覆盖；NPU 当前推荐见 [Laser INT8 全并行 Streaming](H3-NPU-DEFAULT.md)。历史整网表使用 legacy decoder，新默认不继承其性能和精度结论。
+CUDA 推荐 T2VA/I2VA/R2VA 的视频 decoder 默认 native-stream，需可信原生 `video_vae` 目录和显式授权。旧精度配方继续保留，后端可用 `--h3_vae_backend legacy|lightning|native-stream` 覆盖；NPU 当前推荐见 [VC＋Ascend 融合 INT8 全并行 Streaming](H3-NPU-DEFAULT.md)。历史整网表使用 legacy decoder，新默认不继承其性能和精度结论。
 
 [性能与验证范围](performance/h3-cuda5090-full-parallel.md) · [在线服务](H3-ONLINE.md)

@@ -9,12 +9,12 @@ xGen 是面向 NVIDIA GPU 和昇腾 NPU 的音视频生成引擎，支持命令�
 | 设备与用途 | 当前推荐方案 | 部署教程 |
 |---|---|---|
 | 8×RTX 5090，768P 音视频 | **Sage-FP8 全并行＋Streaming＋AdaLN 表**：SP8、文本 FP8 TP8、FP8 Linear／PHAA、Align16、DiT 常驻、native-stream 解码 | [CUDA 配置与回退](docs/H3-CUDA-COMPOSABLE.md) |
-| 8×昇腾 910B，768P 音视频 | **Laser INT8 全并行＋Streaming＋AdaLN 表**：SP8、文本 TP8、INT8 DiT、组件并行、native-stream 解码 | [NPU 配置与回退](docs/H3-NPU-DEFAULT.md) |
+| 8×昇腾 910B，768P 音视频 | **VC＋Ascend 融合全并行方案**：SP8、文本 TP8、INT8 DiT、AdaLN 表、native-stream 解码 | [NPU 配置与回退](docs/H3-NPU-DEFAULT.md) |
 | 4×昇腾 910B，图像生成／编辑 | **H3-Image W8A8 常驻方案**：SP4、文本 TP4、图像专用 AdaLN 和 VAE 并行 | [图像部署](docs/H3-IMAGE-NPU-OPTIMIZATIONS.md) |
 
 视频示例统一按 **20 次实际 Base DiT**；H3-Image 是独立的 6 步模型。配置的验证设备、输入范围和人工精度状态见各报告，不保证任意满载输入都能运行。
 
-NPU 单图 R2VA 的 5／10 秒场景还可选择更快的 **VC＋Ascend 融合**：20 步同机实测比 Laser 耗时降低 10.01%／12.22%，样例画面与声音已验收。[安装、启动与适用范围](docs/H3-NPU-FUSIONS.md)
+NPU 方案需先[安装 VC 与融合依赖](docs/H3-NPU-FUSIONS.md)。当前整网性能与人工视听验收覆盖八卡 910B3、单图 R2VA、5／10 秒、20 步；其他任务、多图与时长组合需分别验证。
 
 R2VA 条件准备重叠为[独立实验开关](docs/H3-CONDITION-OVERLAP.md)，CUDA/NPU 默认均关闭。旧 FP8 Linear＋BF16 attention 参考方案及其他回退方式保留在 CUDA 教程中。
 
@@ -60,7 +60,7 @@ bash example/diffusers/scripts/run_h3.sh cuda i2va 10 768p inputs/first-frame.pn
 bash example/diffusers/scripts/run_h3.sh cuda r2va 15 768p inputs/ref01.png
 ```
 
-**昇腾 NPU 八卡**，采用 Laser INT8 默认方案：
+**昇腾 NPU 八卡**，采用 VC＋Ascend 融合、INT8 全并行默认方案：
 
 ```bash
 bash example/diffusers/scripts/run_h3.sh npu t2va 5 768p
@@ -94,14 +94,14 @@ NPU 启动前还需设置[配套环境变量](docs/H3-VIDEO-QUICKSTART.md#npu)�
 
 以下均为 **20 步、768P、完整预热后的单次正式样例**，排除初始化。CUDA 为服务端推理计时，NPU 为常驻推理至保存计时，不能直接跨设备比较。
 
-| 设备与方案 | 5 秒视频样例 | 耗时 | 完整报告 |
+| 设备与方案 | 视频样例 | 耗时 | 完整报告 |
 |---|---|---:|---|
-| 8×5090，Sage-FP8 全并行 Streaming＋AdaLN＋Align16 | T2VA | 33.517 s | [12 项在线性能与显存](docs/performance/h3-cuda-phaa-align16.md) |
-| 同上 | R2VA 单图 | 46.672 s | [同一报告](docs/performance/h3-cuda-phaa-align16.md) |
-| 8×910B1，Laser INT8 全并行 Streaming | T2VA | 50.518 s | [NPU 当前性能与显存](docs/performance/h3-npu-full-parallel-streaming.md) |
-| 8×910B3，VC＋Ascend 融合 | R2VA 单图 | 77.202 s | [VC 同机对照](docs/performance/h3-v06-npu-vc-fusions.md) |
+| 8×5090，Sage-FP8 全并行 Streaming＋AdaLN＋Align16 | T2VA，5 秒 | 33.517 s | [12 项在线性能与显存](docs/performance/h3-cuda-phaa-align16.md) |
+| 同上 | R2VA 单图，5 秒 | 46.672 s | [同一报告](docs/performance/h3-cuda-phaa-align16.md) |
+| 8×910B3，VC＋Ascend 融合全并行 | R2VA 单图，5 秒 | 77.202 s | [NPU 性能与验收范围](docs/performance/h3-v06-npu-vc-fusions.md) |
+| 同上 | R2VA 单图，10 秒 | 170.123 s | [同一报告](docs/performance/h3-v06-npu-vc-fusions.md) |
 
-CUDA 12 项已通过技术检查，完整人工动态／口型／听音复核待记录；NPU Laser 与 VC 的验收范围各见报告。更多 5／10／15 秒、2K、历史 50 步及 H3-Image 数据见[性能目录](docs/performance/README.md)，历史值保留原始条件。
+CUDA 12 项已通过技术检查，完整人工动态／口型／听音复核待记录；NPU 验收限定上述已评审样例。更多 5／10／15 秒、2K、历史 50 步及 H3-Image 数据见[性能目录](docs/performance/README.md)，历史值保留原始条件。
 
 ## 更多文档
 

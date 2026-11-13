@@ -1,4 +1,4 @@
-"""The NPU Laser INT8 full-parallel Stream recipe covers all H3 Base workflows."""
+"""The NPU VC/fusions INT8 full-parallel Stream launch recipe for H3 Base."""
 import ast
 import json
 from pathlib import Path
@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from x_diffusers.adaptor.h3_cuda_precision import resolve
+from x_diffusers.adaptor.h3_npu_options import H3_FUSION_FEATURES, validate as validate_fusions
 from x_diffusers.framework.vae.omni_decoder import validate_options
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -18,7 +19,8 @@ def test_default_npu_recipe_keeps_portable_features_and_native_stream(task):
     args=SimpleNamespace(**(config|dict(task_type=task)))
     assert resolve(args,'npu')=='none'
     validate_options(args,'npu')
-    assert (args.atten,args.matmul_quant,args.vae_matmul_quant)==('laser','int8','none')
+    assert (args.atten,args.matmul_quant,args.vae_matmul_quant)==('vc','int8','none')
+    assert args.h3_opts=='all' and validate_fusions(args,'npu')==H3_FUSION_FEATURES
     assert (args.sp,args.text_encoder_tp,args.phaa_num,args.num_inference_steps)==(8,8,2,20)
     for name in ('local_input','local_output','precompute_conditioning','input_refiner_sp',
                  'vision_sp','vae_encoder_parallel','audio_encoder_parallel'):

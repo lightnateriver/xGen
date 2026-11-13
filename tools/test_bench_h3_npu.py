@@ -1,5 +1,10 @@
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import bench_h3_npu as bench
 
@@ -30,6 +35,39 @@ class WorkerTreeTests(unittest.TestCase):
             sample = bench.sample()
         self.assertEqual(sample["monotonic_s"], 100)
         self.assertEqual(sample["sample_duration_s"], 13)
+
+
+class GroupMetadataTests(unittest.TestCase):
+    def test_busy_preflight_publishes_requested_recipe_without_launching(self):
+        for resolution, attention, features, refiner_steps in (
+            ("768p", "vc", "all", 0), ("2k", "laser", "none", 3),
+        ):
+            with self.subTest(resolution=resolution), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                prompt = root / "prompt.txt"
+                prompt.write_text("benchmark metadata contract", encoding="utf-8")
+                args = SimpleNamespace(output=root, base_adaln=root / "t2va-21step.safetensors",
+                                       ref_adaln=root / "ref2va-21step.safetensors", seed=42,
+                                       hashes={prompt: hashlib.sha256(prompt.read_bytes()).hexdigest()}, warmup_per_case=False, repeat=1)
+                cases = [(f"t2va-5s-{resolution}", "t2va", 5, resolution, [], prompt)]
+                busy = dict(hbm={f"{index}:0": dict(name="Ascend910B3") for index in range(8)},
+                            idle_cards=7, active_pids=[123])
+                publish = Mock()
+                with patch.object(bench, "sample", return_value=busy), patch.object(bench.subprocess, "Popen") as launch:
+                    result = bench.run_group(f"t2va-{resolution}", cases, args, publish)
+                launch.assert_not_called()
+                self.assertEqual(result["error"], "eight_idle_cards_required")
+                self.assertEqual([call.args[0] for call in publish.call_args_list], ["start", "end"])
+                config = publish.call_args_list[0].args[1]
+                self.assertEqual((config["attention"], config["h3_opts"], config["refiner_steps"]),
+                                 (attention, features, refiner_steps))
+                self.assertEqual((config["base_steps"], config["dit_linear"]), (20, "int8"))
+                saved = json.loads((root / "groups" / f"t2va-{resolution}" / "config.json").read_text())
+                self.assertEqual(saved, config)
+                report = bench.markdown_event("start", config)
+                self.assertIn(f" · {attention} · 融合请求 `{features}`", report)
+                historical = {key: value for key, value in config.items() if key != "h3_opts"}
+                self.assertIn("融合请求 `未记录`", bench.markdown_event("start", historical))
 
 
 if __name__ == "__main__":

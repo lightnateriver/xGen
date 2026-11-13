@@ -6,13 +6,13 @@
 
 R2VA Base 另有独立的 `--h3_condition_overlap`，CUDA/NPU 共用，**默认关闭**，也不随 `full-parallel` 自动开启。它把参考 VAE 与 Qwen3-VL 编码重叠，可能增加峰值显存；原 offload 与算子精度保留。开启、回退、等待时间与验证范围见[条件准备重叠](H3-CONDITION-OVERLAP.md)。
 
-T2VA/I2VA/R2VA Base 768P共用`--h3_features full-parallel`。推荐NPU入口同时默认Native-stream、AdaLN和Laser INT8；详见[NPU默认方案](H3-NPU-DEFAULT.md)。以下R2VA示例另指定FFN chunk2048，T2VA/I2VA保持0：
+T2VA/I2VA/R2VA Base 768P共用`--h3_features full-parallel`。推荐 NPU 768P Base 入口同时默认 Native-stream、AdaLN、VC＋Ascend 融合和 INT8 Linear；详见[NPU默认方案](H3-NPU-DEFAULT.md)。以下R2VA示例另指定FFN chunk2048，T2VA/I2VA保持0：
 
 ```bash
 --h3_features full-parallel --h3_refiner_ff_chunk_size 2048
 ```
 
-CUDA 原有 `--h3_cuda_preset sage-fp8-full-parallel` 继续有效。希望使用原生 BF16 CUDA Linear 时显式选择 `--h3_cuda_precision none`；NPU 保留原有 `--matmul_quant int8 --atten laser` 等配置。
+CUDA 原有 `--h3_cuda_preset sage-fp8-full-parallel` 继续有效。希望使用原生 BF16 CUDA Linear 时显式选择 `--h3_cuda_precision none`；NPU 推荐入口选择 `--matmul_quant int8 --atten vc --h3-opts all`；低层显式旧配置与 2K 独立链路保留。
 
 | 能力 | CUDA / NPU 共用逻辑 | 保留的边界 |
 |---|---|---|

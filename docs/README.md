@@ -11,8 +11,8 @@
 | 下载模型、准备对应资产 | [模型与下载地址](H3-MODELS.md) |
 | CUDA/NPU 离线生成，5／10／15 秒、768P／2K | [20 步视频启动教程](H3-VIDEO-QUICKSTART.md) |
 | 选择 CUDA 5090 全并行方案及独立开关 | [CUDA 全并行配置](H3-CUDA-COMPOSABLE.md) |
-| 选择 NPU Laser INT8 默认方案及回退 | [NPU 默认配置](H3-NPU-DEFAULT.md) |
-| 启用已验证的 NPU VC＋Ascend 融合 | [安装、开关与适用范围](H3-NPU-FUSIONS.md) |
+| 选择 NPU VC＋Ascend 融合、INT8 全并行默认方案及回退 | [NPU 默认配置](H3-NPU-DEFAULT.md) |
+| 安装 NPU VC 与融合依赖、检查命中和适用范围 | [安装、开关与适用范围](H3-NPU-FUSIONS.md) |
 | 准备 CUDA 20 步 AdaLN 表及剔除权重的模型 | [CUDA AdaLN 资产](H3-CUDA-ADALN.md) |
 | 部署 H3-Image 文生图／参考图编辑 | [图像入口](H3-IMAGE.md) · [NPU 四卡推荐部署](H3-IMAGE-NPU-OPTIMIZATIONS.md) · [文本 W8A8 与回退](H3-IMAGE-TEXT-INT8.md) |
 | 启动 HTTP，提交、查询和下载 | [在线服务](H3-ONLINE.md) |

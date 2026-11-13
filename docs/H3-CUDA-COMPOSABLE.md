@@ -1,6 +1,6 @@
 # RTX 5090：Sage-FP8 全并行 Streaming
 
-v0.5 八卡 CUDA H3 Base 默认采用 `sage-fp8-full-parallel`、`native-stream` 和 BF16 AdaLN 表，覆盖 T2VA、I2VA／首尾帧、R2VA。复用原 CLI、InferenceManager、HTTP 服务及同一个 H3 DiT 循环。NPU 保留 v0.5 的 Laser INT8 + Stream 配方；其他模型、2K、NVFP4 和显式旧精度配方不自动套用。
+v0.5 八卡 CUDA H3 Base 默认采用 `sage-fp8-full-parallel`、`native-stream` 和 BF16 AdaLN 表，覆盖 T2VA、I2VA／首尾帧、R2VA。复用原 CLI、InferenceManager、HTTP 服务及同一个 H3 DiT 循环。NPU 使用独立的 [VC＋Ascend 融合 INT8 全并行 Streaming 配方](H3-NPU-DEFAULT.md)；其他模型、2K、NVFP4 和显式旧精度配方不自动套用。
 
 先完成 [AdaLN 资产准备](H3-CUDA-ADALN.md)。表替代对应的时间编码／投影权重，主 DiT 全部常驻；每项组件优化仍可单独关闭。最大输入限制不等于显存容量保证，技术生成也不等于人工精度认可。
 
@@ -23,7 +23,7 @@ bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 
 `video_vae` 是独立的原生模型目录，不是 Diffusers `vae` 子目录。授权变量只应用于可信模型代码。新后端初始化更慢，CPU master 和显存代价见 [VAE 教程](H3-OMNI-VAE.md)。[离线 Streaming 矩阵](performance/h3-cuda-streaming-matrix.md) 区分 owner 与 table；历史 legacy decoder 表单独保留。
 
-CUDA 推荐配方仅把 native decoder 的 Linear 预存为 FP16，其他参数保持 FP32，计算仍是 FP16 autocast；复用旧解码器同一策略以减少静态占用。解码前释放请求内条件结果并回收空闲缓存，DiT 仍全常驻。NPU 沿用 v0.5 原配方；原生 FP32 组件测量路径不变。
+CUDA 推荐配方仅把 native decoder 的 Linear 预存为 FP16，其他参数保持 FP32，计算仍是 FP16 autocast；复用旧解码器同一策略以减少静态占用。解码前释放请求内条件结果并回收空闲缓存，DiT 仍全常驻。NPU 的 VAE 存储沿用既有实现；原生 FP32 组件测量路径不变。
 
 ## 覆盖单项配置
 

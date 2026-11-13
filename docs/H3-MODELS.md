@@ -40,4 +40,4 @@ hf download MiniMaxAI/MiniMax-H3 --revision 5d9b308a59ab12e67147f191e184baf70418
 | NPU 2K | 另准备 [Regenerate Refiner](H3-DEPLOYMENT.md#42-refiner)，Base 20 步与 Refiner 3 步分开配置 |
 | H3-Image | 使用[图像专用模型、VAE 和依赖](H3-IMAGE.md#环境与权重)，不使用视频 AdaLN 表 |
 
-NVFP4、Veda 和 Turbo 是可选／历史配方所需资产，不是当前 Sage-FP8 或 Laser INT8 默认视频方案的前置条件。仅对已确认可信的原生 VAE 模型代码开启授权。
+NVFP4、Veda 和 Turbo 是可选／历史配方所需资产，不是当前 Sage-FP8 或 VC＋Ascend 融合 INT8 默认视频方案的前置条件。仅对已确认可信的原生 VAE 模型代码开启授权。

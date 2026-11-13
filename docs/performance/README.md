@@ -10,8 +10,7 @@
 |---|---|---|
 | CUDA 5090，Sage-FP8 全并行 Streaming＋AdaLN＋Align16 | [12 项在线性能与显存](h3-cuda-phaa-align16.md) · [CSV](h3-cuda-phaa-align16.csv) | T2VA/I2VA、R2VA 单图／五图，5／10／15 秒，20 步；12 项技术通过，完整人工动态／口型／听音待记录；跨节点差异不能全部归于 Align16 |
 | CUDA 5090，同系列 Streaming 离线 | [输入规格、性能与显存](h3-cuda-streaming-matrix.md) · [CSV](h3-cuda-streaming-matrix.csv) | 20 步；owner／table 逐项标明，不能当作统一 table-only 对照 |
-| NPU 910B1，Laser INT8 全并行 Streaming | [T2VA/I2VA 新复测及既有 R2VA](h3-npu-full-parallel-streaming.md) · [CSV](h3-npu-full-parallel-streaming.csv) | 20 步；T/I 与既有 R2VA 的代码版本分开记录；常驻推理保存，不是 HTTP SLA |
-| NPU 910B3，VC＋Ascend 融合 | [同机 Laser 对照、显存及算子命中](h3-v06-npu-vc-fusions.md) | R2VA 单图 5／10 秒、20 步，样例画面与声音已验收；不覆盖全部多媒体／时长组合 |
+| NPU 910B3，VC＋Ascend 融合、INT8 全并行 Streaming＋AdaLN | [同机对照、显存及算子命中](h3-v06-npu-vc-fusions.md) | R2VA 单图 5／10 秒、20 步，样例画面与声音已验收；未覆盖 T2VA/I2VA、五图或其他时长组合，真实 HTTP 性能另验 |
 | 跨设备 native-stream 存储与默认切换 | [共享 FP16 存储](h3-native-shared-fp16.md) · [后端发布验证](h3-vae-release.md) | 单模块、单步接入与完整请求分开，不将容量冒烟当作完整精度或加速结论 |
 | CUDA v0.5 整理合入回归 | [三条 20 步冒烟与配置](h3-v05-cuda-release-validation.md) | T2VA/I2VA/R2VA；不能取代当前矩阵 |
 
@@ -27,6 +26,7 @@
 
 | 报告 | 适合查看什么 |
 |---|---|
+| [NPU Laser INT8 全并行历史参考](h3-npu-full-parallel-streaming.md) · [CSV](h3-npu-full-parallel-streaming.csv) | 910B1、20 步；T2VA/I2VA 与既有 R2VA 的代码版本分开记录，常驻推理保存；不是当前 VC 配方的验证或 HTTP SLA |
 | [原首页历史性能汇总](h3-historical-overview.md) | B1/B3 的 20 步旧矩阵、50 步在线／离线表、早期 GPU/NVFP4 与 legacy decoder 对照，原始口径保留 |
 | [NPU 35 项离线 benchmark](h3-npu-offline-20261105.md) · [正式 CSV](h3-npu-offline-20261105.csv) · [预热 CSV](h3-npu-offline-20261105-warmup.csv) | 20 步、768P／2K、多媒体参考；使用已移除的阶段清理策略，不能视为当前策略回归 |
 | [NPU 50 步在线／离线](historical-pairs.csv) · [阶段拆分](historical-stages.csv) | 历史 B2/B3（B2 实际为 910B1）、冷启动／补测与缺失 E2E 标记 |

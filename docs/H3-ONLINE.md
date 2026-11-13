@@ -1,6 +1,6 @@
 # MiniMax-H3 在线服务
 
-> 八卡 CUDA H3 Base 推荐 Sage-FP8 全并行 Streaming＋BF16 AdaLN 表，NPU 推荐 Laser INT8 全并行 Streaming。当前推荐示例 JSON 统一为 **20 次实际 Base DiT**；需先[准备匹配资产](H3-VIDEO-QUICKSTART.md#准备模型和输入)。目录模式按步数选表，固定表必须匹配；配置更改后重启服务。
+> 八卡 CUDA H3 Base 推荐 Sage-FP8 全并行 Streaming＋BF16 AdaLN 表，NPU 推荐 VC＋Ascend 融合 INT8 全并行 Streaming。当前推荐示例 JSON 统一为 **20 次实际 Base DiT**；需先[准备匹配资产](H3-VIDEO-QUICKSTART.md#准备模型和输入)。目录模式按步数选表，固定表必须匹配；配置更改后重启服务。
 
 从仓库根目录执行。先按 [权重下载](../README.md#h3-权重下载) 准备模型和素材，并用 `python tools/collect_env.py` 确认当前环境能看到八张卡。以下示例绑定本机，默认端口为 5001。每次选择一个服务启动。
 
@@ -29,9 +29,11 @@ MaaS V2 使用官网错误信封，旧 MaaS 接口返回 HTTP 400、`error=inval
 
 ## NPU Base
 
-v0.5 默认 **Laser INT8全并行Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。T2VA/I2VA 5/10/15秒常驻推理复测与既有R2VA结果见[性能表](performance/h3-npu-full-parallel-streaming.md)，不作为HTTP SLA。
+v0.6 推荐入口默认 **VC＋Ascend 融合 INT8 全并行 Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。需先[安装 VC 和融合库](H3-NPU-FUSIONS.md)。当前[实测报告](performance/h3-v06-npu-vc-fusions.md)覆盖单图 R2VA 5/10 秒，其他形状与 HTTP 性能须单独验证；历史结果不重标为 VC。
 
 启动前使用 `TASK_QUEUE_ENABLE=2 COMBINED_ENABLE=1 MEMORY_FRAGMENTATION=1 ENCRYPTION_WEIGHT=false OMP_NUM_THREADS=8 HCCL_BUFFSIZE=512 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`；参数含义与回退见[默认方案](H3-NPU-DEFAULT.md)。
+
+两份 NPU Base／Ref2VA JSON 均已配置 `"atten":"vc"` 和 `"h3_opts":"all"`；需要回退时修改 JSON 并重启，不把离线的 attention／融合参数直接加到服务外层 CLI。
 
 先按 [模型准备](H3-DEPLOYMENT.md#4-模型与目录准备) 生成 Base Transformer 和 AdaLN 表。下面的服务接收 T2VA 和 I2VA。
 

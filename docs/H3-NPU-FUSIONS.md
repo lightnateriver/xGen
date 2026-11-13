@@ -89,4 +89,4 @@ OUTPUT_PATH=outputs/vc-fusions.mp4 bash example/diffusers/scripts/run_h3.sh \
 
 CPU 配置/回退测试不能替代 AscendC 编译、设备数值或画面及音频验收。模型规模和全并行显存预算沿用原配方；VC 临时工作区、融合缓冲区的显存增量及实际时延需按设备实测，不能预先保证下降。
 
-2026-11-12 已完成八卡 910B3、单图 R2VA 5s/10s、20 次实际 DiT 的设备检查与样例画面/音频验收。相对同机 Laser 基线，E2E 降低 10.01% / 12.22%；峰值 allocated 基本相同，reserved 有增加。[当前性能、显存及验收范围](performance/README.md)。
+2026-11-12 已完成八卡 910B3、单图 R2VA 5s/10s、20 次实际 DiT 的设备检查与样例画面/音频验收。相对同机 Laser 基线，E2E 降低 10.01% / 12.22%；峰值 allocated 基本相同，reserved 有增加。[该 910B3 批次历史记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-v06-npu-vc-fusions.md)。

@@ -14,7 +14,7 @@ xGen 是面向 NVIDIA GPU 和昇腾 NPU 的音视频生成引擎，支持命令�
 
 视频示例统一按 **20 次实际 Base DiT**；H3-Image 是独立的 6 步模型。配置的验证设备、输入范围和人工精度状态见各报告，不保证任意满载输入都能运行。
 
-NPU 方案需先[安装 VC 与融合依赖](docs/H3-NPU-FUSIONS.md)。当前整网性能与人工视听验收覆盖八卡 910B3、单图 R2VA、5／10 秒、20 步；其他任务、多图与时长组合需分别验证。
+NPU 方案需先[安装 VC 与融合依赖](docs/H3-NPU-FUSIONS.md)。性能总表采用提供的 910B2 端到端数据；性能数值、技术检查和人工画面／声音验收分别记录。
 
 R2VA 条件准备重叠为[独立实验开关](docs/H3-CONDITION-OVERLAP.md)，CUDA/NPU 默认均关闭。旧 FP8 Linear＋BF16 attention 参考方案及其他回退方式保留在 CUDA 教程中。
 
@@ -92,7 +92,7 @@ NPU 启动前还需设置[配套环境变量](docs/H3-VIDEO-QUICKSTART.md#npu)�
 
 ## 性能
 
-[查看当前性能对比总表](docs/performance/README.md)：8 卡、20 步、768P，覆盖 T2VA、I2VA、R2VA 单图／五图的 5／10／15 秒，列出 5090 Sage-FP8 与 NPU VC 全并行 Streaming 的已有结果、显存峰值和待测项。采集环境及计时不同，不作为严格跨设备加速比。
+[查看当前性能对比总表](docs/performance/README.md)：8 卡、20 步、768P，覆盖 T2VA、I2VA、R2VA 单图／五图的 5／10／15 秒，列出 5090 Sage-FP8 最新在线结果、显存峰值，以及来源表的 910B2 端到端／去噪耗时。采集环境及计时不同，不作为严格跨设备加速比。
 
 ## 更多文档
 

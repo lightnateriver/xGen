@@ -6,7 +6,7 @@
 |---|---|---|
 | 八卡 RTX 5090，768P Base | Sage-FP8 全并行、BF16 AdaLN 表、Native-stream；SP8、文本 FP8 TP8、PHAA2、DiT 全常驻 | [CUDA 配方与单项开关](H3-CUDA-COMPOSABLE.md) |
 | 八卡昇腾，768P Base | VC＋Ascend 融合、DiT INT8、AdaLN 表、全并行、Native-stream；SP8、文本 TP8、PHAA2 | [NPU 默认方案](H3-NPU-DEFAULT.md) |
-| 八卡 910B3，已评审范围 | 单图 R2VA 5s/10s、20 步 | [性能与验收范围](performance/README.md) |
+| 八卡 910B3，已评审范围 | 单图 R2VA 5s/10s、20 步 | [该批验收范围](H3-NPU-DEFAULT.md#性能与验收范围) |
 | 八卡昇腾，2K | 20 次 Base DiT＋3 次 Refiner，独立 legacy VAE 链路 | [2K 资产与部署](H3-DEPLOYMENT.md) |
 
 CUDA 当前组合已有 12 项真实在线 20 步技术验证，完整动态、口型和听音人工复核待完成。NPU VC 的画面与声音认可仅覆盖已评审的单图 R2VA 5s/10s 样例。详细结果见[性能索引](performance/README.md)，不要把不同设备或历史配方的数值直接比较。
@@ -114,7 +114,7 @@ bash example/diffusers/scripts/run_h3.sh npu r2va 5 768p inputs/ref01.png -- \
   --h3-opts none
 ```
 
-已评审的性能与质量范围为八卡 910B3、单图 R2VA、5s/10s、20 步。`all` 是请求开启各项，实际命中由形状、后端及已安装库决定；看各 rank 的命中与回退日志。需要回退历史 attention 和原算子时用 `--atten laser --h3-opts none`。详见[同机性能与验收范围](performance/README.md)。
+已评审的性能与质量范围为八卡 910B3、单图 R2VA、5s/10s、20 步。`all` 是请求开启各项，实际命中由形状、后端及已安装库决定；看各 rank 的命中与回退日志。需要回退历史 attention 和原算子时用 `--atten laser --h3-opts none`。当前 910B2 数据与该批历史验收的区别见[NPU 验收范围](H3-NPU-DEFAULT.md#性能与验收范围)。
 
 ## 2K：独立 Base → Refiner 链路
 

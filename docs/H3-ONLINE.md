@@ -29,7 +29,7 @@ MaaS V2 使用官网错误信封，旧 MaaS 接口返回 HTTP 400、`error=inval
 
 ## NPU Base
 
-v0.6 推荐入口默认 **VC＋Ascend 融合 INT8 全并行 Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。需先[安装 VC 和融合库](H3-NPU-FUSIONS.md)。当前[实测报告](performance/README.md)覆盖单图 R2VA 5/10 秒，其他形状与 HTTP 性能须单独验证；历史结果不重标为 VC。
+v0.6 推荐入口默认 **VC＋Ascend 融合 INT8 全并行 Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。需先[安装 VC 和融合库](H3-NPU-FUSIONS.md)。当前[性能总表](performance/README.md)按所提供的 910B2 对照列回填 12 项；源表端到端口径不当作本 HTTP 服务 SLA，显存与人工验收范围按来源分别记录。
 
 启动前使用 `TASK_QUEUE_ENABLE=2 COMBINED_ENABLE=1 MEMORY_FRAGMENTATION=1 ENCRYPTION_WEIGHT=false OMP_NUM_THREADS=8 HCCL_BUFFSIZE=512 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`；参数含义与回退见[默认方案](H3-NPU-DEFAULT.md)。
 

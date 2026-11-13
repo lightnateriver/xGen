@@ -92,7 +92,7 @@ NPU 启动前还需设置[配套环境变量](docs/H3-VIDEO-QUICKSTART.md#npu)�
 
 ## 性能
 
-[查看当前性能对比总表](docs/performance/README.md)：8 卡、20 步、768P，覆盖 T2VA、I2VA、R2VA 单图／五图的 5／10／15 秒，列出 5090 Sage-FP8 最新在线结果、显存峰值，以及来源表的 910B2 端到端／去噪耗时。采集环境及计时不同，不作为严格跨设备加速比。
+[查看当前性能对比总表](docs/performance/README.md)：视频区块覆盖 8 卡、20 步、768P 的 T2VA、I2VA、R2VA 单图／五图；Image 区块单独列出 910B1 NPU 与 5090 Sage 的 40 项图像 case 汇总。视频采集环境及计时不同，不作为严格跨设备加速比。
 
 ## 更多文档
 

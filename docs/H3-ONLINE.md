@@ -29,7 +29,7 @@ MaaS V2 使用官网错误信封，旧 MaaS 接口返回 HTTP 400、`error=inval
 
 ## NPU Base
 
-v0.6 推荐入口默认 **VC＋Ascend 融合 INT8 全并行 Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。需先[安装 VC 和融合库](H3-NPU-FUSIONS.md)。当前[实测报告](performance/h3-v06-npu-vc-fusions.md)覆盖单图 R2VA 5/10 秒，其他形状与 HTTP 性能须单独验证；历史结果不重标为 VC。
+v0.6 推荐入口默认 **VC＋Ascend 融合 INT8 全并行 Streaming**，T2VA/I2VA/R2VA均包含SP8/text TP8/PHAA2、AdaLN查表、实际20步、通用full-parallel和Native-stream。T2VA/I2VA FFN chunk0，R2VA另使用chunk2048；无图时视觉编码不执行，长音频并行覆盖10/15秒形状。先在示例JSON配置可信原生`video_vae`路径。需先[安装 VC 和融合库](H3-NPU-FUSIONS.md)。当前[实测报告](performance/README.md)覆盖单图 R2VA 5/10 秒，其他形状与 HTTP 性能须单独验证；历史结果不重标为 VC。
 
 启动前使用 `TASK_QUEUE_ENABLE=2 COMBINED_ENABLE=1 MEMORY_FRAGMENTATION=1 ENCRYPTION_WEIGHT=false OMP_NUM_THREADS=8 HCCL_BUFFSIZE=512 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`；参数含义与回退见[默认方案](H3-NPU-DEFAULT.md)。
 
@@ -47,7 +47,7 @@ R2VA 单独启动。使用 `example/diffusers/configs/h3_npu_ref2va.example.json
 
 ## CUDA Base
 
-GPU 的 Sage-FP8 全并行 Streaming 预设默认开启每 peer 16字节包对齐。关闭时在启动前设置 `export XGEN_PHAA_FP8_ALIGN16=0`，所有 rank 必须一致，修改后重启服务。配置与回退见[Align16指南](H3-PHAA-FP8-ALIGNMENT.md)，八卡20步T2VA/I2VA/R2VA的12项真实在线结果见[性能对比](performance/h3-cuda-phaa-align16.md)。
+GPU 的 Sage-FP8 全并行 Streaming 预设默认开启每 peer 16字节包对齐。关闭时在启动前设置 `export XGEN_PHAA_FP8_ALIGN16=0`，所有 rank 必须一致，修改后重启服务。配置与回退见[Align16指南](H3-PHAA-FP8-ALIGNMENT.md)，八卡20步T2VA/I2VA/R2VA的12项真实在线结果见[性能对比](performance/README.md)。
 
 默认配置为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-CUDA-ADALN.md)。准备完整 Base 模块、相应 FL2VA／Ref2VA 表及剔除权重后的 Transformer。推荐 `--service-mode t2va`；`t2va` 与 `fl2va` 两种服务模式均使用 FL2VA 模型，同时接受 T2VA / I2VA。R2VA 独立使用 ref2va 模式和对应资产。保留的 [fp8-bf16 JSON](../example/diffusers/configs/h3_cuda_bf16.example.json) 可直接回退原精度方案；改变配方需重启服务。
 
@@ -72,7 +72,7 @@ torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --s
 
 ### RTX 5090 R2VA 全并行
 
-此方案复用原 Base HTTP 服务，面向八卡 RTX 5090；R2VA 的 MaaS 输入使用参考媒体协议。已有[全 12 项在线技术验证](performance/h3-cuda-phaa-align16.md)，完整人工动态／口型／听音复核及更多媒体组合、长期压测仍按各自状态记录。先修改 JSON 中的模型路径，再启动：
+此方案复用原 Base HTTP 服务，面向八卡 RTX 5090；R2VA 的 MaaS 输入使用参考媒体协议。已有[全 12 项在线技术验证](performance/README.md)，完整人工动态／口型／听音复核及更多媒体组合、长期压测仍按各自状态记录。先修改 JSON 中的模型路径，再启动：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --service-mode ref2va --config example/diffusers/configs/h3_cuda5090_ref2va.example.json --host 127.0.0.1 --port 5001
@@ -80,7 +80,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_ser
 
 使用下文 R2VA 的 `/generate` 请求。`duration` 可填4至15的整数，`ref_path` 使用服务能够访问的参考文件，`num_inference_steps`填实际DiT步数。单项优化、并行布局和精度由服务启动时确定，生成请求不能更改；更改启动配置后重启服务。常驻请求可以更换prompt、时长和参考素材，请求内条件结果不会跨请求复用。
 
-初始化、生成请求和HTTP下载是不同计时边界；离线表的生成保存耗时不能作为HTTP端到端延迟。[配置与回退](H3-CUDA-COMPOSABLE.md) · [功能测试和性能](performance/h3-cuda5090-full-parallel.md)
+初始化、生成请求和HTTP下载是不同计时边界；离线表的生成保存耗时不能作为HTTP端到端延迟。[配置与回退](H3-CUDA-COMPOSABLE.md) · [功能测试和性能](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda5090-full-parallel.md)
 
 ### 历史 NVFP4 的 15 秒 I2VA
 

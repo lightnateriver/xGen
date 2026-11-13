@@ -21,7 +21,7 @@ bash example/diffusers/scripts/run_h3.sh cuda-5090 r2va 5 768p inputs/ref01.png
 
 新预设默认使用：主干 SP8、Sage attention、FP8 W8A8 Linear、文本 FP8 TP8、PHAA2 双向 FP8、直接 stride 打包、SAP 本地 FP32 输出、本地输入投影、请求内固定条件复用、Token Refiner SP8/cuDNN BF16/FP8 FFN、视觉 SP8、VAE Encoder tile 分工、Audio Encoder 卷积分工和长音频 Decoder 分工。DiT 全部常驻 GPU，包括条件编码和 VAE 阶段。视频 decoder 默认改为 `native-stream`：原生 decoder、FP16 autocast、全 rank tile 分派、分块 RGB8 和异步 D2H/编码；输出头及音频计算的既有精度不变。Audio Decoder 的 `long` 在 5 秒形状走原实现；Audio Encoder 在没有参考音频时不会执行。
 
-`video_vae` 是独立的原生模型目录，不是 Diffusers `vae` 子目录。授权变量只应用于可信模型代码。新后端初始化更慢，CPU master 和显存代价见 [VAE 教程](H3-OMNI-VAE.md)。[离线 Streaming 矩阵](performance/h3-cuda-streaming-matrix.md) 区分 owner 与 table；历史 legacy decoder 表单独保留。
+`video_vae` 是独立的原生模型目录，不是 Diffusers `vae` 子目录。授权变量只应用于可信模型代码。新后端初始化更慢，CPU master 和显存代价见 [VAE 教程](H3-OMNI-VAE.md)。[离线 Streaming 矩阵](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-streaming-matrix.md) 区分 owner 与 table；历史 legacy decoder 表单独保留。
 
 CUDA 推荐配方仅把 native decoder 的 Linear 预存为 FP16，其他参数保持 FP32，计算仍是 FP16 autocast；复用旧解码器同一策略以减少静态占用。解码前释放请求内条件结果并回收空闲缓存，DiT 仍全常驻。NPU 的 VAE 存储沿用既有实现；原生 FP32 组件测量路径不变。
 
@@ -81,7 +81,7 @@ TP／CP 传输由 `--h3_tp_comm bf16|fp8` 和 `--h3_cp_comm auto|bf16|fp8` 控�
 
 ## 在线服务
 
-原 HTTP 服务支持同一套启动参数和 JSON 字段。八卡 5090 的 T2VA/I2VA、R2VA 单图／五图 5/10/15 秒已有 [12 项 20 步在线技术验证](performance/h3-cuda-phaa-align16.md)，完整人工动态／口型／听音复核待记录；不代表全部媒体组合或 MaaS 压测已通过。由启动配置决定开关，生成请求不能覆盖权重／并行布局／精度；如需改变，重启 worker。MaaS 复用既有 R2VA 协议和输入限制，独立部署对应工作流。
+原 HTTP 服务支持同一套启动参数和 JSON 字段。八卡 5090 的 T2VA/I2VA、R2VA 单图／五图 5/10/15 秒已有 [12 项 20 步在线技术验证](performance/README.md)，完整人工动态／口型／听音复核待记录；不代表全部媒体组合或 MaaS 压测已通过。由启动配置决定开关，生成请求不能覆盖权重／并行布局／精度；如需改变，重启 worker。MaaS 复用既有 R2VA 协议和输入限制，独立部署对应工作流。
 
 修改仓库提供的 [在线示例 JSON](../example/diffusers/configs/h3_cuda5090_ref2va.example.json) 中的模型目录。示例已配置 Ref2VA、SP8、文本 TP8、全并行预设、DiT 常驻和20步；无需手动拼接优化开关。启动：
 
@@ -97,4 +97,4 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_ser
 
 CPU 配置契约、八 rank Gloo 输入／输出四组合和 BF16／FP8 桥接协议测试，与真实八卡成片测试分开。FP8 桥接协议逐字节匹配量化 oracle，只证明实现符合该协议，不能证明与未量化模型精度相同。旧源码 Git 历史不在源码包时，AST 历史比较会跳过，不能计作通过。NPU／Wan 本轮主要做默认配置和分派回归，不把 CUDA 实测当成它们的成片验证。
 
-五项真实20步结果及追加兼容性测试见 [公开性能与验证记录](performance/h3-cuda5090-full-parallel.md)。初始化、预热、正式请求、技术解码和人工画面／音频复核分别记录。五图15秒峰值allocated约28.33GiB/卡、reserved约30.39GiB/卡，接近32GiB设备容量；这不是9图或音视频满载的容量承诺。CPU master及VAE staging仍占用主机内存；全常驻不会消除临时张量与通信缓冲。
+五项真实20步结果及追加兼容性测试见 [公开性能与验证记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda5090-full-parallel.md)。初始化、预热、正式请求、技术解码和人工画面／音频复核分别记录。五图15秒峰值allocated约28.33GiB/卡、reserved约30.39GiB/卡，接近32GiB设备容量；这不是9图或音视频满载的容量承诺。CPU master及VAE staging仍占用主机内存；全常驻不会消除临时张量与通信缓冲。

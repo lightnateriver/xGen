@@ -83,8 +83,8 @@ Native-stream 在 CUDA/NPU 上统一复用原 decoder 的 Linear 存储策略：
 pytest x_diffusers/tests/test_h3_omni_decode.py -q
 ```
 
-设置 `XGEN_TEST_NATIVE_VAE` 为可信原生 `video_vae` 路径，可运行 CUDA 小尺寸解码、连续两次请求权重复用和失败后 CPU master 恢复测试。测试结果见 [CUDA 组件性能与精度](performance/h3-omni-vae.md)和 [910B3 三后端性能](performance/h3-vae-npu.md)。两份报告的音频与环境口径不同，不直接计算跨硬件加速比。
+设置 `XGEN_TEST_NATIVE_VAE` 为可信原生 `video_vae` 路径，可运行 CUDA 小尺寸解码、连续两次请求权重复用和失败后 CPU master 恢复测试。测试结果见 [CUDA 组件性能与精度](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-omni-vae.md)和 [910B3 三后端性能](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-vae-npu.md)。两份报告的音频与环境口径不同，不直接计算跨硬件加速比。
 
-默认切换后的回归、两次真实 CUDA 请求及实际 OOM 处理见 [提交验证记录](performance/h3-vae-release.md)。小尺寸 FP16 Linear 存储对比的 RGB8 最大差为 1，不宣称逐像素等价或继承旧 decoder 的人工精度认可。
+默认切换后的回归、两次真实 CUDA 请求及实际 OOM 处理见 [提交验证记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-vae-release.md)。小尺寸 FP16 Linear 存储对比的 RGB8 最大差为 1，不宣称逐像素等价或继承旧 decoder 的人工精度认可。
 
-当前共享 Linear FP16 策略的八卡 910B1 整网复测见 [统一存储验证](performance/h3-native-shared-fp16.md)。历史表格的 FP32 存储口径保留，不与新配置混算。
+当前共享 Linear FP16 策略的八卡 910B1 整网复测见 [统一存储验证](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-native-shared-fp16.md)。历史表格的 FP32 存储口径保留，不与新配置混算。

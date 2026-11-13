@@ -1,51 +1,33 @@
-# 性能与验证记录
+# H3 视频性能对比（20 步）
 
-[项目首页](../../README.md) · [文档目录](../README.md) · [20 步视频启动](../H3-VIDEO-QUICKSTART.md)
+两套方案均为 **8 卡、768P（1344×768）、20 次实际 Base DiT、模型常驻、匹配形状完整预热一次后正式测一次**，不含初始化。表内仅列当前方案的已有完整请求结果。
 
-**当前推荐视频方案看 20 步报告；历史 50 步、不同解码器及组件微基准分别保留。** 本次文档整理没有重新运行性能测试，不改变已有数据和人工验收状态。
+- **RTX 5090：Sage-FP8 全并行 Streaming＋BF16 AdaLN 表＋Align16**，SP8、文本 FP8 TP8、FP8 Linear／PHAA、50 层 DiT 常驻、native-stream。
+- **昇腾 910B3：VC attention＋Ascend 融合 INT8 全并行 Streaming＋AdaLN 表**，SP8、文本 TP8、PHAA2、50 层 DiT 常驻、native-stream。
 
-## 当前音视频方案
+耗时单位为秒。显存为每卡 PyTorch 峰值 **allocated / reserved**，单位 GiB，取八个 rank 最大值；不是驱动显存。
 
-| 设备／方案 | 报告与数据 | 范围与验收 |
-|---|---|---|
-| CUDA 5090，Sage-FP8 全并行 Streaming＋AdaLN＋Align16 | [12 项在线性能与显存](h3-cuda-phaa-align16.md) · [CSV](h3-cuda-phaa-align16.csv) | T2VA/I2VA、R2VA 单图／五图，5／10／15 秒，20 步；12 项技术通过，完整人工动态／口型／听音待记录；跨节点差异不能全部归于 Align16 |
-| CUDA 5090，同系列 Streaming 离线 | [输入规格、性能与显存](h3-cuda-streaming-matrix.md) · [CSV](h3-cuda-streaming-matrix.csv) | 20 步；owner／table 逐项标明，不能当作统一 table-only 对照 |
-| NPU 910B3，VC＋Ascend 融合、INT8 全并行 Streaming＋AdaLN | [同机对照、显存及算子命中](h3-v06-npu-vc-fusions.md) | R2VA 单图 5／10 秒、20 步，样例画面与声音已验收；未覆盖 T2VA/I2VA、五图或其他时长组合，真实 HTTP 性能另验 |
-| 跨设备 native-stream 存储与默认切换 | [共享 FP16 存储](h3-native-shared-fp16.md) · [后端发布验证](h3-vae-release.md) | 单模块、单步接入与完整请求分开，不将容量冒烟当作完整精度或加速结论 |
-| CUDA v0.5 整理合入回归 | [三条 20 步冒烟与配置](h3-v05-cuda-release-validation.md) | T2VA/I2VA/R2VA；不能取代当前矩阵 |
+| 任务 | 视频时长 | 原始输入图 | 5090 推理 s | 5090 DiT s | 5090 显存 GiB | NPU VC 推理 s | NPU DiT s | NPU 显存 GiB |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| T2VA | 5s | 无 | 33.517 | 25.895 | 25.914 / 26.580 | 待测 | 待测 | 待测 |
+| T2VA | 10s | 无 | 70.696 | 61.875 | 25.961 / 26.701 | 待测 | 待测 | 待测 |
+| T2VA | 15s | 无 | 127.312 | 117.090 | 26.008 / 26.746 | 待测 | 待测 | 待测 |
+| I2VA | 5s | 1×1280×720 | 32.614 | 25.387 | 26.105 / 26.859 | 待测 | 待测 | 待测 |
+| I2VA | 10s | 1×1280×720 | 73.195 | 64.420 | 26.152 / 26.883 | 待测 | 待测 | 待测 |
+| I2VA | 15s | 1×1280×720 | 131.369 | 120.131 | 26.199 / 26.967 | 待测 | 待测 | 待测 |
+| R2VA 单图 | 5s | 1×2560×1440 | 46.672 | 37.004 | 26.192 / 26.975 | 77.202 | 62.207 | 31.121 / 34.570 |
+| R2VA 单图 | 10s | 1×2560×1440 | 92.873 | 82.069 | 26.239 / 26.961 | 170.123 | 151.042 | 31.183 / 36.750 |
+| R2VA 单图 | 15s | 1×2560×1440 | 156.012 | 142.985 | 26.287 / 26.986 | 待测 | 待测 | 待测 |
+| R2VA 五图 | 5s | 5×2560×1440 | 137.455 | 118.095 | 26.505 / 28.568 | 待测 | 待测 | 待测 |
+| R2VA 五图 | 10s | 5×2560×1440 | 212.932 | 191.025 | 26.552 / 28.670 | 待测 | 待测 | 待测 |
+| R2VA 五图 | 15s | 5×2560×1440 | 300.270 | 276.078 | 26.599 / 28.434 | 待测 | 待测 | 待测 |
 
-## H3-Image
+**待测**：没有匹配当前 VC 全并行配方的完整 20 步记录。现有 NPU VC 结果仅单图 R2VA 5s／10s 两项，不用旧 attention、其他 VAE 或单步容量探针填表。
 
-| 报告 | 范围 |
-|---|---|
-| [40 项性能与输入 shape](h3-image-npu-40cases.md) · [CSV](h3-image-npu-40cases.csv) | 四卡 NPU、6 步、历史文本 BF16；36 项生成成功、4 项预期拒绝，人工画质状态逐项记录 |
-| [Image 首版发布验证](h3-image-v06-release-validation.json) | 合入前硬件证据与合入后 CPU 检查分开 |
-| [文本 W8A8 验证摘要](h3-image-text-w8a8-default-validation.json) · [实测解释](../H3-IMAGE-TEXT-INT8.md) | 当前 NPU 文本 W8A8 主要减少显存，未证明稳定提速；旧 40 项矩阵不能重标为文本 INT8 |
+**计时与输入**：5090 是在线服务端推理，包含条件编码、DiT、流式解码及重叠编码，不含 HTTP 排队、轮询和下载；NPU 是常驻 Manager 推理至 MP4 保存，排除模型准备。两边分别采集，软件版本和计时实现不同，不作为严格受控的跨设备横评，不计算跨平台加速比。R2VA 输入图按默认短边 2048 处理；图片尺寸为原图尺寸。
 
-## 历史完整视频性能
+**验收**：5090 的 12 项正式请求及匹配预热均技术通过，完整人工动态／口型／听音复核待记录；NPU 两项 VC 样例技术检查和人工画面／声音验收通过。单次测量不代表稳定时延分布，不能推广到更多输入。
 
-| 报告 | 适合查看什么 |
-|---|---|
-| [NPU Laser INT8 全并行历史参考](h3-npu-full-parallel-streaming.md) · [CSV](h3-npu-full-parallel-streaming.csv) | 910B1、20 步；T2VA/I2VA 与既有 R2VA 的代码版本分开记录，常驻推理保存；不是当前 VC 配方的验证或 HTTP SLA |
-| [原首页历史性能汇总](h3-historical-overview.md) | B1/B3 的 20 步旧矩阵、50 步在线／离线表、早期 GPU/NVFP4 与 legacy decoder 对照，原始口径保留 |
-| [NPU 35 项离线 benchmark](h3-npu-offline-20261105.md) · [正式 CSV](h3-npu-offline-20261105.csv) · [预热 CSV](h3-npu-offline-20261105-warmup.csv) | 20 步、768P／2K、多媒体参考；使用已移除的阶段清理策略，不能视为当前策略回归 |
-| [NPU 50 步在线／离线](historical-pairs.csv) · [阶段拆分](historical-stages.csv) | 历史 B2/B3（B2 实际为 910B1）、冷启动／补测与缺失 E2E 标记 |
-| [GPU 历史完整对照](h3-cuda.md) · [Sage 20 步 CSV](h3-cuda-sage-20step.csv) | 旧 FP8／BF16、NVFP4、Sparge、不同 VAE，不能直接与当前推荐方案比较 |
-| [v0.4 R2VA 全并行](h3-cuda5090-full-parallel.md) | 旧解码器、条件暂存与早期整网优化的版本边界 |
-| [v0.2 冒烟](v02-smoke.csv) · [旧验证摘要](validation-summary.json) | 早期超分链路与兼容性记录 |
+**数据版本**：5090 采集于 2026-11-11～12，NPU VC 采集于 2026-11-12；本次仅整理现有记录，没有重新测量。原始报告保留在 Git 历史提交 `6822583e0021e3ca64701d7c8aa49789a0d55f1c`，过程文档不再单列。
 
-## 组件与实验
-
-| 报告 | 边界 |
-|---|---|
-| [条件准备重叠](h3-condition-overlap.md) | 默认关闭；CUDA 组件计时和 1 步容量／张量对照，非 20 步 E2E，NPU 真机待验收 |
-| [VAE 三后端](h3-omni-vae.md) · [NPU 三后端](h3-vae-npu.md) | 最小组件测试，不能直接解释为整网加速或成片精度 |
-| [TP/CP](h3-cuda-tp-cp.md) · [布局时延](h3-cuda-tp-cp-latency.md) | 实验布局，单层合成结果与完整视频分开 |
-| [CPU 可见水印](h3-watermark-cpu.md) | 仅测编码前水印增量，不是模型推理收益 |
-
-## 阅读口径
-
-- 核对设备／卡数、代码版本、输入文本长度及媒体 shape、输出时长／分辨率、精度、并行布局和实际步数。
-- 核对初始化、预热、重复次数、计时起止；推理、保存、HTTP、下载不是同一个范围。
-- 显存区分驱动占用与 PyTorch allocated/reserved，主机内存区分 RSS/PSS；有限样本不能证明长期无泄露。
-- 技术解码、抽帧诊断、人工动态／口型／听音分别记录，不沿用到未经验证的新配置。
+[视频启动教程](../H3-VIDEO-QUICKSTART.md) · [CUDA 配置](../H3-CUDA-COMPOSABLE.md) · [NPU 配置](../H3-NPU-DEFAULT.md)

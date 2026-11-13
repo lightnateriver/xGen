@@ -1,6 +1,6 @@
 # v0.5 CUDA 默认方案与提交范围
 
-GPU 的 Sage-FP8 全并行 Streaming 预设现默认包含同步 PHAA FP8 Align16，沿用现有 transport，设置 `XGEN_PHAA_FP8_ALIGN16=0` 可独立关闭。在线 native-stream 生成的文件通过既有原子发布器交付，在线15秒按360帧交付。该文件交付修复与批测配置一起验证。[Align16配置与回退](H3-PHAA-FP8-ALIGNMENT.md) · [12项在线性能及验证范围](performance/h3-cuda-phaa-align16.md)
+GPU 的 Sage-FP8 全并行 Streaming 预设现默认包含同步 PHAA FP8 Align16，沿用现有 transport，设置 `XGEN_PHAA_FP8_ALIGN16=0` 可独立关闭。在线 native-stream 生成的文件通过既有原子发布器交付，在线15秒按360帧交付。该文件交付修复与批测配置一起验证。[Align16配置与回退](H3-PHAA-FP8-ALIGNMENT.md) · [12项在线性能及验证范围](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-phaa-align16.md)
 
 本次基于 v0.5 的 `1883308` 整理 CUDA 开发代码。保留其 NPU Laser INT8 + Stream 默认、跨设备组件调度和共用 VAE 实现。
 
@@ -36,6 +36,6 @@ GPU 的 Sage-FP8 全并行 Streaming 预设现默认包含同步 PHAA FP8 Align1
 3. 用原 `run_h3.sh cuda ...` 或在线 JSON 启动；日志应显示 `fp8-sage`、`native-stream`、`BF16 table, weights absent`。
 4. 回退查表用 `--h3_cuda_adaln_mode owner`；回退旧精度用 `--h3_cuda_preset none --h3_cuda_precision fp8-bf16`。改变启动配方需重启服务。
 
-最新 [12 项 Streaming 矩阵](performance/h3-cuda-streaming-matrix.md) 逐条标明 owner／table，不能作为统一 table-only 的性能对照。Max 1:4 多图场景在视觉位置插值阶段仍可能 OOM，尚未修复；输入合法不代表显存容量足够。
+最新 [12 项 Streaming 矩阵](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-streaming-matrix.md) 逐条标明 owner／table，不能作为统一 table-only 的性能对照。Max 1:4 多图场景在视觉位置插值阶段仍可能 OOM，尚未修复；输入合法不代表显存容量足够。
 
-整理后版本已完成 T2VA、I2VA、单图 R2VA 三条八卡5秒20步冒烟，均技术通过；验证配置、耗时与精度范围见[本次合并回归](performance/h3-v05-cuda-release-validation.md)。
+整理后版本已完成 T2VA、I2VA、单图 R2VA 三条八卡5秒20步冒烟，均技术通过；验证配置、耗时与精度范围见[本次合并回归](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-v05-cuda-release-validation.md)。

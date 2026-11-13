@@ -101,4 +101,4 @@ XGEN_DEVICE=cuda PYTHONPATH=./server/video:./x_base:./x_diffusers \
   x_diffusers/tests/test_h3_cuda_decode_chunks.py server/video/test_cuda_precision.py
 ```
 
-无 CUDA 时部分算子测试会跳过；CPU 测试不能替代真实八卡出片。整理后离线及 MaaS 验证结果见 [性能与回归记录](performance/h3-cuda.md#整理后代码的默认路径回归)。
+无 CUDA 时部分算子测试会跳过；CPU 测试不能替代真实八卡出片。整理后离线及 MaaS 验证结果见 [性能与回归记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md#整理后代码的默认路径回归)。

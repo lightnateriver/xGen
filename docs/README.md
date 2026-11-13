@@ -30,7 +30,7 @@
 | 参考图片尺寸 | [短边参数与默认 2048](H3-REFERENCE-IMAGE-SIZE.md) |
 | Input Token Refiner | [配置与历史单模块测量](H3-INPUT-TOKEN-REFINER.md) |
 | 功能性测试与验收边界 | [功能测试记录](H3-FUNCTIONAL-TESTS.md) |
-| 性能、显存和精度状态 | [性能目录](performance/README.md) |
+| 性能、显存和精度状态 | [当前视频性能总表](performance/README.md) |
 
 视频教程按 **20 次实际 Base DiT** 编写；2K Refiner 另计 3 步，H3-Image 固定 6 步。底层入口、历史配置和显式参数仍可使用其他步数，必须匹配相应权重和表。
 

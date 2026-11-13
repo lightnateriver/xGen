@@ -92,16 +92,7 @@ NPU 启动前还需设置[配套环境变量](docs/H3-VIDEO-QUICKSTART.md#npu)�
 
 ## 性能
 
-以下均为 **20 步、768P、完整预热后的单次正式样例**，排除初始化。CUDA 为服务端推理计时，NPU 为常驻推理至保存计时，不能直接跨设备比较。
-
-| 设备与方案 | 视频样例 | 耗时 | 完整报告 |
-|---|---|---:|---|
-| 8×5090，Sage-FP8 全并行 Streaming＋AdaLN＋Align16 | T2VA，5 秒 | 33.517 s | [12 项在线性能与显存](docs/performance/h3-cuda-phaa-align16.md) |
-| 同上 | R2VA 单图，5 秒 | 46.672 s | [同一报告](docs/performance/h3-cuda-phaa-align16.md) |
-| 8×910B3，VC＋Ascend 融合全并行 | R2VA 单图，5 秒 | 77.202 s | [NPU 性能与验收范围](docs/performance/h3-v06-npu-vc-fusions.md) |
-| 同上 | R2VA 单图，10 秒 | 170.123 s | [同一报告](docs/performance/h3-v06-npu-vc-fusions.md) |
-
-CUDA 12 项已通过技术检查，完整人工动态／口型／听音复核待记录；NPU 验收限定上述已评审样例。更多 5／10／15 秒、2K、历史 50 步及 H3-Image 数据见[性能目录](docs/performance/README.md)，历史值保留原始条件。
+[查看当前性能对比总表](docs/performance/README.md)：8 卡、20 步、768P，覆盖 T2VA、I2VA、R2VA 单图／五图的 5／10／15 秒，列出 5090 Sage-FP8 与 NPU VC 全并行 Streaming 的已有结果、显存峰值和待测项。采集环境及计时不同，不作为严格跨设备加速比。
 
 ## 更多文档
 

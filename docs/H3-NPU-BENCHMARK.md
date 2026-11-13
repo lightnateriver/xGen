@@ -32,7 +32,7 @@ python tools/bench_h3_npu.py --manifest inputs/bench/cases.json --output outputs
   --base-adaln model-cache/t2va-21step.safetensors --ref-adaln model-cache/ref2va-21step.safetensors
 ```
 
-只检查链路、每项只跑一次时，去掉 `--warmup-per-case`。工具不会自动重试失败请求。测试报告示例见 [2026-11-04 至 05 的性能与内存数据](performance/h3-npu-offline-20261105.md)；那批使用的阶段性清理已移除，当前请求结束回收策略尚待完整设备验证。
+只检查链路、每项只跑一次时，去掉 `--warmup-per-case`。工具不会自动重试失败请求。测试报告示例见 [2026-11-04 至 05 的性能与内存数据](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-npu-offline-20261105.md)；那批使用的阶段性清理已移除，当前请求结束回收策略尚待完整设备验证。
 
 ## 多媒体探针与素材清单
 

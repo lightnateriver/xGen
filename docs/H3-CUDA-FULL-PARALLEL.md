@@ -8,4 +8,4 @@
 
 CUDA 推荐 T2VA/I2VA/R2VA 的视频 decoder 默认 native-stream，需可信原生 `video_vae` 目录和显式授权。旧精度配方继续保留，后端可用 `--h3_vae_backend legacy|lightning|native-stream` 覆盖；NPU 当前推荐见 [VC＋Ascend 融合 INT8 全并行 Streaming](H3-NPU-DEFAULT.md)。历史整网表使用 legacy decoder，新默认不继承其性能和精度结论。
 
-[性能与验证范围](performance/h3-cuda5090-full-parallel.md) · [在线服务](H3-ONLINE.md)
+[性能与验证范围](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda5090-full-parallel.md) · [在线服务](H3-ONLINE.md)

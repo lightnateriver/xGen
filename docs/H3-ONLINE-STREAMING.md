@@ -9,4 +9,4 @@
 
 CPU回归包含真实MP4原子发布／哈希保持、错请求文件拒绝、跨chunk裁剪与默认不裁剪、输出临时目录及已有MaaS路由。真实在线性能需分别记录完整预热、服务端推理／发布和HTTP提交／查询／下载；技术解码通过不等于人工精度认可。
 
-已完成八卡、20步、Sage-FP8全并行Streaming与BF16 AdaLN表的12项在线矩阵，每项完整预热一次及正式一次。逐项性能、输入规格、交付帧数和精度复核状态见[公开结果](performance/h3-cuda-phaa-align16.md)。
+已完成八卡、20步、Sage-FP8全并行Streaming与BF16 AdaLN表的12项在线矩阵，每项完整预热一次及正式一次。逐项性能、输入规格、交付帧数和精度复核状态见[公开结果](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-phaa-align16.md)。

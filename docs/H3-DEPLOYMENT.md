@@ -8,7 +8,7 @@
 
 ## 1. 先选运行路径和数据口径
 
-本页的原有命令使用 NPU。CUDA 环境、768P/2K 启动和 FastVideo 配方见 [CUDA 部署教程](H3-CUDA.md)，实测结果见 [CUDA 性能记录](performance/h3-cuda.md)。
+本页的原有命令使用 NPU。CUDA 环境、768P/2K 启动和 FastVideo 配方见 [CUDA 部署教程](H3-CUDA.md)，实测结果见 [CUDA 性能记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md)。
 
 | 路径 | 做什么 | 当前验证边界 |
 |---|---|---|
@@ -178,7 +178,7 @@ XGEN_DEVICE=npu ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 N_NPUS=8 \
 
 `FIRST_FRAME_ONLY=1` 只传首帧，`PROMPT_FILE` 读取 UTF-8 提示词。省略这两个变量时沿用原示例的首尾帧和示例提示词。默认使用 Laser、DiT/VAE INT8 线性、融合 RoPE 和优化 VAE decoder；八卡启动启用 SP8 与文本 TP8。确保 Transformer 和 AdaLN 路径都存在，启动日志应显示加载 50 步的预计算表。选择空闲的本地端口，避免使用依赖容器主机名解析的 rendezvous。
 
-[768P、50 次 DiT 实测](performance/h3-cuda.md#v031-双设备冒烟)
+[768P、50 次 DiT 实测](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md#v031-双设备冒烟)
 
 ## 6. v0.2 离线 2K 推理
 
@@ -362,7 +362,7 @@ Base、Refiner、VAE、upscaler 的 CPU master 常驻主机内存；HBM 按阶�
 
 单位为秒。A 的离线 T2VA 5 秒 768P 含冷启动；A 的离线 T2VA 15 秒 2K 完整 E2E 缺失，保持空值；A 的四条独立常驻补测不算成六条连续常驻。只有 34 组可计算同口径 B/A。
 
-完整匿名数据：[36 组请求 E2E](performance/historical-pairs.csv)、[72 条阶段与显存数据](performance/historical-stages.csv)、[验证范围](performance/validation-summary.json)。阶段 CSV 中 DiT/VAE 使用 device envelope，D2H 使用原记录的 host 口径；不能混加。历史实验运行器、内部 plan、原图、prompt、视频和机器定位信息不随源码发布，因此这部分是性能参考，而不是在 v0.2 中可原样运行的旧批测脚本。
+完整匿名数据：[36 组请求 E2E](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/historical-pairs.csv)、[72 条阶段与显存数据](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/historical-stages.csv)、[验证范围](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/validation-summary.json)。阶段 CSV 中 DiT/VAE 使用 device envelope，D2H 使用原记录的 host 口径；不能混加。历史实验运行器、内部 plan、原图、prompt、视频和机器定位信息不随源码发布，因此这部分是性能参考，而不是在 v0.2 中可原样运行的旧批测脚本。
 
 ### 10.2 本次 v0.2 重构回归，两个连续请求
 
@@ -375,7 +375,7 @@ Base、Refiner、VAE、upscaler 的 CPU master 常驻主机内存；HBM 按阶�
 
 请求周期含阶段资源切换、解码/导出与 Base 回装，是 worker 埋点口径，不是 HTTP 客户端 E2E；不与上表直接计算性能提升。两条最终文件均为 120 帧、24fps、H.264/AAC，完整解码通过；16 份 rank 指标实际调用数正确，模型/CPU master 身份稳定，所有 worker 退出后八卡无计算进程。
 
-八卡结束 allocated 的第二次增量均为 0；reserved 增加 576 MiB，短测不能判断长期泄漏。新回归没有逐请求边界 PSS 样本，不能宣称主机内存长期稳定。数据见 [v0.2 回归 CSV](performance/v02-smoke.csv)。
+八卡结束 allocated 的第二次增量均为 0；reserved 增加 576 MiB，短测不能判断长期泄漏。新回归没有逐请求边界 PSS 样本，不能宣称主机内存长期稳定。数据见 [v0.2 回归 CSV](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/v02-smoke.csv)。
 
 当前 v0.2 优先复用原 SaveAVStream、同步 D2H 和原编码默认参数；没有恢复旧独立导出器的全部异步 D2H/跨请求编码重叠。不要将旧性能表作为本版无性能回退的保证。
 

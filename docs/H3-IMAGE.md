@@ -2,7 +2,7 @@
 
 v0.6 独立的文生图／参考图编辑入口，合入最新v0.5的视频与GPU Align16更新。输出 PNG，使用 H3 Image 的图像 VAE、固定六步采样和每步独立 PDD 输出头。视频模型的 AdaLN 表、音频 VAE、Streaming MP4 配方不用于这个入口。
 
-四卡910B推荐使用[NPU W8A8常驻部署预设](H3-IMAGE-NPU-OPTIMIZATIONS.md#selected-npu-deployment)：`run_h3_image_npu.sh` 使用Qwen3-VL解码器W8A8＋文本TP4，以及图像专用AdaLN表、refiner/vision/VAE并行、FFN分块、RGB8和本地输入投影。NPU文本W8A8已成为命令行及Python加载入口的默认值；显式 `--no-image_text_int8` 可回退BF16，CUDA默认仍为BF16。文本INT8的4K短文本实测主要收益是节省显存，验证范围见[独立对照](H3-IMAGE-TEXT-INT8.md)。[40项全量性能与输入Shape](performance/h3-image-npu-40cases.md)记录的是文本BF16配置，36项生成成功、4项预期拒绝及功能局限。下方文生图／编辑示例使用当前NPU预设；复现首版BF16卸载基线时，改用 `run_h3_image.sh --no-image_text_int8`。
+四卡910B推荐使用[NPU W8A8常驻部署预设](H3-IMAGE-NPU-OPTIMIZATIONS.md#selected-npu-deployment)：`run_h3_image_npu.sh` 使用Qwen3-VL解码器W8A8＋文本TP4，以及图像专用AdaLN表、refiner/vision/VAE并行、FFN分块、RGB8和本地输入投影。NPU文本W8A8已成为命令行及Python加载入口的默认值；显式 `--no-image_text_int8` 可回退BF16，CUDA默认仍为BF16。文本INT8的4K短文本实测主要收益是节省显存，验证范围见[独立对照](H3-IMAGE-TEXT-INT8.md)。[40项全量性能与输入Shape](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-image-npu-40cases.md)记录的是文本BF16配置，36项生成成功、4项预期拒绝及功能局限。下方文生图／编辑示例使用当前NPU预设；复现首版BF16卸载基线时，改用 `run_h3_image.sh --no-image_text_int8`。
 
 ## 环境与权重
 

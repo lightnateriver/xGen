@@ -64,7 +64,7 @@ H3 的离线 Manager、HTTP 主 rank 和其他 worker rank 在各自请求输出
 
 `H3_REQUEST_MEMORY_RELEASE` 日志包含回收耗时及前后 allocated/reserved。离线推理及保存耗时包含回收；在线现有 inference 字段仍只表示生成阶段，回收单独记日志。该操作不卸载仍被引用的张量，也不能解决所有请求内部的峰值 OOM。
 
-NPU 和旧 CUDA 路径中，解码前与 latent 上采样前的实验性清理已经移除；旧环境开关不再生效。新的 CUDA fp8-bf16 配方在视频 decoder 前另外回收空闲缓存，保留全部活跃 DiT 权重。[2026-11-04 至 05 的 35 项性能数据](performance/h3-npu-offline-20261105.md) 使用的是旧实验策略，不能作为本次回收策略的设备验收结果。当前完整矩阵待新一轮验证。
+NPU 和旧 CUDA 路径中，解码前与 latent 上采样前的实验性清理已经移除；旧环境开关不再生效。新的 CUDA fp8-bf16 配方在视频 decoder 前另外回收空闲缓存，保留全部活跃 DiT 权重。[2026-11-04 至 05 的 35 项性能数据](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-npu-offline-20261105.md) 使用的是旧实验策略，不能作为本次回收策略的设备验收结果。当前完整矩阵待新一轮验证。
 
 ## benchmark 与素材
 

@@ -1,3 +1,0 @@
-request,mode,seconds,resolution,kind,worker_request_s,group_initialization_s,max_rank_peak_allocated_gib,rank0_allocated_after_gib,rank0_reserved_after_gib,base_actual_steps,refiner_actual_steps,technical_pass,manual_visual_review,manual_audio_review
-1,T2VA,5,2K,offline_resident,191.8238600329496,64.76713762397412,28.385188102722168,20.932759761810303,30.265625,50,3,True,pending,pending
-2,T2VA,5,2K,offline_resident,179.43286162399454,64.76713762397412,28.901044368743896,20.932759761810303,30.828125,50,3,True,pending,pending

@@ -76,4 +76,4 @@ H3_CUDA_PRECISION=fp8-bf16 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 
 
 本轮 FL2VA 原始 106 个参数合计 24.347 GiB；20／50 步表文件分别约 906.590／2294.228 MiB，包含全部条件。每个 rank 只加载当前条件；文件大小不等于每卡显存。对应对照峰值 allocated 约减少 3 GiB／卡，没有统一的耗时收益。
 
-48 项局部查表对照逐位一致；整网 owner／table 对照抽帧 SSIM 为 0.646～0.934，音频亦有差异。因此局部对照不代表整片逐位等价或人工精度认可。新默认需按业务素材审核画面、口型和声音。[最新矩阵及已知容量限制](performance/h3-cuda-streaming-matrix.md)
+48 项局部查表对照逐位一致；整网 owner／table 对照抽帧 SSIM 为 0.646～0.934，音频亦有差异。因此局部对照不代表整片逐位等价或人工精度认可。新默认需按业务素材审核画面、口型和声音。[最新矩阵及已知容量限制](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-streaming-matrix.md)

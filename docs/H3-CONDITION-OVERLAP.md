@@ -2,7 +2,7 @@
 
 `--h3_condition_overlap` 让参考图片／视频的 VAE 编码与 Qwen3-VL 文本／视觉编码同时进行。两支条件全部准备好后才进入 DiT。每个请求只准备一次，不改变 DiT 步数、Attention、量化精度、输入尺寸或现有 offload 策略。
 
-CUDA 和 NPU 使用同一个参数及实现，不需要设备专用开关。当前只支持 **MiniMax-H3 Base Ref2VA**，原生 SP 布局；不支持 H3-Image、T2VA/I2VA、2K Refiner 协调器或 TP/CP 实验布局。CUDA 的真实验证与 NPU 的待验证范围见[实测记录](performance/h3-condition-overlap.md)。
+CUDA 和 NPU 使用同一个参数及实现，不需要设备专用开关。当前只支持 **MiniMax-H3 Base Ref2VA**，原生 SP 布局；不支持 H3-Image、T2VA/I2VA、2K Refiner 协调器或 TP/CP 实验布局。CUDA 的真实验证与 NPU 的待验证范围见[实测记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-condition-overlap.md)。
 
 ## 开启与回退
 

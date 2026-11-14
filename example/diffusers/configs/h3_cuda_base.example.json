@@ -13,6 +13,7 @@
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
   "h3_vae_backend": "native-stream",
+  "h3_vae_torch_compile": false,
   "rope_fused": false,
   "transformer_path": null,
   "adaln_cache_file": null,

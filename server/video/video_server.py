@@ -243,6 +243,7 @@ DEFAULT_MINIMAX_H3_CONFIG = {
     "sp": 8,
     "fsdp": None,
     "h3_vae_backend": "native-stream",
+    "h3_vae_torch_compile": False,
     "h3_vae_model_path": None,
     "h3_vae_trust_remote_code": False,
     "h3_features": "full-parallel",
@@ -289,7 +290,7 @@ if device_type() == "cuda":
     DEFAULT_MINIMAX_H3_CONFIG.update({
         "h3_cuda_precision": "auto", "phaa_num": 2, "h3_cuda_vae_sp": True,
         "atten": "none", "matmul_quant": "none", "vae_matmul_quant": "none",
-        "h3_vae_backend": None, "vae_lightning": "none", "rope_fused": False,
+        "h3_vae_backend": None, "h3_vae_torch_compile": False, "vae_lightning": "none", "rope_fused": False,
         "h3_features": None, "h3_cuda_refiner_ff_chunk_size": None,
         "num_inference_steps": 50,
         "transformer_path": None, "adaln_cache_file": None,
@@ -3728,6 +3729,8 @@ def main():
                         help='CUDA H3 Base defaults to fp8-bf16; none selects legacy; NPU auto stays unchanged')
     parser.add_argument('--h3_vae_backend', choices=['legacy', 'lightning', 'native-stream'], default=None,
                         help='H3 decoder; changing the backend requires restarting the service')
+    parser.add_argument('--h3_vae_torch_compile', action=argparse.BooleanOptionalAction, default=None,
+                        help='CUDA-only opt-in Torch Compiler for the native-stream H3 VAE decoder tile subgraph; default off')
     parser.add_argument('--h3_vae_model_path', default=None, help='Trusted native H3 video_vae directory')
     parser.add_argument('--h3_vae_trust_remote_code', action='store_true', default=None,
                         help='Authorize loading Python code from the native H3 VAE directory')

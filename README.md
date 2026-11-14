@@ -18,6 +18,8 @@ NPU 方案需先[安装 VC 与融合依赖](docs/H3-NPU-FUSIONS.md)。性能总�
 
 R2VA 条件准备重叠为[独立实验开关](docs/H3-CONDITION-OVERLAP.md)，CUDA/NPU 默认均关闭。旧 FP8 Linear＋BF16 attention 参考方案及其他回退方式保留在 CUDA 教程中。
 
+CUDA 的 `native-stream` VAE 还提供默认关闭的 `--h3_vae_torch_compile` 选项。它只编译 VAE decoder tile 子图，不能用于 NPU、`legacy` 或 `lightning`；不加参数时完全保持 v0.6 行为。详见 [VAE 后端与 Torch Compiler](docs/H3-OMNI-VAE.md#torch-compilercuda-可选)。
+
 ## 快速开始
 
 在已有匹配的 PyTorch、CUDA 或 CANN、FFmpeg 环境中，从仓库根目录执行：

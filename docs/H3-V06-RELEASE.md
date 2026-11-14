@@ -67,3 +67,7 @@ v0.6以最新v0.5提交 `ca6b6f0adcca48e523d8b81f32c9b784c577f095` 为基线，�
 ## 2026-11-13：按指定 910B2 来源修正总表
 
 NPU 列改用提供的性能对照表“性能对照”工作表中 `B2:B13`（910B2 截图端到端）及 `C2:C13`（去噪），补齐 12 项，并移除混入的 910B3 显存与缺项判断。设备名称按原表记录；去噪保持原指标名称。5090 按本次确认继续采用最新在线 Align16 结果，不混入另附的 owner／table 离线矩阵。原表没有的显存、预热、配置日志与人工验收不补造；本次没有重新推理或修改运行代码。
+
+## 2026-11-14：CUDA native-stream Torch Compiler 开关
+
+新增默认关闭的 `--h3_vae_torch_compile`。它只在 CUDA、MiniMax-H3、`native-stream` 组合下编译 VAE decoder tile 子图；NPU、legacy 和 lightning 在启动校验阶段拒绝。未指定时不改变 v0.6 的 DiT、SageAttention、PHAA、文本 TP、VAE 后端或显存调度。开关属于服务启动配置，修改后需要重启；详见 [VAE 后端与 Torch Compiler](H3-OMNI-VAE.md#torch-compilercuda-可选)。

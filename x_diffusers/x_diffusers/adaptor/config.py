@@ -182,6 +182,8 @@ def add_abilities_args(parser: argparse.ArgumentParser):
     group.add_argument("--vae_output_dir", type=str, default="", help="Codec output result directory name. If not specified, the results will not be saved. Currently this only applies to the encoder.")
     group.add_argument("--h3_vae_backend", choices=["legacy", "lightning", "native-stream"], default=None,
                        help="H3 decode backend: recommended CUDA FP8 profiles default to native-stream; other offline paths default to legacy. Explicit selection overrides the recipe.")
+    group.add_argument("--h3_vae_torch_compile", action=argparse.BooleanOptionalAction, default=None,
+                       help="Opt-in Torch Compiler for the CUDA native-stream H3 VAE decoder tile subgraph; default off and CUDA-only.")
     group.add_argument("--h3_vae_model_path", default=None, help="Native MiniMax-H3 video_vae directory for the native-stream decoder.")
     group.add_argument("--h3_vae_trust_remote_code", action="store_true", help="Trust Python code in the selected native H3 VAE checkpoint.")
     group.add_argument("--vae_pad_mode", type=str, default="all_sides_valid", choices=["none", "tail_only", "all_sides", "all_sides_valid"], help="Padding strategy when VAE parallel acceleration is enabled.")

@@ -2,6 +2,19 @@
 
 H3 解码统一通过 `--h3_vae_backend` 选择，CUDA 与 NPU 共用三种后端。CUDA 推荐的 `fp8-bf16`、`fp8-sage`（T2VA/I2VA/R2VA）及 `sage-fp8-full-parallel` 默认选择 `native-stream`；v0.5 NPU Base推荐脚本和在线配置默认`native-stream`；其他低层离线配置默认 `legacy`。显式选择优先。选择后端需要重启常驻服务；不能在请求之间热切换权重或后端。
 
+## Torch Compiler（CUDA 可选）
+
+`--h3_vae_torch_compile` 是一个默认关闭的 CUDA-only 开关。开启后只编译 `native-stream` 的 VAE decoder tile 子图，DiT、SageAttention、PHAA、文本 TP 和请求级流式收集仍走原路径。NPU、`legacy` 和 `lightning` 后端会在启动校验阶段拒绝该选项。
+
+```bash
+torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init \
+  --model minimax-h3 --service-mode ref2va \
+  --config example/diffusers/configs/h3_cuda5090_ref2va.example.json \
+  --h3_vae_torch_compile
+```
+
+编译需要首次请求或启动预热建立缓存，建议把编译开销与正式性能分开记录。该开关只在服务启动时读取，修改前必须重启服务；未加参数时行为与 v0.6 原路径一致。当前实现显式使用 `max-autotune-no-cudagraphs`，避免 CUDA Graph 捕获原生 tile all-gather 输出缓冲区。
+
 `legacy` 表示沿用旧链路，并不自动启用 Lightning。常用配置如下：
 
 | 解码方式 | CUDA | NPU | 配置 |

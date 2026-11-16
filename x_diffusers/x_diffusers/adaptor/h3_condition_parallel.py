@@ -169,7 +169,7 @@ def install_audio_parallel(audio, group_getter, device, encode_enabled, decode_p
         if stage_weights:
             audio.to(device)
         try:
-            with strict_audio_convolution(device):
+            with torch.autocast(device_type=torch.device(device).type, enabled=False), strict_audio_convolution(device):
                 lo, hi, a, b = partition(total, halos['encoder_used'], group)
                 hidden = audio.encoder(sample[..., a*hop:b*hop].to(device, torch.float32))
                 hidden = gather_time(hidden[..., lo-a:hi-a], total, group)

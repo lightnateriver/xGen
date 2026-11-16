@@ -17,7 +17,9 @@ class WorkflowSelectionTests(unittest.TestCase):
                        and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'component_options')
         loading = next(n for n in function.body if isinstance(n, ast.If)
                        and ast.unparse(n.test) == 'packed_checkpoint')
-        code = compile(ast.Module(body=[route, options, loading], type_ignores=[]), str(path), 'exec')
+        dtypes = next(n for n in function.body if isinstance(n, ast.Assign)
+                      and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'component_dtypes')
+        code = compile(ast.Module(body=[dtypes, route, options, loading], type_ignores=[]), str(path), 'exec')
         for task, precision, refiner, custom in (
             ('fl2va', 'fp8-bf16', False, False),
             ('t2va', 'fp8-sage', False, False),
@@ -31,13 +33,14 @@ class WorkflowSelectionTests(unittest.TestCase):
                 args = SimpleNamespace(pretrained_model_name_or_path='weights/h3',
                                        h3_cuda_precision=precision, h3_refiner=refiner)
                 exec(code, dict(args=args, task_type=task, ModularPipeline=loader, logger=Mock(),
-                                dtype='bf16', packed_checkpoint=None,
+                                dtype='bf16', torch=SimpleNamespace(float32='fp32'), packed_checkpoint=None,
                                 transformer_path='weights/custom' if custom else None))
                 workflow = task if task == 'ref2va' or refiner else None
                 loader.from_pretrained.assert_called_once_with(
                     'weights/h3', **({'workflow': workflow} if workflow else {}))
                 call = loader.from_pretrained.return_value.load_components.call_args
                 self.assertIsNotNone(call)
+                self.assertEqual(call.kwargs['dtype'], {'default': 'bf16', 'audio_vae': 'fp32'})
                 expected = 'fl2va' if task in ('t2va', 'fl2va') and not refiner and precision != 'none' else None
                 self.assertEqual(call.kwargs.get('workflow'), expected)
                 if expected is None:

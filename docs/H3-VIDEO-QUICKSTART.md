@@ -11,6 +11,8 @@
 
 CUDA 当前组合已有 12 项真实在线 20 步技术验证，完整动态、口型和听音人工复核待完成。NPU VC 的画面与声音认可仅覆盖已评审的单图 R2VA 5s/10s 样例。详细结果见[性能索引](performance/README.md)，不要把不同设备或历史配方的数值直接比较。
 
+H3 Diffusers 入口的音频 VAE 固定以 FP32 加载，编码和解码关闭外层 autocast，浮点输入转为 FP32；该策略同时用于 CUDA/NPU，不随 DiT 的 BF16、FP16 或量化配置降低音频 VAE 精度。音频 offload 策略沿用原配置。此约束不代表客户反馈的偶发噪音已经完成复现或听音验收。
+
 ## 准备模型和输入
 
 准备 Linux、八张可用设备、匹配的 PyTorch/CUDA 或 CANN/torch-npu，以及支持 H.264/AAC 的 FFmpeg 和 FFprobe。CUDA Sage 配方需要兼容的 SageAttention、Triton、Diffusers 和 Transformers；NPU 默认方案需先安装 VC 和融合算子，见[NPU 构建说明](H3-NPU-FUSIONS.md)。

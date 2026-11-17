@@ -152,6 +152,9 @@ def add_minimax_h3_args(parser: argparse.ArgumentParser):
                        help="Reference media paths for the ref2va task (images, videos, or audio files).")
     group.add_argument("--h3_reference_image_short_edge", type=int, default=None,
                        help="Ref2VA Base image short edge: 32..2048, multiple of 32; default preserves 2048")
+    from .h3_references import REFERENCE_RESIZE_MODES
+    group.add_argument("--h3_reference_image_resize_mode", choices=REFERENCE_RESIZE_MODES, default=None,
+                       help="Ref2VA Base image sizing: fixed 2048, short-edge cap, or output-area cap")
     group.add_argument("--audio_save_path", type=str, default="",
                        help="Path to save the generated audio. If empty, derived from --save_path.")
     group.add_argument("--rope_table_cache", action="store_true", default=False,

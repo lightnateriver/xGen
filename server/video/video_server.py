@@ -802,7 +802,12 @@ class VideoInferenceManager:
         ref_paths = getattr(args, "reference_paths", None)
         references = self._mmh3_load_references(ref_paths)
         if references:
+            from x_diffusers.adaptor.h3_references import reference_image_resize_mode
+
             infer_params["references"] = references
+            mode = reference_image_resize_mode(args)
+            if mode is not None:
+                infer_params["h3_reference_image_resize_mode"] = mode
 
         # --- Attention optimization ---
         self._mmh3_setup_attention(args)
@@ -2827,6 +2832,10 @@ class VideoGenerationService:
             # MiniMax-H3 specific params from request
             if data.get('task_type'):
                 config['task_type'] = data['task_type']
+            if (config.get('task_type') == 'ref2va' and not config.get('h3_refiner')
+                    and config.get('h3_reference_image_resize_mode') is None
+                    and config.get('h3_reference_image_short_edge') is None):
+                config['h3_reference_image_resize_mode'] = 'max'
             if self.maas:
                 config.update(keyframe_image='', keyframe_last_image='')
                 config.pop('reference_paths', None)
@@ -3562,7 +3571,8 @@ def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None
         if value is not None:
             service.default_config[name] = value
     for name in STARTUP_OPTIONS + ('h3_parallel_mode', 'h3_dit_tp', 'h3_tp_comm', 'h3_cp_comm',
-                                   'h3_tp_comm_chunk_elements', 'h3_parallel_warmup_mib'):
+                                   'h3_tp_comm_chunk_elements', 'h3_parallel_warmup_mib',
+                                   'h3_reference_image_resize_mode'):
         value = getattr(args, name, None)
         if value is not None:
             service.default_config[name] = value
@@ -3673,7 +3683,10 @@ def main():
     from x_diffusers.adaptor.h3_cuda_options import add_arguments as add_cuda_arguments
     add_cuda_arguments(parser, service=True)
     parser.add_argument('--h3_reference_image_short_edge', type=int, default=None,
-                        help='Ref2VA Base reference image short edge, 32..2048 in multiples of 32; default 2048')
+                        help='Ref2VA Base fixed reference image short-edge override, 32..2048 in multiples of 32')
+    from x_diffusers.adaptor.h3_references import REFERENCE_RESIZE_MODES, reference_image_resize_mode
+    parser.add_argument('--h3_reference_image_resize_mode', choices=REFERENCE_RESIZE_MODES, default=None,
+                        help='Ref2VA Base reference image sizing (service default: max)')
 
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Service host')
     parser.add_argument('--port', type=int, default=5001, help='Service port')
@@ -3827,6 +3840,12 @@ def main():
     if args.h3_refiner:
         from x_diffusers.adaptor.h3_refiner_service import apply_startup_settings
         apply_startup_settings(service.default_config, args, sys.argv[1:])
+
+    try:
+        reference_image_resize_mode(argparse.Namespace(**service.default_config))
+    except ValueError as error:
+        parser.error(str(error))
+
     if args.maas:
         if '--maas-fl2va-input' in sys.argv:
             logger.warning('--maas-fl2va-input is deprecated; use --maas')

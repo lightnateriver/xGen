@@ -3,6 +3,7 @@ from collections import Counter
 from decimal import Decimal, InvalidOperation
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -15,10 +16,36 @@ LIMITS = {"image": 9, "video": 3, "audio": 3}
 MAX_FILES = 12
 MIN_SECONDS = 2
 MAX_SECONDS = 15
+REFERENCE_RESIZE_MODES = ("diffusers", "max", "match")
+
+
+def reference_image_resize_mode(args):
+    mode = getattr(args, "h3_reference_image_resize_mode", None)
+    if mode is None:
+        return None
+    if mode not in REFERENCE_RESIZE_MODES:
+        choices = ", ".join(REFERENCE_RESIZE_MODES)
+        raise ValueError(f"Invalid h3_reference_image_resize_mode {mode!r}. Choose one of {choices}.")
+    if getattr(args, "task_type", None) != "ref2va" or getattr(args, "h3_refiner", False):
+        raise ValueError("h3_reference_image_resize_mode requires Ref2VA Base")
+    if getattr(args, "h3_reference_image_short_edge", None) is not None:
+        raise ValueError("Set either h3_reference_image_resize_mode or h3_reference_image_short_edge")
+    return mode
+
+
+def reference_image_size(width, height, canvas_width, canvas_height, multiple, mode):
+    if mode == "match":
+        scale = min(1.0, math.sqrt(canvas_width * canvas_height / (width * height)))
+    else:
+        scale = 2048 / min(width, height)
+        if mode == "max":
+            scale = min(1.0, scale)
+    return tuple(max(multiple, round(side * scale / multiple) * multiple) for side in (width, height))
 
 
 def configure_reference_image_size(pipe, args):
-    """Opt into the upstream resize config; do not replace either encoder path."""
+    """Apply the legacy fixed short-edge override."""
+    reference_image_resize_mode(args)
     edge = getattr(args, "h3_reference_image_short_edge", None)
     if edge is None:
         return

@@ -507,9 +507,12 @@ class InferenceManager(object):
         # Reference conditioning (ref2va)
         ref_paths = getattr(args, "reference_paths", None)
         if ref_paths:
-            from .h3_references import load_references, select_reference_adaln
+            from .h3_references import load_references, reference_image_resize_mode, select_reference_adaln
 
             infer_params["references"] = load_references(ref_paths)
+            mode = reference_image_resize_mode(args)
+            if mode is not None:
+                infer_params["h3_reference_image_resize_mode"] = mode
             if args.task_type == "ref2va":
                 select_reference_adaln(self.pipe, args)
         elif getattr(args, "adaln_cache_file", None) and args.task_type in ("t2va", "fl2va"):
@@ -915,6 +918,10 @@ class InferenceManager(object):
         return self.infer_batch_from_testdata(args)
 
     def infer(self, args) -> float:
+        if getattr(args, "h3_reference_image_resize_mode", None) is not None:
+            from .h3_references import reference_image_resize_mode
+
+            reference_image_resize_mode(args)
         if args.model == "MiniMax-H3" and args.task_type == "ref2va":
             from .h3_references import reference_conditioning
 

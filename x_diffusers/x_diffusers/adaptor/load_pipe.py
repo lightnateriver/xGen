@@ -214,6 +214,10 @@ def load_minimax_h3_pipe(args):
 
     from .h3_references import configure_reference_image_size
     configure_reference_image_size(pipe, args)
+    if task_type == "ref2va" and not getattr(args, "h3_refiner", False):
+        from .h3_reference_setup import install_reference_setup
+
+        install_reference_setup(pipe)
 
     # Keep automatic T2VA/FL2VA routing, but do not load the unused Ref2VA DiT
     # from a combined repository into a resident CUDA/portable H3 pipeline.

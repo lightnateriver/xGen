@@ -9,6 +9,7 @@ v0.6 推荐的 NPU **768P Base** 入口使用 **VC attention＋Ascend 融合＋I
 | 进程、DiT SP、文本 TP | 8 / 8 / 8 |
 | Base 实际计算步数 | 20，匹配 21 点 AdaLN 表 |
 | attention / DiT Linear | VC ExpCast / INT8 |
+| AdaLN | BF16 表；使用完整权重实时计算时，主块及输出 AdaLN 投影保留 BF16 |
 | Ascend 融合 | `h3_opts=all`，请求开启；实际命中由形状与已安装算子决定 |
 | PHAA / RoPE | 2（4+3 头）/ fused |
 | 调度 | `h3_features=full-parallel`，50 层 DiT 常驻 |
@@ -17,6 +18,8 @@ v0.6 推荐的 NPU **768P Base** 入口使用 **VC attention＋Ascend 融合＋I
 | 视频 decoder | `native-stream`，`vae_matmul_quant=none`；Linear FP16 存储、FP16 autocast，其余原生参数 FP32 |
 
 固定条件在同一请求的多个 DiT 步骤间复用，结束后释放，不是跨请求内容缓存。有图／视频时才运行视觉与 VAE 编码，有参考音轨时才运行 Audio Encoder，长音频 Decoder 并行仅在支持的形状生效。T2VA/I2VA 共用 FL2VA 模型与对应条件表，R2VA 使用独立模型及表。
+
+使用 `dtype=bf16` 和完整 Transformer 权重时，INT8 继续用于主块 Attention 和 FFN 的线性层。AdaLN 权重保留 BF16，完整权重常驻时的显存开销因此高于将其量化为 INT8 的旧版本。使用配对的 BF16 表与已剔除 AdaLN 权重的 Transformer 时，不加载这些投影权重，已有表可以继续使用。
 
 ## 安装与模型准备
 

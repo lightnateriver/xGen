@@ -153,6 +153,7 @@ minimax_h3:
     - "time_embedder"
     - "time_proj"
     - "token_refiner"
+    - "adaln_proj.linear"  # Keep block modulation projections in BF16 in the H3 BF16 recipe.
     - "norm_out"
     - "proj_out"
     - "audio_proj_out"

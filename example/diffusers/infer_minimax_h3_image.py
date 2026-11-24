@@ -22,6 +22,13 @@ def main():
     parser.add_argument("--image_dit_tp", type=int, default=1)
     parser.add_argument("--image_ff_chunk", type=int, default=0)
     parser.add_argument("--image_laser_dense_tail", type=int, default=0)
+    parser.add_argument("--image_vae_decode_batch_size", type=int, default=1,
+                        help="Maximum VAE decoder tiles per device per call")
+    parser.add_argument("--image_vae_gather_once", action="store_true",
+                        help="Gather all VAE tiles at once; requires --image_vae_parallel and multiple devices")
+    parser.add_argument("--image_adaln_table_file")
+    parser.add_argument("--image_adaln_table_save")
+    parser.add_argument("--image_pinned_cpu_offload", action="store_true")
     parser.add_argument("--image_swiglu", choices=("none", "native", "triton"), default="none")
     for name in ("image_adaln_table", "image_resident", "image_int8", "image_fused_qkv", "image_condition_cache", "image_vae_parallel", "image_vision_sp", "image_refiner_sp", "image_fused_rope", "image_rgb8_output", "image_local_input"):
         parser.add_argument("--" + name, action="store_true")

@@ -20,6 +20,8 @@ export PYTHONPATH="$PWD/x_base:$PWD/x_diffusers:$PYTHONPATH"
 
 本地权重目录必须包含 `modular_model_index.json`、`transformer_diffusers/`、`vae_diffusers/`、`text_encoder/`、`processor/`、`tokenizer/`、`scheduler/` 和 `pdd_config.json`。加载使用本地文件，保留组件的混合精度，不修改共享权重。
 
+模型组件装配和内存中的单次推理由 `x_diffusers.framework.pipeline.minimax_h3_image` 负责。`x_diffusers.adaptor.h3_image` 保留 `load_pipeline(args)` 和 `run_image(args, pipe=None)` 入口，处理运行参数、参考图路径、预热计时以及 PNG／JSON 输出。
+
 ## 四卡方案
 
 | 阶段 | 首版方案 |

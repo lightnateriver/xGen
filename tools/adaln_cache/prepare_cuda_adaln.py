@@ -22,7 +22,6 @@ import torch
 from accelerate import init_empty_weights
 from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Transformer3DModel
 from safetensors import safe_open
-from safetensors.torch import save_file
 
 from precompute_adaln_cache import DELETE_PATTERNS, _compute_silu_temb, _linear_forward, create_scheduler, strip_checkpoint
 
@@ -107,16 +106,17 @@ def prepare(args):
                     tensors[f'{condition}_step{i}_final']=_linear_forward(projection,embeddings[steps,i,condition]).cpu().contiguous()
         for key,(_,embedding) in samples.items():expected_outputs[key,'final']=_linear_forward(projection,embedding).cpu()
         projection.to('meta')
+    from x_base.adaln_cache import AdalnScheduleCache, save_adaln_tables
+
     files=[]
     for steps,tensors in tables.items():
         path=output/f'adaln_{args.model_variant.lower()}_bf16_{steps}step.safetensors'
         metadata=dict(num_steps=str(steps+1),num_eval_steps=str(steps),video_shift=str(args.video_shift),audio_shift=str(args.audio_shift),
             model_variant=args.model_variant,num_blocks='50',conditioning_tables=','.join(conditions),quantization='none',adaln_weight_sha256=fingerprint.hexdigest())
-        save_file(tensors,path,metadata=metadata)
+        save_adaln_tables(path,tensors,metadata=metadata)
         files.append(dict(steps=steps,file=path.name,bytes=path.stat().st_size,sha256=hashlib.sha256(path.read_bytes()).hexdigest(),metadata=metadata))
     write(output/'tables.json',files)
     # Exercise the real loader against direct combined-timestep projection.
-    from x_base.adaln_cache import AdalnScheduleCache
     lookup=[];hidden=config['hidden_size']
     for row in files:
         steps=row['steps']

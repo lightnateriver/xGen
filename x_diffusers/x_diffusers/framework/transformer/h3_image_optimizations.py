@@ -1,5 +1,7 @@
-"""Opt-in Image optimizations; preserve the released six-step numeric path."""
+"""Opt-in H3 Image DiT optimizations."""
 import functools
+import json
+from pathlib import Path
 from types import MethodType
 
 import torch
@@ -16,6 +18,14 @@ class ImageAdaLNTable(nn.Module):
     def forward(self, temb):
         table = self.edit if temb.shape[0] == 2 else self.text
         return table[self.state["step"]].unbind(0)
+
+
+def attach_image_adaln_step_hook(transformer, state):
+    def select_step(module, args, kwargs):
+        state["step"] = kwargs["pdd_step_index"]
+
+    transformer.register_forward_pre_hook(select_step, with_kwargs=True)
+    transformer._xgen_image_adaln_state = state
 
 
 @torch.inference_mode()
@@ -38,10 +48,64 @@ def install_image_adaln_table(transformer, sample_sigmas, reference_noise_aug, d
         del original
         torch.get_device_module(device.type).empty_cache()
 
-    def select_step(module, args, kwargs):
-        state["step"] = kwargs["pdd_step_index"]
-    transformer.register_forward_pre_hook(select_step, with_kwargs=True)
-    transformer._xgen_image_adaln_state = state
+    attach_image_adaln_step_hook(transformer, state)
+
+
+def _image_adaln_metadata(model_root, transformer, sigmas, reference_noise_aug):
+    root = Path(model_root)
+    dit = root / "transformer_diffusers"
+    shards = sorted(dit.glob("*.safetensors"))
+    if not shards:
+        raise ValueError(f"No local DiT Safetensors weights found in {dit}")
+    snapshot = []
+    for path in (root / "pdd_config.json", dit / "config.json", *shards):
+        stat = path.stat()
+        snapshot.append([str(path.resolve()), stat.st_ino, stat.st_size, stat.st_mtime_ns])
+    schedule = [list(map(float, sigmas)), float(reference_noise_aug), len(transformer.transformer_blocks)]
+    return {
+        "schema": "xgen-h3-image-adaln-v1",
+        "snapshot": json.dumps(snapshot),
+        "schedule": json.dumps(schedule),
+    }
+
+
+def save_image_adaln_table(path, model_root, transformer, sigmas, reference_noise_aug):
+    from x_base.adaln_cache import save_adaln_tables
+
+    tensors = {
+        f"{index}.{mode}": getattr(block.adaln_proj, mode).contiguous()
+        for index, block in enumerate(transformer.transformer_blocks)
+        for mode in ("edit", "text")
+    }
+    metadata = _image_adaln_metadata(model_root, transformer, sigmas, reference_noise_aug)
+    save_adaln_tables(path, tensors, metadata=metadata)
+
+
+def load_image_adaln_table(path, model_root, transformer, sigmas, reference_noise_aug, device):
+    from x_base.adaln_cache import open_adaln_tables
+
+    blocks = transformer.transformer_blocks
+    metadata = _image_adaln_metadata(model_root, transformer, sigmas, reference_noise_aug)
+    state = {"step": 0}
+    replacements = []
+    expected_keys = {f"{index}.{mode}" for index in range(len(blocks)) for mode in ("edit", "text")}
+    with open_adaln_tables(path, expected_metadata=metadata, expected_keys=expected_keys) as cached:
+        for index, block in enumerate(blocks):
+            projection = block.adaln_proj
+            hidden = projection.hidden_size
+            rows = projection.linear.out_features // (6 * hidden)
+            tables = {}
+            for mode, timestep_rows in (("edit", 2), ("text", 1)):
+                table = cached.get_tensor(f"{index}.{mode}")
+                expected = (len(sigmas) - 1, 6, rows * timestep_rows, hidden)
+                if table.shape != expected or table.dtype != projection.linear.weight.dtype:
+                    raise ValueError(f"AdaLN table {index}.{mode} has incompatible shape or dtype")
+                tables[mode] = table
+            replacements.append(ImageAdaLNTable(tables["edit"], tables["text"], state))
+    transformer.time_embedder.to(device)
+    for block, replacement in zip(blocks, replacements):
+        block.adaln_proj = replacement
+    attach_image_adaln_step_hook(transformer, state)
 
 
 def install_image_condition_cache(transformer):
@@ -85,48 +149,6 @@ def fuse_image_qkv(transformer):
         del attn.to_q, attn.to_k, attn.to_v
 
 
-def install_image_vae_parallel(vae, group):
-    """Distribute original spatial tiles, retaining the exact upstream blend order and dtype."""
-    import torch.distributed as dist
-    rank, world = dist.get_rank(group), dist.get_world_size(group)
-    originals = {"encode": vae._encode, "decode": vae._decode}
-
-    def tiled(self, x, mode):
-        if not self.use_tiling or not getattr(self, "_xgen_tile_parallel_enabled", True):
-            return originals[mode](x)
-        ratio = self.spatial_compression_ratio
-        height, width = x.shape[-2:]
-        if mode == "decode":
-            height, width = height * ratio, width * ratio
-        ys, yl, yo = self._split_tiles(height, self.tile_sample_min_height, self.tile_sample_min_overlap_height)
-        xs, xl, xo = self._split_tiles(width, self.tile_sample_min_width, self.tile_sample_min_overlap_width)
-        if len(ys) * len(xs) < world:
-            return originals[mode](x)
-        positions = [(y, h, xx, w) for y, h in zip(ys, yl) for xx, w in zip(xs, xl)]
-        # All tiles in a given image have equal shape, including images below the tile size on one axis.
-        output = []
-        for start in range(0, len(positions), world):
-            index = min(start + rank, len(positions) - 1)
-            y, h, xx, w = positions[index]
-            if mode == "encode":
-                tile = x[..., y:y+h, xx:xx+w]
-                local = self.quant_conv(self.encoder(tile[:, :, None]))[:, :, -1].contiguous()
-            else:
-                tile = x[..., y//ratio:(y+h)//ratio, xx//ratio:(xx+w)//ratio]
-                local = self.decoder(self.post_quant_conv(tile)).contiguous()
-            gathered = [torch.empty_like(local) for _ in range(world)]
-            dist.all_gather(gathered, local, group=group)
-            output.extend(gathered[:min(world, len(positions)-start)])
-        rows = [output[i:i+len(xs)] for i in range(0, len(output), len(xs))]
-        if mode == "encode":
-            yo, xo = [n//ratio for n in yo], [n//ratio for n in xo]
-        return self._stitch_tiles(rows, yo, xo)
-
-    vae._encode = MethodType(lambda self, x: tiled(self, x, "encode"), vae)
-    vae._decode = MethodType(lambda self, x: tiled(self, x, "decode"), vae)
-    vae._xgen_tile_parallel_enabled = True
-
-
 def install_image_refiner_sp(transformer):
     from x_base import set_pad, split_sequence, gather_sequence
     from .minimax_h3_image import H3ImageAttnProcessor
@@ -164,13 +186,14 @@ def install_image_dit_tp(transformer, group):
     import torch.distributed as dist
     rank, world = dist.get_rank(group), dist.get_world_size(group)
 
-    def col(linear, packed=False):
+    def col(linear, parts=1):
         rows = linear.weight.shape[0]
-        if packed:
-            half = rows // 2; part = half // world
-            indices = torch.cat([torch.arange(rank*part,(rank+1)*part), torch.arange(half+rank*part,half+(rank+1)*part)])
-        else:
-            indices = torch.arange(rank*(rows//world),(rank+1)*(rows//world))
+        if rows % (parts * world):
+            raise ValueError("Packed projection rows must divide evenly across TP ranks")
+        rows_per_part = rows // parts
+        rows_per_rank = rows_per_part // world
+        rank_rows = torch.arange(rank * rows_per_rank, (rank + 1) * rows_per_rank)
+        indices = (torch.arange(parts)[:, None] * rows_per_part + rank_rows).flatten()
         linear.weight = nn.Parameter(linear.weight.index_select(0, indices).contiguous(), requires_grad=False)
         if hasattr(linear, "antiquant_scale"):
             linear.antiquant_scale = nn.Parameter(linear.antiquant_scale.index_select(0, indices).contiguous(), requires_grad=False)
@@ -185,10 +208,12 @@ def install_image_dit_tp(transformer, group):
     for block in transformer.transformer_blocks:
         attn = block.attn
         if attn.fused_projections:
-            raise ValueError("TP and fused QKV are separate experiments")
-        for linear in (attn.to_q, attn.to_k, attn.to_v):col(linear)
+            col(attn.to_qkv, parts=3)
+        else:
+            for linear in (attn.to_q, attn.to_k, attn.to_v):
+                col(linear)
         attn.to_out[0] = row(attn.to_out[0])
-        col(block.ff.net[0].proj, packed=True)
+        col(block.ff.net[0].proj, parts=2)
         block.ff.net[2] = row(block.ff.net[2])
 
 
@@ -230,21 +255,6 @@ def install_image_swiglu(transformer, backend):
             def forward(self, x):
                 return image_swiglu(self.proj(x))
         module.forward = MethodType(forward, module)
-
-
-def install_image_rgb8_output(pipe):
-    """Transport the released quantized pixels as RGB8, avoiding a float32 D2H round trip."""
-    from PIL import Image
-    processor = pipe.image_processor
-    original = processor.postprocess
-    @functools.wraps(original)
-    def postprocess(image, output_type="pil", do_denormalize=None):
-        if image.device.type != "npu" or output_type != "pil" or processor.config.do_normalize or (do_denormalize is not None and any(do_denormalize)):
-            return original(image, output_type=output_type, do_denormalize=do_denormalize)
-        # DecodeStep already applies the checkpoint's truncating quantizer before this call.
-        pixels = (image * 255).round().clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous().cpu().numpy()
-        return [Image.fromarray(item) for item in pixels]
-    processor.postprocess = postprocess
 
 
 def install_image_local_input(transformer):

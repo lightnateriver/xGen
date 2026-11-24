@@ -21,6 +21,9 @@ to support other AdaLN-based models in the future.
 import logging
 import fnmatch
 import os
+from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
 import torch.nn as nn
@@ -28,6 +31,31 @@ import torch.nn as nn
 from x_base.device import device_type
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def open_adaln_tables(path, *, expected_metadata=None, expected_keys=None):
+    """Open AdaLN tensors on CPU, with optional checks for a model's table schema."""
+    from safetensors import safe_open
+
+    with safe_open(path, framework="pt", device="cpu") as source:
+        if expected_metadata is not None and source.metadata() != expected_metadata:
+            raise ValueError(f"AdaLN table metadata does not match the expected checkpoint and schedule: {path}")
+        if expected_keys is not None and set(source.keys()) != set(expected_keys):
+            raise ValueError(f"AdaLN table tensor keys do not match the expected layout: {path}")
+        yield source
+
+
+def save_adaln_tables(path, tensors, *, metadata):
+    """Atomically publish an AdaLN table without changing its model-specific layout."""
+    from safetensors.torch import save_file
+
+    path = Path(path)
+    with TemporaryDirectory(dir=path.parent, prefix=f".{path.name}.") as directory:
+        temporary = Path(directory) / path.name
+        save_file(tensors, temporary, metadata=metadata)
+        os.replace(temporary, path)
+
 
 # Key patterns for AdaLN-related weights stripped in Step 2.
 # Used by load_with_allowlist / validate_stripped_checkpoint to verify
@@ -87,9 +115,10 @@ class AdalnScheduleCache:
         Populates _tables with schedule_key -> table mapping for all steps.
         After loading, maybe_install() does pure lookup (no computation).
         """
-        from safetensors import safe_open
+        with open_adaln_tables(path) as source:
+            self._load_video_tables(source)
 
-        f = safe_open(path, framework="pt")
+    def _load_video_tables(self, f):
         metadata = f.metadata()
 
         # MiniMaxH3Scheduler: num_steps sigmas (terminal 0 included),

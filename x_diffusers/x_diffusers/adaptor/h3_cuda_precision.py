@@ -140,6 +140,8 @@ def validate_manager(manager, args, backend):
         if (installed is not None) != (selected == 'native-stream') or (installed is not None and
                 str(installed.path) != str(args.h3_vae_model_path)):
             raise ValueError('Restart the service to change H3 VAE decode backend or checkpoint')
+        if installed is not None and bool(getattr(installed, 'torch_compile_enabled', False)) != bool(getattr(args, 'h3_vae_torch_compile', False)):
+            raise ValueError('Restart the service to change H3 VAE Torch Compiler')
     pair_tp = getattr(args, 'h3_cuda_linear_tp', 1)
     if manager.pipe is not None and pair_tp != getattr(manager, '_h3_cuda_linear_tp_key', 1):
         raise ValueError('Restart the service to change H3 linear TP')

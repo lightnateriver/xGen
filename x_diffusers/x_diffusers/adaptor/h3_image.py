@@ -11,12 +11,24 @@ from x_base.device import device_type
 from ..framework.pipeline import minimax_h3_image
 
 
+def resolve_image_text_options(args, backend):
+    """Default Image decoder W8A8 on NPU, preserving explicit precision choices."""
+    if getattr(args, "image_text_int8", None) is None:
+        args.image_text_int8 = backend == "npu"
+    if args.image_text_int8 and backend != "npu":
+        raise ValueError("Image text INT8 requires NPU")
+
+
 def _validate_request_options(args, world_size):
     dit_tp = getattr(args, "image_dit_tp", 1)
     if world_size not in (1, 2, 4) or args.sp * dit_tp != world_size or (args.sp > 1 and dit_tp > 1):
         raise ValueError("Use pure SP1/SP2/SP4 or pure DiT TP2/TP4")
     if args.text_encoder_tp not in (1, world_size):
         raise ValueError("text_encoder_tp must be 1 or the distributed world size")
+    text_int8 = getattr(args, "image_text_int8", False)
+    text_resident = getattr(args, "image_text_resident", False)
+    if (text_int8 or text_resident) and args.text_encoder_tp != world_size:
+        raise ValueError("Image text quantization/residency requires text_encoder_tp equal to world size")
     if args.num_inference_steps != 6:
         raise ValueError("MiniMax-H3-Image has exactly six PDD sampling steps")
     if getattr(args, "image_vae_decode_batch_size", 1) < 1:
@@ -44,9 +56,10 @@ def validate_options(args, world_size):
 def load_pipeline(args):
     """Validate the adapter options and assemble a reusable H3-Image pipeline."""
     backend = device_type()
-    device = torch.device(backend, torch.get_device_module(backend).current_device())
+    resolve_image_text_options(args, backend)
     world = dist.get_world_size() if dist.is_initialized() else 1
-    _validate_request_options(args, world)
+    validate_options(args, world)
+    device = torch.device(backend, torch.get_device_module(backend).current_device())
     return minimax_h3_image.load_pipeline(args.pretrained_model_name_or_path, args, device=device, world=world)
 
 
@@ -55,10 +68,11 @@ def run_image(args, pipe=None):
     from PIL import Image
     from x_base import attention_manager
 
+    backend = device_type()
+    resolve_image_text_options(args, backend)
     world = dist.get_world_size() if dist.is_initialized() else 1
     rank = dist.get_rank() if dist.is_initialized() else 0
     validate_options(args, world)
-    backend = device_type()
     device_module = torch.get_device_module(backend)
     if args.atten == "laser":
         if backend != "npu":
@@ -114,7 +128,8 @@ def run_image(args, pipe=None):
                       "image_condition_cache", "image_refiner_sp", "image_vision_sp", "image_vae_parallel",
                       "image_ff_chunk", "image_swiglu", "image_fused_rope", "image_laser_dense_tail", "image_rgb8_output",
                       "image_local_input", "image_vae_gather_once", "image_vae_decode_batch_size",
-                      "image_adaln_table_file", "image_adaln_table_save", "image_pinned_cpu_offload")},
+                      "image_adaln_table_file", "image_adaln_table_save", "image_pinned_cpu_offload",
+                      "image_text_int8", "image_text_resident")},
                   peak_allocated_bytes=peak.item())
     if rank == 0:
         Path(args.save_path).with_suffix(".json").write_text(json.dumps(result, indent=2) + "\n")

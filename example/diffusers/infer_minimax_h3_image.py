@@ -3,7 +3,7 @@ import argparse
 import os
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pretrained_model_name_or_path", required=True)
     parser.add_argument("--prompt", required=True)
@@ -30,8 +30,15 @@ def main():
     parser.add_argument("--image_adaln_table_save")
     parser.add_argument("--image_pinned_cpu_offload", action="store_true")
     parser.add_argument("--image_swiglu", choices=("none", "native", "triton"), default="none")
-    for name in ("image_adaln_table", "image_resident", "image_int8", "image_fused_qkv", "image_condition_cache", "image_vae_parallel", "image_vision_sp", "image_refiner_sp", "image_fused_rope", "image_rgb8_output", "image_local_input"):
+    parser.add_argument("--image_text_int8", action=argparse.BooleanOptionalAction, default=None,
+                        help="Qwen decoder W8A8: defaults on for NPU and off for CUDA; --no-image_text_int8 uses BF16")
+    for name in ("image_adaln_table", "image_resident", "image_int8", "image_fused_qkv", "image_condition_cache", "image_vae_parallel", "image_vision_sp", "image_refiner_sp", "image_fused_rope", "image_rgb8_output", "image_local_input", "image_text_resident"):
         parser.add_argument("--" + name, action="store_true")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     if args.warmup < 0 or args.repeat < 1:
         parser.error("warmup must be nonnegative and repeat must be positive")

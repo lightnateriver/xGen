@@ -59,4 +59,4 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 tools/validate_h3_runt
 
 真实HTTP测试应使用 [在线教程](H3-ONLINE.md) 启动独立实例，提交连续请求并下载完整文件，记录模型只加载一次、请求条件重新计算，以及关闭实例后全部worker退出。CPU路由测试、离线Manager连续请求与真实HTTP测试应分别报告。
 
-[发布验证结果](performance/h3-cuda5090-full-parallel.md)
+[发布验证结果](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda5090-full-parallel.md)

@@ -14,6 +14,7 @@
   "matmul_quant": "none",
   "vae_matmul_quant": "none",
   "h3_vae_backend": "native-stream",
+  "h3_vae_torch_compile": false,
   "h3_vae_model_path": "weights/h3-native/video_vae",
   "h3_vae_trust_remote_code": true,
   "rope_fused": false,

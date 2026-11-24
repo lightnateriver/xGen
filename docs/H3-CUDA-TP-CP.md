@@ -76,9 +76,9 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc-per-node=4 tools/validate_h3_tp_c
 
 仅选择自己已预留的可见设备。输出每 rank JSON，包括误差、形状、FP8 分块统计和显存峰值。合成单层通过不等于完整权重成片、满载容量或人工音画精度通过。完整模型需同输入、seed、预热、20 实际步数与 SP8 对照。
 
-本轮已完成的单层条件、四种传输误差和测试范围见 [最小验证记录](performance/h3-cuda-tp-cp.md)。
+本轮已完成的单层条件、四种传输误差和测试范围见 [最小验证记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-tp-cp.md)。
 
-实际层宽的 SP4 / TP2×CP2 预热后延迟与通信剖析见 [单层性能对比](performance/h3-cuda-tp-cp-latency.md)。本轮 SP4 更快；当前 FP8 TP 的分块 all-gather 开销较高，仍需优化。可在四张已预留的可见 GPU 上复现：
+实际层宽的 SP4 / TP2×CP2 预热后延迟与通信剖析见 [单层性能对比](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda-tp-cp-latency.md)。本轮 SP4 更快；当前 FP8 TP 的分块 all-gather 开销较高，仍需优化。可在四张已预留的可见 GPU 上复现：
 
 ```bash
 XGEN_DEVICE=cuda torchrun --standalone --nproc-per-node=4 tools/benchmark_h3_parallel_block.py --output outputs/h3-parallel-block-20261106

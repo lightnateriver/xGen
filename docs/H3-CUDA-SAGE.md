@@ -98,7 +98,7 @@ torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init --s
 
 运行源码冻结于 `d428a9b`；本次整理只改命名、错误提示、启动组合和文档，没有改变已测算子的数值路径。六项均完整音视频解码通过，各 rank 完成 20 次实际 DiT，模型 identity 在 12 次预热/正式请求间保持不变。全片六帧抽查未见明显黑屏或整体崩坏，人工完整画面、口型和听音仍待审核。结束后八卡无计算进程、显存回到 0 MiB；这不构成长时间无泄漏保证。
 
-同样开启输出融合和 expandable segments 的方案一 15 秒参考值为 T2VA 293.385 s、I2VA 308.161 s；峰值 allocated 同样为 29.88 / 30.00 GiB。它在更早的独立进程做过 1 步检查，正式组未再预热，首条可能包含首次触达。5/10 秒历史对照及各自预热条件见 [性能记录](performance/h3-cuda.md#cuda-标准方案二-sage-fp8)。这是整套方案的单次参考，不是仅替换 attention 的消融，也不是统计均值。Sage 的显存峰值在 15 秒档基本不变，主要收益是提速。
+同样开启输出融合和 expandable segments 的方案一 15 秒参考值为 T2VA 293.385 s、I2VA 308.161 s；峰值 allocated 同样为 29.88 / 30.00 GiB。它在更早的独立进程做过 1 步检查，正式组未再预热，首条可能包含首次触达。5/10 秒历史对照及各自预热条件见 [性能记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md#cuda-标准方案二-sage-fp8)。这是整套方案的单次参考，不是仅替换 attention 的消融，也不是统计均值。Sage 的显存峰值在 15 秒档基本不变，主要收益是提速。
 
 原离线保存流程包含 FFmpeg `-shortest`：请求生成 124 / 243 / 362 帧，实际 MP4 为 124 / 243 / 361 帧；15 秒档音频为 15.075 秒、视频为 15.041667 秒。没有补帧修改这些记录。Base HTTP 自身还有按请求时长裁剪的保存规则，不能直接沿用离线帧数作为在线验收标准。
 

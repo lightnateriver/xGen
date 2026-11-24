@@ -182,6 +182,8 @@ def load_minimax_h3_pipe(args):
     from diffusers.hooks import apply_group_offloading
 
     dtype = to_dtype(args.dtype)
+    # Load audio directly in FP32: upcasting rounded BF16/FP16 weights loses precision.
+    component_dtypes = {"default": dtype, "audio_vae": torch.float32}
     task_type = getattr(args, "task_type", "t2va")
     packed_checkpoint = getattr(args, "h3_nvfp4_checkpoint", None)
     packed_resident = getattr(args, "h3_nvfp4_resident", False)
@@ -241,13 +243,13 @@ def load_minimax_h3_pipe(args):
         logger.info("Loading experimental H3 FL2VA NVFP4 transformer")
         transformer = load_packed_h3(MiniMaxH3Transformer3DModel, config, packed_checkpoint)
         pipe.update_components(transformer=transformer)
-        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+        pipe.load_components(dtype=component_dtypes, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
                              **component_options)
     elif transformer_path:
         logger.info(f"Loading transformer from: {transformer_path}")
         transformer_key = "transformer_ref" if task_type == "ref2va" else "transformer"
         pipe.load_components(
-            dtype=dtype,
+            dtype=component_dtypes,
             **component_options,
             pretrained_model_name_or_path={
                 transformer_key: transformer_path,
@@ -258,8 +260,11 @@ def load_minimax_h3_pipe(args):
             },
         )
     else:
-        pipe.load_components(dtype=dtype, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+        pipe.load_components(dtype=component_dtypes, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
                              **component_options)
+
+    from .h3_audio_precision import prepare_audio_vae
+    prepare_audio_vae(pipe.audio_vae)
 
     # origin/main: workflow="ref2va" only loads transformer_ref, pipe.transformer is None.
     # Set alias so operator_ability / pipe_to_device / install_adaln_cache etc. can use
@@ -394,6 +399,9 @@ def to_dtype(name: str):
 
 def load_pipe(args):
     backend = device_type()
+    if getattr(args, 'h3_condition_overlap', False):
+        from .h3_condition_overlap import validate
+        validate(args, backend)
     from .h3_npu_options import validate as validate_npu_fusions
 
     validate_npu_fusions(args, backend)

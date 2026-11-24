@@ -4,11 +4,11 @@
 
 v0.5 八卡 CUDA Base / MaaS 默认改为 [Sage-FP8 全并行 Streaming + AdaLN 表](H3-V05-CUDA-UPGRADE.md)，需相应表及剔除权重后的 Transformer。原 [fp8-bf16](H3-CUDA-PRECISION.md) 作为精度参考保留，可显式选择；本页 NVFP4 为独立历史路线。用 `--h3_cuda_precision none --h3_cuda_preset none` 回到旧路径。
 
-CUDA 第二套标准方案为 [Sage-FP8](H3-CUDA-SAGE.md)：相同 FP8 Linear、Sage attention、FP8 双向通信、输出调制融合和 expandable segments。八卡 5090 的 5/10/15 秒 T2VA / I2VA、20 步实测更快，人工画面与听音待审核。通用脚本用 `H3_CUDA_PRECISION=fp8-sage` 一次选择完整组合，原默认方案继续保留。
+保留的 Sage-FP8 基础方案见 [历史配置](H3-CUDA-SAGE.md)：相同 FP8 Linear、Sage attention、FP8 双向通信、输出调制融合和 expandable segments。八卡 5090 的 5/10/15 秒 T2VA / I2VA、20 步实测更快，人工画面与听音待审核。该基础方案与当前全并行默认不同；以下示例显式关闭全并行预设。新部署优先使用 [20 步当前视频教程](H3-VIDEO-QUICKSTART.md)。
 
 ```bash
-H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
-H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
+H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda t2va 5 768p
+H3_CUDA_PRESET=none H3_CUDA_PRECISION=fp8-sage H3_BASE_STEPS=20 bash example/diffusers/scripts/run_h3.sh cuda i2va 15 768p
 ```
 
 ## 环境和模型
@@ -92,7 +92,7 @@ GPUS=8 XGEN_FASTVIDEO_RECIPE=5s XGEN_SPARGE_TOPK=0.5 \
   bash example/diffusers/scripts/infer_minimax_h3_cuda_nvfp4.sh --h3_cuda_vae_sp
 ```
 
-该组合在 8 张 RTX 5090 上生成并保存耗时 54.10 秒，含进程启动和模型加载 84.11 秒。实测使用已有 Triton 磁盘缓存，每个进程只生成一条视频。解码后的画面和音频哈希均与重构前的同输入参考成片一致。历史热测、显存和回归范围见 [性能记录](performance/h3-cuda.md#v031-双设备冒烟)。
+该组合在 8 张 RTX 5090 上生成并保存耗时 54.10 秒，含进程启动和模型加载 84.11 秒。实测使用已有 Triton 磁盘缓存，每个进程只生成一条视频。解码后的画面和音频哈希均与重构前的同输入参考成片一致。历史热测、显存和回归范围见 [性能记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md#v031-双设备冒烟)。
 
 ## 在线与可选 2K
 
@@ -186,4 +186,4 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 server/video/video_ser
 在线原生 attention 也验证了同一服务从 5 秒切换到 10 秒，两条请求复用模型和 CPU 权重。
 10 秒请求的单卡 PyTorch 峰值保留显存约 30.34 GiB。两条近同时提交的 5 秒请求也已验证排队与串行执行。15 秒、队列满载和长期内存趋势仍需实测。
 
-[实测性能和验证范围](performance/h3-cuda.md)
+[实测性能和验证范围](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md)

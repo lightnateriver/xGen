@@ -1,6 +1,6 @@
 # NPU 离线 H3 benchmark
 
-v0.5 Base 768P默认Laser INT8 + Stream与full-parallel。运行前还需设置`H3_VAE_MODEL_PATH`指向可信原生`video_vae`目录，以及`H3_VAE_TRUST_REMOTE_CODE=1`。Native阶段含H2D、解码、RGB8/D2H及编码封装；每rank另记录`native_vae`子项，不把它当作旧INT8 VAE的同精度对照。2K Refiner仍使用独立旧后端。见[默认方案](H3-NPU-DEFAULT.md)。
+v0.6 推荐 Base 768P 默认 VC＋Ascend 融合、INT8 Linear、Native-stream 和 full-parallel，需先[安装相应算子](H3-NPU-FUSIONS.md)。Benchmark 配置记录所请求的 attention／融合列表；实际命中与回退仍需检查日志。运行前还需设置`H3_VAE_MODEL_PATH`指向可信原生`video_vae`目录，以及`H3_VAE_TRUST_REMOTE_CODE=1`。Native阶段含H2D、解码、RGB8/D2H及编码封装；每rank另记录`native_vae`子项，不把它当作旧INT8 VAE的同精度对照。2K Refiner仍使用独立旧后端。见[默认方案](H3-NPU-DEFAULT.md)。
 
 从仓库根目录执行。使用 Linux、8 张空闲昇腾卡、`npu-smi`、FFmpeg 和 FFprobe。按 [NPU 部署教程](H3-DEPLOYMENT.md) 准备 Base 和 Refiner。分别为 FL2VA、Ref2VA 用 `--steps 20` 生成 AdaLN 表，对应 20 次实际 Base DiT。已有的 21 点表可直接复用。2K 另跑 3 次 Refiner。
 
@@ -32,7 +32,7 @@ python tools/bench_h3_npu.py --manifest inputs/bench/cases.json --output outputs
   --base-adaln model-cache/t2va-21step.safetensors --ref-adaln model-cache/ref2va-21step.safetensors
 ```
 
-只检查链路、每项只跑一次时，去掉 `--warmup-per-case`。工具不会自动重试失败请求。测试报告示例见 [2026-11-04 至 05 的性能与内存数据](performance/h3-npu-offline-20261105.md)；那批使用的阶段性清理已移除，当前请求结束回收策略尚待完整设备验证。
+只检查链路、每项只跑一次时，去掉 `--warmup-per-case`。工具不会自动重试失败请求。测试报告示例见 [2026-11-04 至 05 的性能与内存数据](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-npu-offline-20261105.md)；那批使用的阶段性清理已移除，当前请求结束回收策略尚待完整设备验证。
 
 ## 多媒体探针与素材清单
 

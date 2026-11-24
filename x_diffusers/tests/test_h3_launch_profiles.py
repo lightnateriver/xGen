@@ -51,6 +51,8 @@ def test_launcher_profile_contract(launch_env,backend,task,precision,monkeypatch
         assert actual['PYTORCH_CUDA_ALLOC_CONF'] is None
     assert args[args.index('--num_inference_steps')+1]==('20' if backend=='npu' else '50')
     if backend=='npu':
+        assert args[args.index('--atten')+1]=='vc'
+        assert args[args.index('--h3-opts')+1]=='all'
         assert args[args.index('--h3_vae_backend')+1]=='native-stream'
         assert args[args.index('--vae_matmul_quant')+1]=='none'
         assert args[args.index('--matmul_quant')+1]=='int8'
@@ -64,6 +66,41 @@ def test_launcher_profile_contract(launch_env,backend,task,precision,monkeypatch
         monkeypatch.setattr(sys,'argv',['infer.py',*args[args.index('--model'):]])
         parsed=parse_args()
         assert resolve(parsed,'npu')=='none'
+        from x_diffusers.adaptor.h3_npu_options import validate, H3_FUSION_FEATURES
+        assert validate(parsed,'npu')==H3_FUSION_FEATURES
+
+
+@pytest.mark.parametrize('task',['t2va','i2va','r2va'])
+def test_npu_vc_default_can_explicitly_rollback(launch_env,task,monkeypatch):
+    command=['bash','example/diffusers/scripts/run_h3.sh','npu',task,'5','768p',
+             '--','--atten','laser','--h3-opts','none']
+    emitted=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))['args']
+    import sys
+    from x_diffusers.adaptor.config import parse_args
+    from x_diffusers.adaptor.h3_npu_options import validate
+    monkeypatch.setattr(sys,'argv',['infer.py',*emitted[emitted.index('--model'):]])
+    parsed=parse_args()
+    assert parsed.atten=='laser' and validate(parsed,'npu')==()
+
+
+def test_npu_fusion_list_and_individual_override_win_over_recipe(launch_env,monkeypatch):
+    command=['bash','example/diffusers/scripts/run_h3.sh','npu','t2va','5','768p',
+             '--','--h3-opts','rope,swiglu','--no-h3-opt-swiglu']
+    emitted=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))['args']
+    import sys
+    from x_diffusers.adaptor.config import parse_args
+    from x_diffusers.adaptor.h3_npu_options import validate
+    monkeypatch.setattr(sys,'argv',['infer.py',*emitted[emitted.index('--model'):]])
+    parsed=parse_args()
+    assert parsed.atten=='vc' and validate(parsed,'npu')==('rope',)
+
+
+def test_npu_refiner_does_not_inherit_base_vc_recipe(launch_env):
+    launch_env['H3_BASE_STEPS']='20'
+    emitted=json.loads(subprocess.check_output(['bash','example/diffusers/scripts/run_h3.sh',
+        'npu','t2va','5','2k'],cwd=ROOT,env=launch_env,text=True))['args']
+    assert emitted[emitted.index('--atten')+1]=='laser'
+    assert '--h3-opts' not in emitted and '--h3_refiner' in emitted
 
 
 def test_npu_explicit_steps_and_backend_rollback(launch_env):

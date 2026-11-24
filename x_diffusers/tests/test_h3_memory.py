@@ -101,12 +101,18 @@ class MemoryTests(unittest.TestCase):
                 manager = SimpleNamespace(initialize_pipe=Mock(), infer_single=infer)
                 service = SimpleNamespace(_prepare_task=lambda task: True,
                     _build_args=lambda *args: SimpleNamespace(model='MiniMax-H3'), _set_guidance_scale=Mock(),
-                    inference_manager=manager, maas_health=None, _save_video=save, _publish_maas_task=save,
+                    inference_manager=manager, maas=maas, maas_health=None, _save_video=save, _publish_maas_task=save,
                     _complete_task=lambda *args: events.append('completed'))
+                cleanup = Mock()
                 with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_memory':
-                                             SimpleNamespace(release_request_memory=release)}):
+                                             SimpleNamespace(release_request_memory=release),
+                                             'maas_media': SimpleNamespace(cleanup=cleanup)}):
                     method(service, 'test', {}, 'test.mp4', maas_task=object() if maas else None)
                 self.assertEqual(events, ['saved', 'release'] if maas else ['saved', 'release', 'completed'])
+                if maas:
+                    cleanup.assert_called_once_with({})
+                else:
+                    cleanup.assert_not_called()
 
     def test_online_worker_cleans_once_before_next_command(self):
         events = []

@@ -1,4 +1,5 @@
 import os
+from contextlib import nullcontext
 import io
 import json
 import hashlib
@@ -242,6 +243,7 @@ DEFAULT_MINIMAX_H3_CONFIG = {
     "sp": 8,
     "fsdp": None,
     "h3_vae_backend": "native-stream",
+    "h3_vae_torch_compile": False,
     "h3_vae_model_path": None,
     "h3_vae_trust_remote_code": False,
     "h3_features": "full-parallel",
@@ -288,7 +290,7 @@ if device_type() == "cuda":
     DEFAULT_MINIMAX_H3_CONFIG.update({
         "h3_cuda_precision": "auto", "phaa_num": 2, "h3_cuda_vae_sp": True,
         "atten": "none", "matmul_quant": "none", "vae_matmul_quant": "none",
-        "h3_vae_backend": None, "vae_lightning": "none", "rope_fused": False,
+        "h3_vae_backend": None, "h3_vae_torch_compile": False, "vae_lightning": "none", "rope_fused": False,
         "h3_features": None, "h3_cuda_refiner_ff_chunk_size": None,
         "num_inference_steps": 50,
         "transformer_path": None, "adaln_cache_file": None,
@@ -427,6 +429,10 @@ class VideoInferenceManager:
         self.current_model = None
 
     def initialize_pipe(self, args):
+        if (getattr(args, 'h3_condition_overlap', False)
+                or getattr(self, '_h3_condition_overlap_key', (False,))[0]):
+            from x_diffusers.adaptor.h3_condition_overlap import validate_manager
+            validate_manager(self, args, device_type())
         from x_diffusers.adaptor.h3_cuda_options import needs_resolution
         if (needs_resolution(args)
                 or getattr(self, "_h3_cuda_precision_key", None) in ("fp8-bf16", "fp8-sage")):
@@ -833,9 +839,13 @@ class VideoInferenceManager:
             if getattr(args, 'h3_attention', 'legacy') != 'legacy':
                 self.pipe.transformer._h3_attention_session.begin(args)
             from x_diffusers.adaptor.h3_npu_options import request_context
+            condition_context = nullcontext()
+            if getattr(args, 'h3_condition_overlap', False):
+                from x_diffusers.adaptor.h3_condition_overlap import request_context as overlap_context
+                condition_context = overlap_context(self.pipe, args)
 
             with (base_temporal_padding(self.pipe, infer_params["num_frames"]),
-                  request_context(transformer)):
+                  request_context(transformer), condition_context):
                 if getattr(args, 'h3_cuda_precompute_conditioning', False):
                     from x_diffusers.adaptor.h3_conditioning import request_conditioning
                     with request_conditioning(transformer):
@@ -2808,7 +2818,7 @@ class VideoGenerationService:
             elif isinstance(value, bool):
                 if value:
                     arg_list.append(f'--{key}')
-                elif key in BOOL_OPTIONS or key.startswith('h3_opt_'):
+                elif key in BOOL_OPTIONS or key.startswith('h3_opt_') or key == 'h3_condition_overlap':
                     arg_list.append(f'--no-{key}')
             elif isinstance(value, list):
                 arg_list.append(f'--{key}')
@@ -3732,6 +3742,8 @@ def main():
                         help='CUDA H3 Base defaults to fp8-bf16; none selects legacy; NPU auto stays unchanged')
     parser.add_argument('--h3_vae_backend', choices=['legacy', 'lightning', 'native-stream'], default=None,
                         help='H3 decoder; changing the backend requires restarting the service')
+    parser.add_argument('--h3_vae_torch_compile', action=argparse.BooleanOptionalAction, default=None,
+                        help='CUDA-only opt-in Torch Compiler for the native-stream H3 VAE decoder tile subgraph; default off')
     parser.add_argument('--h3_vae_model_path', default=None, help='Trusted native H3 video_vae directory')
     parser.add_argument('--h3_vae_trust_remote_code', action='store_true', default=None,
                         help='Authorize loading Python code from the native H3 VAE directory')

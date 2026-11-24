@@ -2,6 +2,19 @@
 
 H3 解码统一通过 `--h3_vae_backend` 选择，CUDA 与 NPU 共用三种后端。CUDA 推荐的 `fp8-bf16`、`fp8-sage`（T2VA/I2VA/R2VA）及 `sage-fp8-full-parallel` 默认选择 `native-stream`；v0.5 NPU Base推荐脚本和在线配置默认`native-stream`；其他低层离线配置默认 `legacy`。显式选择优先。选择后端需要重启常驻服务；不能在请求之间热切换权重或后端。
 
+## Torch Compiler（CUDA 可选）
+
+`--h3_vae_torch_compile` 是一个默认关闭的 CUDA-only 开关。开启后只编译 `native-stream` 的 VAE decoder tile 子图，DiT、SageAttention、PHAA、文本 TP 和请求级流式收集仍走原路径。NPU、`legacy` 和 `lightning` 后端会在启动校验阶段拒绝该选项。
+
+```bash
+torchrun --standalone --nproc_per_node=8 server/video/video_server.py --init \
+  --model minimax-h3 --service-mode ref2va \
+  --config example/diffusers/configs/h3_cuda5090_ref2va.example.json \
+  --h3_vae_torch_compile
+```
+
+编译需要首次请求或启动预热建立缓存，建议把编译开销与正式性能分开记录。该开关只在服务启动时读取，修改前必须重启服务；未加参数时行为与 v0.6 原路径一致。当前实现显式使用 `max-autotune-no-cudagraphs`，避免 CUDA Graph 捕获原生 tile all-gather 输出缓冲区。
+
 `legacy` 表示沿用旧链路，并不自动启用 Lightning。常用配置如下：
 
 | 解码方式 | CUDA | NPU | 配置 |
@@ -83,8 +96,8 @@ Native-stream 在 CUDA/NPU 上统一复用原 decoder 的 Linear 存储策略：
 pytest x_diffusers/tests/test_h3_omni_decode.py -q
 ```
 
-设置 `XGEN_TEST_NATIVE_VAE` 为可信原生 `video_vae` 路径，可运行 CUDA 小尺寸解码、连续两次请求权重复用和失败后 CPU master 恢复测试。测试结果见 [CUDA 组件性能与精度](performance/h3-omni-vae.md)和 [910B3 三后端性能](performance/h3-vae-npu.md)。两份报告的音频与环境口径不同，不直接计算跨硬件加速比。
+设置 `XGEN_TEST_NATIVE_VAE` 为可信原生 `video_vae` 路径，可运行 CUDA 小尺寸解码、连续两次请求权重复用和失败后 CPU master 恢复测试。测试结果见 [CUDA 组件性能与精度](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-omni-vae.md)和 [910B3 三后端性能](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-vae-npu.md)。两份报告的音频与环境口径不同，不直接计算跨硬件加速比。
 
-默认切换后的回归、两次真实 CUDA 请求及实际 OOM 处理见 [提交验证记录](performance/h3-vae-release.md)。小尺寸 FP16 Linear 存储对比的 RGB8 最大差为 1，不宣称逐像素等价或继承旧 decoder 的人工精度认可。
+默认切换后的回归、两次真实 CUDA 请求及实际 OOM 处理见 [提交验证记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-vae-release.md)。小尺寸 FP16 Linear 存储对比的 RGB8 最大差为 1，不宣称逐像素等价或继承旧 decoder 的人工精度认可。
 
-当前共享 Linear FP16 策略的八卡 910B1 整网复测见 [统一存储验证](performance/h3-native-shared-fp16.md)。历史表格的 FP32 存储口径保留，不与新配置混算。
+当前共享 Linear FP16 策略的八卡 910B1 整网复测见 [统一存储验证](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-native-shared-fp16.md)。历史表格的 FP32 存储口径保留，不与新配置混算。

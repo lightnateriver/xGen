@@ -45,7 +45,7 @@
 
 IR 和 2K 默认不接受请求，返回 HTTP 422；只有启动时显式加入 `--maas-mock-backends` 才提供模拟结果。请求不能切换后端。模拟结果不返回真实 usage，也不参与真实性能、精度或计费统计。
 
-水印的 CPU 开销、编码净增和计时边界见 [CPU 基准报告](performance/h3-watermark-cpu.md)。这不是 GPU 推理性能报告。
+水印的 CPU 开销、编码净增和计时边界见 [CPU 基准报告](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-watermark-cpu.md)。这不是 GPU 推理性能报告。
 
 ## 启动
 

@@ -1,6 +1,6 @@
 # 视频生成服务
 
-MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](../../docs/H3-ONLINE.md)。
+MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](../../docs/H3-ONLINE.md)。NPU 768P Base 推荐 VC＋Ascend 融合 INT8 全并行 Streaming，20 次实际 Base DiT，使用对应 Base／Ref2VA JSON；安装与回退见 [NPU 默认方案](../../docs/H3-NPU-DEFAULT.md)。下方早期模型和性能示例不代表该默认方案的实测。
 
 基于 Wan2.2-T2V/I2V-14B 模型的视频生成服务，支持文生视频(t2v)和图生视频(i2v)。
 
@@ -505,7 +505,7 @@ while True:
 
 ## CUDA H3 默认配方
 
-v0.5 八卡 CUDA H3 Base 的 T2VA / I2VA / R2VA 默认采用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表：FP8 Linear、Sage attention、FP8 PHAA、文本 TP8、组件并行与50层常驻。先[准备对应工作流的表和剔除权重后的 Transformer](../../docs/H3-CUDA-ADALN.md)，并配置可信的原生 VAE 目录。NPU 保持其 v0.5 默认配置。
+v0.5 八卡 CUDA H3 Base 的 T2VA / I2VA / R2VA 默认采用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表：FP8 Linear、Sage attention、FP8 PHAA、文本 TP8、组件并行与50层常驻。先[准备对应工作流的表和剔除权重后的 Transformer](../../docs/H3-CUDA-ADALN.md)，并配置可信的原生 VAE 目录。NPU 使用自己的 VC＋Ascend 融合推荐入口。
 
 从仓库根目录运行八卡服务：
 

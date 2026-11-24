@@ -93,6 +93,10 @@ def _configure_text_encoder(pipe, options, *, device, world, low_cpu_mem_usage):
     if options.text_encoder_tp > 1:
         pipe._xgen_image_tp_manager = ParallelManager(1, 1, 1, tp_size=options.text_encoder_tp)
         enable_tp(pipe.text_encoder, options.text_encoder_tp, target_layers=range(50))
+    if getattr(options, "image_text_int8", False):
+        from ..transformer.h3_image_optimizations import quantize_image_text_encoder
+        quantize_image_text_encoder(pipe.text_encoder)
+    if getattr(options, "image_text_resident", False) or options.text_encoder_tp > 1:
         pipe.text_encoder.to(device)
     else:
         apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device=torch.device("cpu"),

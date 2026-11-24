@@ -122,7 +122,7 @@ if [[ $backend == npu ]]; then
   if [[ $task == ref2va ]]; then refiner_chunk=2048; fi
   launch=(--master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29530}")
   profile=(--transformer_path "$base_transformer" --adaln_cache_file "$base_adaln"
-    --atten laser --matmul_quant int8 --vae_matmul_quant none --rope_fused
+    --atten vc --h3-opts all --matmul_quant int8 --vae_matmul_quant none --rope_fused
     --h3_vae_backend native-stream --text_encoder_tp 8 --phaa_num 2
     --h3_features full-parallel --h3_refiner_ff_chunk_size "$refiner_chunk")
 else

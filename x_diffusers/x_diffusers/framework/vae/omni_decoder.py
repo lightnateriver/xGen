@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 def validate_options(args, backend):
     from ...adaptor.h3_vae_config import resolve_vae_backend
     selected = resolve_vae_backend(args)
+    from ...adaptor.h3_vae_compile import validate_options as validate_torch_compile
+    validate_torch_compile(args, backend)
     if selected != "native-stream":
         if getattr(args, "h3_vae_model_path", None) or getattr(args, "h3_vae_trust_remote_code", False):
             raise ValueError("Native H3 VAE options require --h3_vae_backend native-stream")
@@ -44,15 +46,20 @@ def configure(pipe, args, device):
     if installed is not None:
         if str(installed.path) != str(args.h3_vae_model_path):
             raise ValueError("Restart the pipeline to change the native H3 VAE checkpoint")
+        if bool(getattr(installed, "torch_compile_enabled", False)) != bool(getattr(args, "h3_vae_torch_compile", False)):
+            raise ValueError("Restart the pipeline to change H3 VAE Torch Compiler")
         return
     pipe._h3_vae_decode_backend = OmniH3Decoder(args.h3_vae_model_path, device,
         trust_remote_code=args.h3_vae_trust_remote_code,
-        fp16_linears=True)
+        fp16_linears=True,
+        torch_compile=bool(getattr(args, "h3_vae_torch_compile", False)))
+    pipe._h3_vae_torch_compile = bool(getattr(args, "h3_vae_torch_compile", False))
     logger.info("Experimental H3 VAE backend=native-stream; native tile parallelism, asynchronous RGB8 transfer and MP4 encoding")
 
 
 class OmniH3Decoder:
-    def __init__(self, path, device, *, trust_remote_code=False, fp16_linears=False):
+    def __init__(self, path, device, *, trust_remote_code=False, fp16_linears=False,
+                 torch_compile=False):
         from diffusers.hooks.group_offloading import ModuleGroup
         from .omni_h3 import MiniMaxH3VideoVAE
 
@@ -65,6 +72,10 @@ class OmniH3Decoder:
             from .h3_cuda_chunks import prepare_decoder_linears
             count = prepare_decoder_linears(self.vae.model.decoder)
             logger.info("H3 native decoder: %d Linear modules stored as FP16 autocast operands", count)
+        self.torch_compile_enabled = bool(torch_compile)
+        if self.torch_compile_enabled:
+            from ...adaptor.h3_vae_compile import compile_decoder_tile_subgraph
+            compile_decoder_tile_subgraph(self.vae.model.decoder)
         # Reuse xGen/Diffusers' CPU-master staging contract. No re-read,
         # requantization or GPU-to-host weight copy between requests.
         self.group = ModuleGroup(modules=[self.vae.model], offload_device=torch.device("cpu"),

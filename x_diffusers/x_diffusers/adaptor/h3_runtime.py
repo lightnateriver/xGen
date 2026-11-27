@@ -115,10 +115,16 @@ def run_video_request(pipe, args, parameters, *, output):
     condition_context = nullcontext()
     if getattr(args, "h3_condition_overlap", False):
         condition_context = condition_overlap_context(pipe, args)
+    rope_context = nullcontext()
+    if getattr(transformer, "_h3_rope_table_enabled", False) is True:
+        from x_diffusers.framework.transformer.minimax_h3 import request_rope_table
+
+        rope_context = request_rope_table(transformer)
     with (
         base_temporal_padding(pipe, parameters["num_frames"]),
         fusion_context(transformer),
         condition_context,
+        rope_context,
     ):
         if getattr(args, "h3_cuda_precompute_conditioning", False):
             from x_diffusers.framework.transformer.minimax_h3 import request_conditioning

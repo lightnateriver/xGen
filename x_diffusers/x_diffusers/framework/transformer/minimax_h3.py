@@ -583,6 +583,7 @@ from contextvars import ContextVar
 
 
 _CURRENT = ContextVar('h3_request_conditioning', default=None)
+_ROPE_TABLE = ContextVar("h3_request_rope_table", default=None)
 
 
 def _version(value):
@@ -723,9 +724,9 @@ def prepare_local(model, video, audio, text, positions, text_indices, video_indi
     shared = getattr(model, '_h3_shared_sequence_exchange', None)
     if shared is not None:
         shared.set_tokens(len(positions))
-        rotary = model.rope(positions)
+        rotary = _compute_rope(model, positions)
     else:
-        rotary = model.rope(span.slice_padded(positions))
+        rotary = _compute_rope(model, span.slice_padded(positions))
     return hidden, rotary, span
 
 
@@ -1302,6 +1303,8 @@ def prepare_transformer(pipe, options: H3ExecutionOptions, device):
     # These fusions preserve the ordinary BF16/FP8 Linear interfaces. Packed FP4 FFN fusions do not.
 
     install_dit_fusions(model, options.dit_fusions)
+    if options.h3_cuda_dit_fusions:
+        _install_extended_dit_fusions(model, device)
     resident = len(model.transformer_blocks)
     expected_blocks = model.config.num_layers if config is not None else 50
     if resident != expected_blocks or resident < 1:
@@ -1736,6 +1739,58 @@ def install_dit_fusions(transformer, enabled):
             ff._h3_fused_ff_amax = True
             ff.forward = MethodType(fused_h3_ff_forward, ff)
         logger.info("Experimental CUDA H3 SwiGLU with activation amax enabled")
+
+
+def _extended_dit_block(self, hidden_states, temb, adaln_indices, rotary_emb, attention_mask=None):
+    from x_base.operator.h3_indexed_affine import _apply
+    from x_base.operator.h3_norm_adaln import rms_adaln
+
+    if torch.is_grad_enabled():
+        return self._h3_previous_affine(hidden_states, temb, adaln_indices, rotary_emb, attention_mask)
+    shift_attn, scale_attn, gate_attn, shift_ff, scale_ff, gate_ff = self.adaln_proj(temb)
+    first = rms_adaln(hidden_states, self.norm1, shift_attn, scale_attn, adaln_indices)
+    if first is None:
+        return self._h3_previous_affine(hidden_states, temb, adaln_indices, rotary_emb, attention_mask)
+    attention = self.attn(first[1], rotary_emb, attention_mask)
+    second = rms_adaln(
+        hidden_states, self.norm2, shift_ff, scale_ff, adaln_indices, branch=attention, gate=gate_attn,
+    )
+    if second is None:
+        residual = _apply(attention, gate_attn, hidden_states, adaln_indices, modulation=False)
+        normed = _apply(self.norm2(residual), scale_ff, shift_ff, adaln_indices, modulation=True)
+    else:
+        residual, normed = second
+    return _apply(self.ff(normed), gate_ff, residual, adaln_indices, modulation=False)
+
+
+def _value_first_swiglu(self, hidden_states):
+    from x_base.operator.h3_swiglu import value_first_swiglu
+
+    if torch.is_grad_enabled():
+        return self._h3_eager_swiglu_forward(hidden_states)
+    projected = self.proj(hidden_states)
+    if projected.is_cuda and projected.dtype == torch.bfloat16 and projected.is_contiguous():
+        return value_first_swiglu(projected)
+    values, gate = projected.chunk(2, dim=-1)
+    return values * self.activation(gate)
+
+
+def _install_extended_dit_fusions(model, device):
+    capability = torch.cuda.get_device_capability(device)
+    if capability not in ((10, 3), (12, 0)):
+        logger.info("H3 extended CUDA DiT fusions unavailable on compute capability %s", capability)
+        return
+    for block in model.transformer_blocks:
+        block._h3_previous_affine = block.forward
+        block.forward = MethodType(_extended_dit_block, block)
+        activation = block.ff.net[0]
+        if type(activation) is SwiGLU:
+            activation._h3_eager_swiglu_forward = activation.forward
+            activation.forward = MethodType(_value_first_swiglu, activation)
+    model._h3_rope_table_enabled = True
+    logger.info(
+        "H3 extended CUDA DiT fusions enabled: RMSNorm/AdaLN/residual, BF16 SwiGLU, request RoPE table"
+    )
 
 
 def configure_phaa_transport(
@@ -2312,13 +2367,49 @@ def _gather_and_output(
     return MiniMaxH3TransformerOutput(sample=video_output, audio_sample=audio_output)
 
 
+@contextmanager
+def request_rope_table(model):
+    """Keep one rank-local RoPE table for the duration of a video request."""
+    state = dict(model=model, positions=None, table=None, builds=0, hits=0)
+    token = _ROPE_TABLE.set(state)
+    try:
+        yield
+    finally:
+        _ROPE_TABLE.reset(token)
+        model._h3_rope_table_stats = {key: state[key] for key in ("builds", "hits")}
+        logger.info("H3 request RoPE table: %s", model._h3_rope_table_stats)
+
+
 def _compute_rope(
     self,
     position_ids: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute RoPE, with optional table cache."""
-
-    return self.rope(position_ids)
+    """Reuse the original RoPE computation for exactly matching positions."""
+    state = _ROPE_TABLE.get()
+    if state is None or state["model"] is not self or torch.is_grad_enabled():
+        return self.rope(position_ids)
+    previous = state["positions"]
+    version = _version(position_ids)
+    if previous is not None:
+        unchanged = (
+            previous is position_ids and version is not None and version == state["version"]
+        )
+        snapshot = state["snapshot"]
+        if snapshot is None and _version(previous) == state["version"]:
+            snapshot = previous
+        if unchanged or (
+            snapshot is not None and snapshot.device == position_ids.device
+            and snapshot.dtype == position_ids.dtype and torch.equal(snapshot, position_ids)
+        ):
+            state["hits"] += 1
+            return state["table"]
+    result = self.rope(position_ids)
+    state.update(
+        positions=position_ids, version=version, table=result,
+        snapshot=position_ids.clone() if version is None else None,
+        builds=state["builds"] + 1,
+    )
+    return result
 
 
 def _project_modalities(

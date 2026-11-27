@@ -10,6 +10,7 @@
 | 组件 | 设置 |
 |---|---|
 | 主 DiT | FP8 Linear，Sage attention，SP8，50 层常驻 |
+| DiT 融合 | QKV 合并、Q/K RMSNorm＋RoPE；5090 默认增加 RMSNorm/AdaLN/门控残差融合、BF16 SwiGLU 和请求内 RoPE 表 |
 | 文本 | FP8 TP8 |
 | 通信与输出 | PHAA2、同步 FP8、peer Align16、直接打包、本地输入/输出投影 |
 | 条件 | 请求内复用，Token Refiner SP/cuDNN/FP8 FFN，视觉/VAE/音频组件并行 |
@@ -18,6 +19,28 @@
 | 音频 VAE | FP32 加载、输入和计算，不随 DiT 量化降低精度 |
 
 使用匹配的 PyTorch CUDA、Triton、SageAttention、H3 Diffusers 与 Transformers；环境检查见 [模型文档](H3-MODELS.md#environment-cuda)。完整命令只在 [视频](H3-VIDEO-QUICKSTART.md) 和 [在线](H3-ONLINE.md) 维护。
+
+<a id="dit-fusions"></a>
+### DiT 扩展融合与 RoPE 表
+
+`sage-fp8-full-parallel` 在 RTX 5090（SM120）上默认启用三项新增能力。融合范围覆盖 RMSNorm、AdaLN 调制及注意力门控残差。SwiGLU 保留 BF16 算术，使用 H3 FP8 FFN 的 value-first 布局。每个 rank 在同一请求中复用位置一致的 RoPE 表，结束或异常时释放。
+
+在兼容的 CUDA H3 Base FP8 原生 SP 配方上可显式用 `--h3_cuda_dit_fusions` 开启。算子按 SM103/SM120 和各自的 BF16 布局约束启用，其他形状或设备使用原算子。该选项仅控制这三项，QKV 合并、Q/K RMSNorm＋RoPE 和 Attention 后端仍由已有配方控制。
+
+保留其余推荐配置并关闭这三项时，在离线命令末尾追加 `-- --no-h3_cuda_dit_fusions`，或在在线启动 JSON 中设置 `"h3_cuda_dit_fusions": false` 后重启。NPU、其他模型和 2K Refiner 沿用各自的配置规则。
+
+启动日志记录 `H3 extended CUDA DiT fusions enabled`，请求日志记录 RoPE 表的构建和复用次数。
+
+#### 5090 实测
+
+R2VA 单图、5 秒、1344×768，8×RTX 5090、SP8、Sage-FP8、native-stream、BF16 AdaLN 表。两组各预热 1 步，正式推理 20 步。均保留现有 QKV 合并和 Q/K RMSNorm＋RoPE，仅切换 DiT 扩展融合。端到端包含生成和保存，模型初始化不计入，预热单列。
+
+| 设置 | 1 步预热 | 20 步端到端 | 20 步 DiT |
+|---|---:|---:|---:|
+| 关闭新增三项 | 22.73 s | 45.94 s | 33.28 s |
+| 默认开启 | 18.14 s | **41.92 s** | **32.07 s** |
+
+该用例端到端耗时下降 8.8%，DiT 耗时下降 3.6%。开启组八个 rank 均验证了融合执行和 1 次构表、19 次复用。两条正式成片均为 124 帧，视频及音轨通过完整解码检查。
 
 <a id="precision"></a>
 ## 精度选择

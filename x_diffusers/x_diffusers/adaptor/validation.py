@@ -298,9 +298,19 @@ def resolve_h3_options(args, backend):
             )
         args.h3_parallel_mode, args.h3_dit_tp = mode = ("tp_sp", 2)
         args.h3_cuda_linear_tp = 1
+    extended_dit_compatible = (
+        backend == "cuda"
+        and getattr(args, "model", None) == "MiniMax-H3"
+        and getattr(args, "task_type", None) in ("t2va", "fl2va", "ref2va")
+        and getattr(args, "dtype", "bf16") == "bf16"
+        and getattr(args, "h3_cuda_precision", "auto") in ("fp8-bf16", "fp8-sage")
+        and mode == "sp"
+        and not getattr(args, "h3_refiner", False)
+    )
     defaults = dict(
         h3_cuda_local_input=h3_local_io_default(mode),
         h3_cuda_local_output=h3_local_io_default(mode),
+        h3_cuda_dit_fusions=full and extended_dit_compatible,
     )
     for key in H3_CUDA_BOOL_OPTIONS:
         if key in (
@@ -326,6 +336,8 @@ def resolve_h3_options(args, backend):
         if type(value) is not bool:
             raise ValueError(key + " must be boolean")
         setattr(args, key, value)
+    if args.h3_cuda_dit_fusions and not extended_dit_compatible:
+        raise ValueError("h3_cuda_dit_fusions requires CUDA H3 Base FP8 with native SP")
     old = getattr(args, "h3_cuda_input_refiner", None)
     legacy = {
         "none": (False, "legacy", "bf16"),

@@ -21,6 +21,7 @@
 |---|---|---|
 | 本地输入与输出投影 | `--h3_local_input` / `--h3_cuda_local_input`；对应 `local_output` | 保留完整上下文；输出头精度不因收集顺序改变 |
 | 请求内条件复用 | `--h3_precompute_conditioning` / `--h3_cuda_precompute_conditioning` | 同一请求多步复用，结束或异常后释放 |
+| CUDA DiT 扩展融合 | `--h3_cuda_dit_fusions` / `--no-h3_cuda_dit_fusions` | H3 Base FP8 原生 SP 的启动开关。5090 Sage-FP8 全并行默认开启；兼容的形状和设备见 [CUDA](H3-CUDA.md#dit-fusions) |
 | 视觉 SP | `--h3_vision_sp` / `--h3_cuda_vision_sp` | 保留每图边界和 DeepStack |
 | VAE 编码并行 | `--h3_vae_encoder_parallel` / `--h3_cuda_vae_encoder_parallel` | 按原 tile 规则分派，支持形状外使用原编码 |
 | 音频编码并行 | `--h3_audio_encoder_parallel` / `--h3_cuda_audio_encoder_parallel` | 遵守卷积 halo 和因果边界 |

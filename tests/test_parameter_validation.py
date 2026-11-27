@@ -44,6 +44,34 @@ class ParameterValidationTests(unittest.TestCase):
             self.assertEqual(args.model, "Wan2.2-T2V-A14B")
             self.assertEqual(args.h3_cuda_precision, "none")
 
+    def test_extended_cuda_dit_fusions_default_and_rollback(self):
+        config = import_module("x_diffusers.adaptor.config")
+        checks = import_module("x_diffusers.adaptor.validation")
+        for service in (False, True):
+            parser = config.argparse.ArgumentParser()
+            config.add_h3_cuda_arguments(parser, service=service)
+            for flags, enabled in (([], True), (["--no-h3_cuda_dit_fusions"], False)):
+                args = parser.parse_args(["--h3_cuda_preset", "sage-fp8-full-parallel", *flags])
+                args.model, args.task_type, args.dtype, args.sp = "MiniMax-H3", "ref2va", "bf16", 8
+                checks.resolve_h3_options(args, "cuda")
+                self.assertIs(args.h3_cuda_dit_fusions, enabled)
+                self.assertIs(dict(checks.h3_startup_key(args))["h3_cuda_dit_fusions"], enabled)
+
+        args = SimpleNamespace(
+            model="MiniMax-H3", task_type="t2va", h3_cuda_precision="fp8-bf16",
+            h3_cuda_preset="none", h3_cuda_dit_fusions=True,
+        )
+        checks.resolve_h3_options(args, "cuda")
+        self.assertTrue(args.h3_cuda_dit_fusions)
+
+        for backend, model in (("npu", "MiniMax-H3"), ("cuda", "Wan2.2-T2V-A14B")):
+            args = SimpleNamespace(model=model, task_type="t2va")
+            checks.resolve_h3_options(args, backend)
+            self.assertFalse(args.h3_cuda_dit_fusions)
+            args.h3_cuda_dit_fusions = True
+            with self.assertRaisesRegex(ValueError, "h3_cuda_dit_fusions"):
+                checks.resolve_h3_options(args, backend)
+
     def test_existing_conflicts_keep_their_correction_behavior(self):
         checks = import_module("x_diffusers.adaptor.validation")
         args = SimpleNamespace(

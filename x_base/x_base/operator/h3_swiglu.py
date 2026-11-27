@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA packed gate-first SwiGLU with eager BF16 intermediate rounding."""
+"""CUDA packed SwiGLU with eager BF16 intermediate rounding."""
 
 import torch
 import triton
@@ -14,12 +14,14 @@ def _maximum(a, b):
 
 @triton.jit
 def _swiglu(x, out, peaks, N: tl.constexpr, WIDTH: tl.constexpr, BLOCK: tl.constexpr,
-             COMPUTE_PEAKS: tl.constexpr):
+             COMPUTE_PEAKS: tl.constexpr, GATE_FIRST: tl.constexpr):
     offset = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offset < N
-    source = offset + offset // WIDTH * WIDTH
-    gate = tl.load(x + source, mask, other=0).to(tl.float32)
-    value = tl.load(x + source + WIDTH, mask, other=0).to(tl.float32)
+    source = offset.to(tl.int64) + (offset // WIDTH).to(tl.int64) * WIDTH
+    gate_offset = source if GATE_FIRST else source + WIDTH
+    value_offset = source + WIDTH if GATE_FIRST else source
+    gate = tl.load(x + gate_offset, mask, other=0).to(tl.float32)
+    value = tl.load(x + value_offset, mask, other=0).to(tl.float32)
     activated = tl.div_rn(gate, 1.0 + libdevice.exp(-gate)).to(tl.bfloat16).to(tl.float32)
     result = (activated * value).to(tl.bfloat16)
     tl.store(out + offset, result, mask)
@@ -28,14 +30,22 @@ def _swiglu(x, out, peaks, N: tl.constexpr, WIDTH: tl.constexpr, BLOCK: tl.const
         tl.store(peaks + tl.program_id(0), peak)
 
 
-def gate_first_swiglu(x, *, with_amax=False):
+def _packed_swiglu(x, *, gate_first, with_amax=False):
     width = x.shape[-1] // 2
     output = torch.empty((*x.shape[:-1], width), device=x.device, dtype=x.dtype)
     blocks = triton.cdiv(output.numel(), 1024)
     peaks = torch.empty((blocks,), device=x.device, dtype=torch.float32) if with_amax else output
     _swiglu[(blocks,)](
-        x, output, peaks, output.numel(), width, 1024, with_amax, enable_fp_fusion=False,
+        x, output, peaks, output.numel(), width, 1024, with_amax, gate_first, enable_fp_fusion=False,
     )
     if with_amax:
         return output, peaks.amax()
     return output
+
+
+def gate_first_swiglu(x, *, with_amax=False):
+    return _packed_swiglu(x, gate_first=True, with_amax=with_amax)
+
+
+def value_first_swiglu(x):
+    return _packed_swiglu(x, gate_first=False)

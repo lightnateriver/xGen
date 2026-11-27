@@ -85,7 +85,7 @@ class RequestRuntimeTests(unittest.TestCase):
                 condition_overlap_context=scope("overlap"),
             ),
             "x_diffusers.framework.transformer.minimax_h3": SimpleNamespace(
-                request_conditioning=scope("conditioning")
+                request_conditioning=scope("conditioning"), request_rope_table=scope("rope")
             ),
         }
 
@@ -102,6 +102,7 @@ class RequestRuntimeTests(unittest.TestCase):
                     return result
 
                 pipe = Mock(side_effect=generate)
+                pipe.transformer._h3_rope_table_enabled = True
                 pipe.transformer._h3_attention_session.begin.side_effect = lambda args: (
                     events.append("begin")
                 )
@@ -149,9 +150,11 @@ class RequestRuntimeTests(unittest.TestCase):
                         "enter:padding",
                         "enter:fusion",
                         "enter:overlap",
+                        "enter:rope",
                         "enter:conditioning",
                         "inference",
                         "exit:conditioning",
+                        "exit:rope",
                         "exit:overlap",
                         "exit:fusion",
                         "exit:padding",

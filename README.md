@@ -21,7 +21,7 @@ python tools/collect_env.py
 
 | 用途 | 入口与配置 |
 |---|---|
-| 八卡 CUDA Base 视频 | [Sage-FP8 全并行、native-stream、BF16 AdaLN 表](docs/H3-CUDA.md) |
+| 八卡 CUDA Base 视频 | [Sage-FP8 全并行、native-stream、BF16 AdaLN 表](docs/H3-CUDA.md)，5090 默认启用 DiT 扩展融合和请求内 RoPE 表 |
 | 八卡 NPU Base 视频 | [VC、Ascend 融合、INT8、full-parallel、native-stream](docs/H3-NPU-DEFAULT.md) |
 | 四卡 NPU 图像 | [H3-Image 六步、文本 TP4/W8A8 与图像专用优化](docs/H3-IMAGE.md#npu-profile) |
 

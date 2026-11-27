@@ -26,7 +26,7 @@ XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
   --host 127.0.0.1 --port 5001
 ```
 
-`t2va` 与 `fl2va` 服务模式的 FL2VA 模型均可接收文字/首帧任务。Ref2VA 改为 `--service-mode ref2va`，使用 `h3_cuda5090_ref2va.example.json`。默认配置与回退见 [CUDA](H3-CUDA.md)。
+`t2va` 与 `fl2va` 服务模式的 FL2VA 模型均可接收文字/首帧任务。Ref2VA 改为 `--service-mode ref2va`，使用 `h3_cuda5090_ref2va.example.json`。默认配置与回退见 [CUDA](H3-CUDA.md)。5090 默认启用 DiT 扩展融合；在兼容的启动 JSON 中设置 `"h3_cuda_dit_fusions": false` 可单独关闭，修改后重启。
 
 <a id="npu"></a>
 ## NPU Base

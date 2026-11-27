@@ -128,6 +128,7 @@ class H3ExecutionOptions:
     parallel: H3ParallelSettings = H3ParallelSettings()
     dit_fusions: frozenset[str] = frozenset()
     local_io_default: bool = True
+    h3_cuda_dit_fusions: bool = False
 
 
 REFERENCE_RESIZE_MODES = ("diffusers", "max", "match")

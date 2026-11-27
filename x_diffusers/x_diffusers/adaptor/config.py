@@ -23,6 +23,7 @@ H3_CUDA_BOOL_OPTIONS = (
     "h3_cuda_phaa_fp8",
     "h3_cuda_phaa_direct_pack",
     "h3_cuda_input_refiner_sp",
+    "h3_cuda_dit_fusions",
 )
 H3_CUDA_STARTUP_OPTIONS = H3_CUDA_BOOL_OPTIONS + (
     "h3_cuda_preset",
@@ -880,6 +881,10 @@ def add_h3_cuda_arguments(parser, *, service=False):
     group.add_argument(
         "--h3_cuda_input_refiner_ffn", choices=("bf16", "fp8"), default=None
     )
+    group.add_argument(
+        "--h3_cuda_dit_fusions", action=argparse.BooleanOptionalAction, default=None,
+        help="Use extended H3 CUDA DiT fusions and a request-local RoPE table",
+    )
     if service:
         for name in H3_CUDA_BOOL_OPTIONS:
             if name not in (
@@ -887,6 +892,7 @@ def add_h3_cuda_arguments(parser, *, service=False):
                 "h3_cuda_phaa_fp8",
                 "h3_cuda_phaa_direct_pack",
                 "h3_cuda_input_refiner_sp",
+                "h3_cuda_dit_fusions",
             ):
                 group.add_argument(
                     "--" + name, action=argparse.BooleanOptionalAction, default=None

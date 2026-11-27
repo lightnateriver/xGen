@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import torch
 
-from x_diffusers.framework.transformer import h3_attention
+import x_diffusers.framework.transformer.minimax_h3 as h3_attention
 
 
 class Recorder:

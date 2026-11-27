@@ -21,7 +21,8 @@ from maas_media import cleanup
 from maas_v2_backends import MockBackends
 from maas_v2_callbacks import Callbacks
 from maas_v2_store import STATUSES, TaskHistory
-from x_diffusers.adaptor.h3_refiner_config import H3_MAX_PROMPT_LENGTH, h3_prompt_length
+from x_diffusers.adaptor.validation import H3_MAX_PROMPT_LENGTH
+from x_diffusers.adaptor.validation import h3_prompt_length
 
 logger = logging.getLogger(__name__)
 FIELDS = {'model', 'content', 'resolution', 'duration', 'ratio', 'callback_url', 'aigc_watermark'}

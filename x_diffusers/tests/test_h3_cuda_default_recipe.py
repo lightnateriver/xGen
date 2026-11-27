@@ -3,8 +3,10 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from x_diffusers.adaptor.h3_cuda_options import select_default_recipe, startup_key
-from x_diffusers.adaptor.h3_cuda_adaln import resolve_assets, validate_options
+from x_diffusers.adaptor.validation import select_h3_default_recipe as select_default_recipe
+from x_diffusers.adaptor.validation import h3_startup_key as startup_key
+from x_diffusers.adaptor.validation import resolve_h3_cuda_adaln_assets as resolve_assets
+from x_diffusers.adaptor.validation import validate_h3_cuda_adaln as validate_options
 
 
 def settings(**overrides):

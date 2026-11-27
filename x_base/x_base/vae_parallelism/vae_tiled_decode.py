@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
-from typing import List, Tuple, Union
+from typing import TYPE_CHECKING, List, Tuple, Union
+
+if TYPE_CHECKING:
+    from diffusers.models.autoencoders.vae import DecoderOutput
 
 import torch
 import torch.distributed as dist

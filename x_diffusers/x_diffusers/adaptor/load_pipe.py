@@ -1,8 +1,20 @@
+from copy import deepcopy
+from shutil import which
+import time
+from .validation import validate_h3_image_checkpoint
+
+
+from x_diffusers.adaptor.validation import get_h3_dit_fusions
+from x_diffusers.adaptor.validation import check_args_conflict
+import json
 import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.distributed as dist
-import x_diffusers.framework
+from x_diffusers.framework import initialize_framework
 
 from diffusers import AutoencoderKLWan, FlowMatchEulerDiscreteScheduler, WanPipeline, WanImageToVideoPipeline, WanVACEPipeline, WanTransformer3DModel, \
     CogVideoXPipeline, HunyuanVideoImageToVideoPipeline, HunyuanVideoPipeline
@@ -18,7 +30,7 @@ from x_base.device import device_type
 from x_base.config import QWEN_LORA_SCHEDULER_CONFIG
 from .distillation import update_wan_distillation_pipe_params, load_distillation_model
 from ..framework.pipeline import WanImageToVideoPipelineJoint, WanVideoToVideoPipeline
-from ..framework.transformer.h3_text_encoder import truncate_text_encoder
+from x_diffusers.framework.h3_encoders import truncate_text_encoder
 from ..framework.schedulers.pusa_schedulers import FlowMatchEulerDiscreteSchedulerPusa
 from ..framework.pipeline.registry import get_pipeline_cls_by_hf_class_name, is_registered_mappings
 
@@ -45,6 +57,7 @@ SUPPORTED_MODEL = [
     "CogVideoX-5b",
     "HunyuanVideo-T2V-13B",
     "MiniMax-H3",
+    "MiniMax-H3-Image",
 ]
 
 
@@ -168,6 +181,478 @@ def load_hunyuanvideo_pipe(args):
     return pipe
 
 
+def configure_h3_npu_fusions(pipe, args, backend):
+    """Apply the validated NPU fusion selection through the model's public hook."""
+    from .validation import validate_h3_npu_fusions
+
+    features = validate_h3_npu_fusions(args, backend)
+    if args.model == "MiniMax-H3":
+        configure = getattr(pipe.transformer, "configure_fused_ops", None)
+        if features or getattr(pipe.transformer, "_h3_fused_ops", ()):
+            if configure is None:
+                raise ValueError("Selected H3 transformer does not support NPU fusions")
+            configure(features)
+
+
+def configure_h3_vae_backend(pipe, args, device):
+    """Do nothing for the default path; load one CPU master for an Omni worker."""
+    from x_diffusers.adaptor.validation import resolve_vae_backend
+
+    selected = resolve_vae_backend(args)
+    if selected == "legacy":
+        return
+    pipe._h3_vae_backend_name = selected
+    if selected == "lightning":
+        return
+    installed = getattr(pipe, "_h3_vae_decode_backend", None)
+    if installed is not None:
+        if str(installed.path) != str(args.h3_vae_model_path):
+            raise ValueError(
+                "Restart the pipeline to change the native H3 VAE checkpoint"
+            )
+        if bool(getattr(installed, "torch_compile_enabled", False)) != bool(
+            getattr(args, "h3_vae_torch_compile", False)
+        ):
+            raise ValueError("Restart the pipeline to change H3 VAE Torch Compiler")
+        return
+    from x_diffusers.framework.vae.minimax_h3 import OmniH3Decoder
+
+    pipe._h3_vae_decode_backend = OmniH3Decoder(
+        args.h3_vae_model_path,
+        device,
+        trust_remote_code=args.h3_vae_trust_remote_code,
+        fp16_linears=True,
+        torch_compile=bool(getattr(args, "h3_vae_torch_compile", False)),
+    )
+    pipe._h3_vae_torch_compile = bool(getattr(args, "h3_vae_torch_compile", False))
+    logger.info(
+        "Experimental H3 VAE backend=native-stream; native tile parallelism, asynchronous RGB8 transfer and MP4 encoding"
+    )
+
+
+def configure_h3_turbo8(pipe):
+    """Assemble the experimental LightX2V 768P eight-evaluation schedule."""
+    from types import MethodType
+    from .validation import h3_schedule_points
+    from x_diffusers.framework.lora.minimax_h3 import training_euler_step
+
+    eval_steps = 8
+    points = h3_schedule_points(eval_steps)
+
+    for name, shift in (("scheduler", 6.0), ("audio_scheduler", 3.0)):
+        scheduler = getattr(pipe, name)
+        scheduler.set_shift(shift)
+        scheduler.set_timesteps(points, device="cpu")
+        if len(scheduler.timesteps) != eval_steps or len(scheduler.sigmas) != points:
+            raise RuntimeError("Turbo8 scheduler must produce eight DiT evaluations")
+        scheduler.step = MethodType(training_euler_step, scheduler)
+    logger.warning("H3_TURBO8 experimental=true nfe=8 video_shift=6 audio_shift=3")
+
+
+def configure_h3_turbo_sla(pipe, args):
+    """Install the opt-in LoRA and schedule before offloading and parallel hooks."""
+    if not getattr(args, "h3_turbo_sla_lora", None):
+        return
+    from types import MethodType
+    from safetensors.torch import load_file
+    from x_diffusers.framework.lora.minimax_h3 import install_lora
+    from x_diffusers.framework.lora.minimax_h3 import training_euler_step
+
+    for name, shift in (("scheduler", 6.0), ("audio_scheduler", 3.0)):
+        scheduler = getattr(pipe, name, None)
+        if scheduler is None or type(scheduler).__name__ != "MiniMaxH3Scheduler":
+            raise TypeError(f"Turbo-SLA requires Diffusers MiniMaxH3Scheduler for {name}.")
+        scheduler.set_shift(shift)
+        scheduler.step = MethodType(training_euler_step, scheduler)
+    count = install_lora(pipe.transformer, load_file(args.h3_turbo_sla_lora, device="cpu"),
+                         has_adaln_cache=bool(args.adaln_cache_file))
+    # Keep sparse policy local to H3 attention, never global to the encoder/VAEs.
+    for block in pipe.transformer.transformer_blocks:
+        block.attn._h3_turbo_sla = True
+    for block in pipe.transformer.token_refiner.refiner_blocks:
+        block.attn._h3_turbo_sla = True
+    pipe._h3_turbo_sla_path = os.path.abspath(args.h3_turbo_sla_lora)
+    pipe._h3_turbo_sla_pairs = count
+    logger.warning("Turbo-SLA uses the portable selected-block BF16 reference backend; Sage2 INT8 parity and NPU speed are unqualified.")
+
+
+def configure_h3_parallelism(pipe, args):
+    omni_decode = getattr(args, "h3_vae_backend", "legacy") == "native-stream"
+    cuda_vae_tiles = os.environ.get("XGEN_H3_CUDA_VAE_TILES") == "1"
+    if getattr(args, "h3_cuda_precision", "none") in ("fp8-bf16", "fp8-sage"):
+        cuda_vae_tiles = True
+    if (
+        not omni_decode
+        and cuda_vae_tiles
+        and not getattr(args, "h3_cuda_vae_sp", False)
+    ):
+        raise ValueError("XGEN_H3_CUDA_VAE_TILES requires --h3_cuda_vae_sp")
+    if not omni_decode and getattr(args, "h3_cuda_vae_sp", False):
+        manager = getattr(
+            pipe, "_h3_vae_parallel_manager", pipe.transformer.parallel_manager
+        )
+        from x_diffusers.framework.vae.minimax_h3 import install_vae_parallel
+
+        install_vae_parallel(pipe.vae, manager, tile_parallel=cuda_vae_tiles)
+        if cuda_vae_tiles:
+            logger.info("Experimental CUDA H3 spatial VAE tile parallelism enabled")
+        logger.info("Experimental CUDA H3 VAE SP enabled, sp_size=%s", manager.sp_size)
+
+    fp8_phaa = os.environ.get("XGEN_PHAA_FP8") == "1"
+    h3_parallel = getattr(pipe.transformer, "_h3_parallel_config", None)
+    if getattr(h3_parallel, "mode", None) == "tp_cp_shared":
+        logger.info(
+            "H3 shared TP8/CP8 %s sequence exchange; QKV all-to-all fused with TP head layout; no standalone PHAA transport",
+            h3_parallel.tp_comm,
+        )
+        return
+    if h3_parallel is not None:
+        fp8_phaa = h3_parallel.cp_comm == "fp8"
+    async_exchange = os.environ.get("XGEN_PHAA_ASYNC_EXCHANGE") == "1"
+    direct_return = os.environ.get("XGEN_PHAA_DIRECT_RETURN") == "1"
+    fp8_row_tiling = os.environ.get("XGEN_PHAA_FP8_ROW_TILING") == "1"
+    fused_return_pack = os.environ.get("XGEN_PHAA_FUSED_RETURN_PACK") == "1"
+    direct_gather = os.environ.get("XGEN_PHAA_DIRECT_GATHER") == "1"
+    if direct_return and not async_exchange:
+        raise ValueError("XGEN_PHAA_DIRECT_RETURN requires XGEN_PHAA_ASYNC_EXCHANGE=1")
+    if fused_return_pack and not direct_return:
+        raise ValueError(
+            "XGEN_PHAA_FUSED_RETURN_PACK requires XGEN_PHAA_DIRECT_RETURN=1"
+        )
+    if fp8_row_tiling and not async_exchange:
+        raise ValueError("XGEN_PHAA_FP8_ROW_TILING requires XGEN_PHAA_ASYNC_EXCHANGE=1")
+    if direct_gather and not async_exchange:
+        raise ValueError("XGEN_PHAA_DIRECT_GATHER requires XGEN_PHAA_ASYNC_EXCHANGE=1")
+    if async_exchange and not fp8_phaa:
+        raise ValueError("XGEN_PHAA_ASYNC_EXCHANGE requires CUDA and XGEN_PHAA_FP8=1")
+    if fp8_phaa:
+        local_heads = (
+            pipe.transformer.transformer_blocks[0].attn.heads
+            if h3_parallel is not None
+            else pipe.transformer.config.num_attention_heads
+        ) // args.sp
+        if args.sp < 2 or not 1 <= args.phaa_num <= local_heads:
+            raise ValueError(
+                "XGEN_PHAA_FP8=1 requires H3, SP > 1, and a valid --phaa_num"
+            )
+        chunk_order = os.environ.get("XGEN_PHAA_CHUNK_ORDER", "natural")
+        if chunk_order not in ("natural", "tail-first"):
+            raise ValueError("XGEN_PHAA_CHUNK_ORDER must be natural or tail-first")
+        if chunk_order == "tail-first" and args.phaa_num != 4:
+            raise ValueError("PHAA tail-first requires --phaa_num 4")
+        gather_priority = os.environ.get("XGEN_PHAA_GATHER_PRIORITY") == "1"
+        dual_comm = os.environ.get("XGEN_PHAA_DUAL_COMM") == "1"
+        device_join = os.environ.get("XGEN_PHAA_DEVICE_JOIN") == "1"
+        if async_exchange and not device_join:
+            raise ValueError(
+                "XGEN_PHAA_ASYNC_EXCHANGE requires XGEN_PHAA_DEVICE_JOIN=1"
+            )
+        if async_exchange and not callable(
+            getattr(dist.Work, "block_current_stream", None)
+        ):
+            raise RuntimeError(
+                "XGEN_PHAA_ASYNC_EXCHANGE requires distributed Work.block_current_stream"
+            )
+        if device_join and dual_comm:
+            raise ValueError(
+                "XGEN_PHAA_DEVICE_JOIN requires XGEN_PHAA_DUAL_COMM to be disabled"
+            )
+        scatter_group = scatter_stream = None
+        if dual_comm:
+            from x_base.phaa.utils import phaa_cuda_scatter_group
+
+            sp_group = pipe.transformer.parallel_manager.sp_group
+            if dist.get_process_group_ranks(sp_group) != list(
+                range(dist.get_world_size())
+            ):
+                raise ValueError(
+                    "PHAA dual communication requires a world-spanning SP group"
+                )
+            scatter_group = phaa_cuda_scatter_group(dist.group.WORLD)
+            scatter_stream = torch.cuda.Stream()
+        async_options = None
+        if async_exchange:
+            from x_base.phaa.fp8_async_transport import AsyncFP8Options
+
+            async_options = AsyncFP8Options(
+                direct_return=direct_return,
+                row_tiling=fp8_row_tiling,
+                fused_return_pack=fused_return_pack,
+                direct_gather=direct_gather,
+            )
+        from x_diffusers.framework.transformer.minimax_h3 import configure_phaa_transport
+
+        configure_phaa_transport(
+            pipe.transformer,
+            gather_priority=gather_priority,
+            chunk_order=chunk_order,
+            device_join=device_join,
+            async_options=async_options,
+            scatter_group=scatter_group,
+            scatter_stream=scatter_stream,
+        )
+        logger.info(
+            "Experimental H3 PHAA E4M3 transport enabled, chunks=%s, order=%s, gather_priority=%s, dual_comm=%s, device_join=%s, async_exchange=%s, NCCL_MAX_CTAS=%s",
+            args.phaa_num,
+            chunk_order,
+            gather_priority,
+            dual_comm,
+            device_join,
+            async_exchange,
+            os.environ.get("NCCL_MAX_CTAS"),
+        )
+        if direct_return:
+            logger.info("Experimental H3 PHAA direct return enabled")
+        if fp8_row_tiling:
+            logger.info("Experimental H3 PHAA FP8 row tiling enabled (4 rows/program)")
+        if fused_return_pack:
+            logger.info("Experimental H3 PHAA fused return packing enabled")
+        if direct_gather:
+            logger.info("Experimental H3 PHAA direct gather enabled")
+
+
+def resolve_h3_execution_options(args, pipe=None):
+    """Resolve once per build; reject a changed installation configuration."""
+    from dataclasses import fields
+    from x_diffusers.framework.h3_config import H3ExecutionOptions
+    from x_diffusers.adaptor.validation import resolve_parallel_config
+    from x_diffusers.adaptor.validation import h3_local_io_default as local_io_default
+    from x_base.device import device_type
+
+    values = {
+        field.name: getattr(args, field.name, field.default)
+        for field in fields(H3ExecutionOptions)
+        if field.name not in ("parallel", "dit_fusions", "local_io_default")
+    }
+    parallel_fields = (
+        "h3_dit_tp",
+        "h3_tp_comm",
+        "h3_cp_comm",
+        "h3_tp_comm_chunk_elements",
+        "h3_parallel_warmup_mib",
+    )
+    signature = (
+        tuple(values.items()),
+        tuple(getattr(args, name, None) for name in parallel_fields),
+    )
+    previous = (
+        getattr(pipe, "_xgen_h3_execution_options", None) if pipe is not None else None
+    )
+    if isinstance(previous, H3ExecutionOptions):
+        if signature != pipe._xgen_h3_execution_key:
+            raise ValueError("Restart the pipeline to change H3 installation settings")
+        return previous
+    parallel = resolve_parallel_config(
+        args, device_type(), dist.get_world_size() if dist.is_initialized() else 1
+    )
+    fusions = frozenset()
+    if values["h3_cuda_precision"] in ("fp8-bf16", "fp8-sage"):
+        fusions = frozenset(
+            (
+                "XGEN_H3_FUSED_INDEXED_AFFINE",
+                "XGEN_H3_FUSED_PARTIAL_ROPE",
+                "XGEN_H3_FUSED_QK_RMS",
+            )
+        )
+        if os.environ.get("XGEN_H3_FUSED_OUTPUT_ADALN") == "1":
+            fusions |= {"XGEN_H3_FUSED_OUTPUT_ADALN"}
+    options = H3ExecutionOptions(
+        **values,
+        parallel=parallel,
+        dit_fusions=fusions,
+        local_io_default=local_io_default(parallel.mode),
+    )
+    if pipe is not None:
+        pipe._xgen_h3_execution_options = options
+        pipe._xgen_h3_execution_key = signature
+    return options
+
+
+
+
+
+def configure_h3_image_attention(args, backend):
+    """Select Image attention through the shared operator manager."""
+    from x_base import attention_manager
+
+    if args.atten == "laser":
+        if backend != "npu":
+            raise ValueError("Laser attention requires an Ascend NPU")
+        from x_base.operator.attention import LA_AVAILABLE
+        if not LA_AVAILABLE:
+            raise RuntimeError("Laser attention was requested but MindIE-SD is unavailable")
+        attention_manager.enable_laser_attention()
+    else:
+        attention_manager.disable_laser_attention()
+
+
+def _configure_h3_image_dit(pipe, args, *, root, device):
+    from x_diffusers.framework.transformer.minimax_h3_image import fuse_image_qkv
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_adaln_table
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_dit_tp
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_ff_chunk
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_refiner_sp
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_swiglu
+    from x_diffusers.framework.transformer.minimax_h3_image import load_image_adaln_table
+    from x_diffusers.framework.transformer.minimax_h3_image import quantize_image_blocks
+    from x_diffusers.framework.transformer.minimax_h3_image import save_image_adaln_table
+    from x_diffusers.framework.transformer.minimax_h3_image import enable_h3_image_sp
+
+    transformer = pipe.transformer
+    adaln_table = getattr(args, "image_adaln_table_file", None)
+    save_adaln_table = getattr(args, "image_adaln_table_save", None)
+    if adaln_table:
+        load_image_adaln_table(
+            adaln_table,
+            root,
+            transformer,
+            pipe.config.sample_sigmas,
+            pipe.reference_noise_aug,
+            device,
+        )
+    elif getattr(args, "image_adaln_table", False) or save_adaln_table:
+        install_image_adaln_table(
+            transformer, pipe.config.sample_sigmas, pipe.reference_noise_aug, device
+        )
+        if save_adaln_table and (not dist.is_initialized() or dist.get_rank() == 0):
+            save_image_adaln_table(
+                save_adaln_table,
+                root,
+                transformer,
+                pipe.config.sample_sigmas,
+                pipe.reference_noise_aug,
+            )
+    if getattr(args, "image_fused_qkv", False):
+        fuse_image_qkv(transformer)
+    if getattr(args, "image_int8", False):
+        if device.type != "npu":
+            raise ValueError("Image INT8 requires NPU")
+        quantize_image_blocks(transformer)
+    dit_tp = getattr(args, "image_dit_tp", 1)
+    enable_h3_image_sp(transformer, args.sp, dit_tp)
+    if dit_tp > 1:
+        install_image_dit_tp(transformer, dist.group.WORLD)
+    if getattr(args, "image_refiner_sp", False) and args.sp > 1:
+        install_image_refiner_sp(transformer)
+    from x_diffusers.framework.transformer.minimax_h3_image import configure_image_attention
+
+    configure_image_attention(
+        transformer,
+        fused_rope=bool(getattr(args, "image_fused_rope", False)),
+        dense_tail=getattr(args, "image_laser_dense_tail", 0),
+    )
+    if getattr(args, "image_ff_chunk", 0):
+        install_image_ff_chunk(transformer, args.image_ff_chunk)
+    if getattr(args, "image_swiglu", "none") != "none":
+        install_image_swiglu(transformer, args.image_swiglu)
+
+
+def _configure_h3_image_text_encoder(
+    pipe, args, *, device, world, low_cpu_mem_usage
+):
+    from diffusers.hooks import apply_group_offloading
+
+    if args.text_encoder_tp > 1:
+        from x_diffusers.framework.h3_encoders import enable_text_tp
+
+        enable_text_tp(pipe, args.text_encoder_tp, create_manager=True)
+    if getattr(args, "image_text_int8", False):
+        from x_diffusers.framework.transformer.minimax_h3_image import quantize_image_text_encoder
+
+        quantize_image_text_encoder(pipe.text_encoder)
+    if getattr(args, "image_text_resident", False) or args.text_encoder_tp > 1:
+        pipe.text_encoder.to(device)
+    else:
+        apply_group_offloading(
+            pipe.text_encoder,
+            onload_device=device,
+            offload_device=torch.device("cpu"),
+            offload_type="leaf_level",
+            use_stream=True,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+        )
+    if getattr(args, "image_vision_sp", False) and world > 1:
+        from x_diffusers.framework.h3_encoders import install_vision_sp
+
+        install_vision_sp(pipe.text_encoder.model.visual, lambda: dist.group.WORLD)
+
+
+def _place_h3_image_dit(transformer, args, *, device, low_cpu_mem_usage):
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_condition_cache
+    from x_diffusers.framework.transformer.minimax_h3_image import install_image_local_input
+
+    # A BF16 DiT alone exceeds a 64 GiB 910B; stage one block at a time.
+    if getattr(args, "image_resident", False):
+        transformer.to(device)
+    else:
+        transformer.enable_group_offload(
+            onload_device=device,
+            offload_device=torch.device("cpu"),
+            offload_type="block_level",
+            num_blocks_per_group=1,
+            use_stream=True,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+        )
+    if getattr(args, "image_condition_cache", False):
+        install_image_condition_cache(transformer)
+    if getattr(args, "image_local_input", False):
+        install_image_local_input(transformer)
+
+
+@torch.inference_mode(False)
+@torch.no_grad()
+def load_minimax_h3_image_pipe(args, *, device, world):
+    """Load checkpoint components and install the selected xGen device policies."""
+    try:
+        from diffusers import MiniMaxH3ImageModularPipeline
+    except ImportError as error:
+        raise ImportError(
+            "H3 Image needs the pinned optional Diffusers source in requirements-h3-image.txt"
+        ) from error
+    from x_diffusers.framework.h3_encoders import truncate_text_encoder
+
+    model_root = args.pretrained_model_name_or_path
+    validate_h3_image_checkpoint(model_root)
+    root = str(Path(model_root).resolve())
+    pipe = MiniMaxH3ImageModularPipeline.from_pretrained(root, local_files_only=True)
+    pipe.load_components(
+        dtype=torch.bfloat16, pretrained_model_name_or_path=root, local_files_only=True
+    )
+    truncate_text_encoder(pipe, num_keep=50)
+    pipe.text_encoder.requires_grad_(False)
+    pipe.transformer.requires_grad_(False)
+
+    low_cpu_mem_usage = not getattr(args, "image_pinned_cpu_offload", False)
+    _configure_h3_image_dit(pipe, args, root=root, device=device)
+    _configure_h3_image_text_encoder(
+        pipe, args, device=device, world=world, low_cpu_mem_usage=low_cpu_mem_usage
+    )
+    _place_h3_image_dit(
+        pipe.transformer, args, device=device, low_cpu_mem_usage=low_cpu_mem_usage
+    )
+
+    # The upstream VAE keeps its required FP32 operations and latent normalization.
+    pipe.vae.to(device=device)
+    vae_parallel = getattr(args, "image_vae_parallel", False) and world > 1
+    vae_decode_batch = getattr(args, "image_vae_decode_batch_size", 1)
+    if vae_parallel or vae_decode_batch > 1:
+        from x_diffusers.framework.vae.minimax_h3_image import (
+            install_image_vae_parallel,
+        )
+
+        install_image_vae_parallel(
+            pipe.vae,
+            dist.group.WORLD if vae_parallel else None,
+            gather_once=getattr(args, "image_vae_gather_once", False),
+            decode_batch_size=vae_decode_batch,
+        )
+    if getattr(args, "image_rgb8_output", False):
+        from ..framework.pipeline.minimax_h3_image import install_image_rgb8_output
+
+        install_image_rgb8_output(pipe)
+    return pipe
+
+
 def load_minimax_h3_pipe(args):
     """Load a MiniMax-H3 ModularPipeline.
 
@@ -190,9 +675,7 @@ def load_minimax_h3_pipe(args):
     packed_compile = getattr(args, "h3_nvfp4_compile", False)
     cuda_fusions = ()
     if device_type() == "cuda":
-        from .h3_cuda import get_dit_fusions
-
-        cuda_fusions = get_dit_fusions(packed_resident, packed_compile)
+        cuda_fusions = get_h3_dit_fusions(packed_resident, packed_compile)
     if packed_compile and not packed_resident:
         raise ValueError("--h3_nvfp4_compile requires --h3_nvfp4_resident")
     if packed_resident and not packed_checkpoint:
@@ -215,10 +698,10 @@ def load_minimax_h3_pipe(args):
         logger.info("building minimax-h3 t2va/fl2va modular pipeline...")
         pipe = ModularPipeline.from_pretrained(args.pretrained_model_name_or_path)
 
-    from .h3_references import configure_reference_image_size
+    from x_diffusers.adaptor.load_pipe import configure_h3_reference_image_size as configure_reference_image_size
     configure_reference_image_size(pipe, args)
     if task_type == "ref2va" and not getattr(args, "h3_refiner", False):
-        from .h3_reference_setup import install_reference_setup
+        from x_diffusers.framework.pipeline.minimax_h3 import install_reference_setup
 
         install_reference_setup(pipe)
 
@@ -235,7 +718,7 @@ def load_minimax_h3_pipe(args):
     # they stay on meta device (zero memory).
     transformer_path = getattr(args, 'transformer_path', None)
     if packed_checkpoint:
-        from .h3_nvfp4 import load_packed_h3
+        from x_diffusers.framework.transformer.minimax_h3 import load_packed_h3
 
         config = MiniMaxH3Transformer3DModel.load_config(
             args.pretrained_model_name_or_path, subfolder="transformer"
@@ -263,7 +746,7 @@ def load_minimax_h3_pipe(args):
         pipe.load_components(dtype=component_dtypes, pretrained_model_name_or_path=args.pretrained_model_name_or_path,
                              **component_options)
 
-    from .h3_audio_precision import prepare_audio_vae
+    from x_diffusers.framework.vae.minimax_h3 import prepare_audio_vae
     prepare_audio_vae(pipe.audio_vae)
 
     # origin/main: workflow="ref2va" only loads transformer_ref, pipe.transformer is None.
@@ -309,11 +792,9 @@ def load_minimax_h3_pipe(args):
     # Truncate text_encoder to first 50 layers — before any NPU transfer.
     # H3 only uses hidden_states[50] (layer 49 output, pre-norm).
     # Layers 50-63 weights never enter NPU.
-    from .h3_turbo_sla import configure_pipe
-    configure_pipe(pipe, args)
+    configure_h3_turbo_sla(pipe, args)
     if getattr(args, "h3_turbo8", False):
-        from .h3_turbo8 import configure
-        configure(pipe)
+        configure_h3_turbo8(pipe)
     truncate_text_encoder(pipe, num_keep=50)
 
     # Freeze models — no gradients needed for inference
@@ -335,28 +816,19 @@ def load_minimax_h3_pipe(args):
     # ColumnParallelLinear/RowParallelLinear, and group offloading must
     # be applied AFTER that replacement to wrap the new TP layers.
     if getattr(args, "h3_cuda_precision", "none") != "none":
-        from .h3_cuda_precision import prepare_transformer
+        from x_diffusers.framework.transformer.minimax_h3 import prepare_transformer
 
-        prepare_transformer(pipe, args, onload_device)
+        prepare_transformer(pipe, resolve_h3_execution_options(args, pipe), onload_device)
     elif packed_resident:
         logger.info("Keeping packed H3 DiT resident on %s", onload_device)
         pipe.transformer.to(onload_device)
         if cuda_fusions:
-            from .h3_cuda import install_dit_fusions
+            from x_diffusers.framework.transformer.minimax_h3 import install_dit_fusions
 
             install_dit_fusions(pipe.transformer, cuda_fusions)
         if packed_compile:
-            from x_base.operator.h3_nvfp4 import H3NVFP4Linear
-
-            for block in pipe.transformer.transformer_blocks:
-                # Keep stream choreography and packed custom kernels outside Dynamo.
-                block.attn.forward = torch.compiler.disable(block.attn.forward)
-                for module in block.ff.modules():
-                    if isinstance(module, H3NVFP4Linear):
-                        module.forward = torch.compiler.disable(module.forward)
-                block.compile(dynamic=False, options={"triton.cudagraphs": False})
-            logger.info("Regional compilation enabled for %d H3 DiT blocks",
-                        len(pipe.transformer.transformer_blocks))
+            from x_diffusers.framework.transformer.minimax_h3 import compile_resident_blocks
+            compile_resident_blocks(pipe.transformer)
     elif args.matmul_quant == 'none' and not getattr(args, 'h3_refiner', False):
         pipe.transformer.enable_group_offload(offload_type="block_level", num_blocks_per_group=1, **offload)
     if args.text_encoder_tp <= 1:
@@ -364,9 +836,9 @@ def load_minimax_h3_pipe(args):
 
     # VAEs are small enough to stay on device
     if getattr(args, "h3_cuda_precision", "none") != "none":
-        from .h3_cuda_precision import prepare_vaes
+        from x_diffusers.framework.pipeline.minimax_h3 import prepare_vaes
 
-        prepare_vaes(pipe, args, onload_device)
+        prepare_vaes(pipe, resolve_h3_execution_options(args, pipe), onload_device)
     else:
         pipe.vae.to(onload_device)
         pipe.audio_vae.to(onload_device)
@@ -397,60 +869,10 @@ def to_dtype(name: str):
     }[name]
 
 
-def load_pipe(args):
+def _load_pipe_components(args):
     backend = device_type()
-    if getattr(args, 'h3_condition_overlap', False):
-        from .h3_condition_overlap import validate
-        validate(args, backend)
-    from .h3_npu_options import validate as validate_npu_fusions
-
-    validate_npu_fusions(args, backend)
-    from ..framework.vae.omni_decoder import validate_options
-    from .h3_parallel_config import H3ParallelConfig
-    from .h3_cuda_precision import resolve
-    resolve(args, backend)
-    validate_options(args, backend)
-    H3ParallelConfig.from_args(args, backend, dist.get_world_size() if dist.is_initialized() else 1)
-    precision = getattr(args, "h3_cuda_precision", "auto")
-    if precision != "none":
-        from .h3_cuda_precision import resolve, validate
-
-        precision = resolve(args, backend)
-        if precision != "none":
-            validate(args, backend)
-    from .h3_cuda_options import commit_environment
-    commit_environment(args)
-    if (backend != "cuda" or args.model != "MiniMax-H3") and any((
-        getattr(args, "h3_nvfp4_checkpoint", None),
-        getattr(args, "h3_nvfp4_resident", False),
-        getattr(args, "h3_nvfp4_compile", False),
-    )):
-        raise ValueError("H3 NVFP4 options require CUDA MiniMax-H3")
-    if getattr(args, "h3_cuda_vae_sp", False) and (
-        backend != "cuda" or args.model != "MiniMax-H3" or args.sp < 2
-    ):
-        raise ValueError("--h3_cuda_vae_sp requires CUDA MiniMax-H3 and SP > 1")
-    if backend == "cuda":
-        if args.text_encoder_tp == 8 and (not dist.is_initialized() or dist.get_world_size() != 8):
-            raise ValueError("CUDA H3 text encoder TP8 requires eight distributed ranks")
-        unsupported = (
-            args.model != "MiniMax-H3", args.atten not in ("none", "sage", "sparge"), args.matmul_quant != "none",
-            args.vae_matmul_quant != "none", args.vae_lightning != "none", args.rope_fused,
-            args.text_encoder_tp not in (1, 8), args.inf_vram_blocks_num, args.fsdp,
-            getattr(args, "h3_attention", "legacy") != "legacy",
-        )
-        if any(unsupported):
-            raise ValueError("CUDA currently supports MiniMax-H3 with SDPA, SageAttention or SpargeAttention, "
-                             "group offload, and without NPU-specific optimizations")
-    if getattr(args, "h3_turbo8", False):
-        from .h3_turbo8 import validate, validate_assets
-        validate(args)
-        validate_assets(args)
-    if getattr(args, 'h3_attention', 'legacy') != 'legacy':
-        from .h3_attention_config import validate
-        validate(args)
-    from .h3_turbo_sla import validate_args
-    validate_args(args)
+    from x_diffusers.adaptor.validation import validate_pipeline_args
+    validate_pipeline_args(args, backend)
     if args.atten == "vc":
         _apply_attention_backend(args)
     # 查看是否在自定义pipeline注册
@@ -471,6 +893,67 @@ def load_pipe(args):
     else:
         pipe = None
     return pipe
+
+
+@dataclass(frozen=True)
+class PipelineBuildOptions:
+    initial_lora_paths: object = None
+    configure_scheduler: bool = False
+    lora_after_setup: bool = False
+    fsdp_for_lora: str | None = None
+    fuse_lora: bool | None = None
+    lora_transformer_list: object = None
+    before_placement: Callable[[], None] | None = None
+
+
+def _finish_pipeline(pipe, args, options=None):
+    """Preserve entry-specific LoRA ordering while returning a fully built pipe."""
+    options = options or PipelineBuildOptions()
+    if options.configure_scheduler:
+        update_scheduler(pipe, args.model, args.lora_path_list)
+
+    def load_lora():
+        kwargs = dict(
+            fuse_lora=args.fuse_lora
+            if options.fuse_lora is None
+            else options.fuse_lora,
+            weights_list=args.lora_scale_weight_list,
+        )
+        if options.lora_after_setup:
+            kwargs["lora_transformer_list"] = options.lora_transformer_list
+        update_lora(
+            pipe, args.model, options.initial_lora_paths, args.lora_path_list, **kwargs
+        )
+
+    if options.lora_after_setup:
+        if args.lora_path_list and options.fsdp_for_lora is not None:
+            args.fsdp = options.fsdp_for_lora
+        update_pipe(pipe, args)
+        if args.lora_path_list:
+            load_lora()
+    else:
+        load_lora()
+        update_pipe(pipe, args)
+    if options.before_placement is not None:
+        options.before_placement()
+    return pipe_to_device(pipe, args)
+
+
+def load_pipe(args, *, build_options=None, model=None):
+    """Build a ready-to-run pipeline through one application entry point."""
+    initialize_framework()
+    if (model or getattr(args, 'model', None)) == 'MiniMax-H3-Image':
+        from x_diffusers.adaptor.validation import resolve_image_text_options
+        from x_diffusers.adaptor.validation import validate_h3_image_options as _validate_request_options
+        backend = device_type()
+        world = dist.get_world_size() if dist.is_initialized() else 1
+        resolve_image_text_options(args, backend)
+        _validate_request_options(args, world)
+        configure_h3_image_attention(args, backend)
+        device = torch.device(backend, torch.get_device_module(backend).current_device())
+        return load_minimax_h3_image_pipe(args, device=device, world=world)
+    pipe = _load_pipe_components(args)
+    return _finish_pipeline(pipe, args, build_options)
 
 
 def apply_npu_attention(pipe):
@@ -517,7 +1000,7 @@ def _apply_adaln_cache(pipe, args):
     from x_base.adaln_cache import install_adaln_cache
 
     if args.task_type == "ref2va" and getattr(args, "reference_paths", None):
-        from .h3_references import reference_conditioning
+        from x_diffusers.adaptor.validation import h3_reference_conditioning as reference_conditioning
 
         conditioning_type = reference_conditioning(args)
         logger.info("Determined conditioning_type=%s for adaln cache", conditioning_type)
@@ -572,9 +1055,10 @@ def parallelism_ability(pipe, args):
     is_minimax_h3 = "MiniMax-H3" in args.model
 
     # SP for DIT (transformer) — independent of TP
-    if getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp'):
-        from .h3_parallel import attach_pipeline
-        attach_pipeline(pipe, args)
+    if is_minimax_h3 and getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp'):
+        from x_diffusers.adaptor.validation import h3_features_enabled as enabled_features
+        from x_diffusers.framework.transformer.minimax_h3 import attach_pipeline
+        attach_pipeline(pipe, vae_parallel=bool(getattr(args, "h3_cuda_vae_sp", False) or enabled_features(args)))
         if args.sp > 1 and args.phaa_num > 0:
             phaa_on_pipe(pipe, phaa_split_num=args.phaa_num)
     elif args.sp > 1:
@@ -585,14 +1069,16 @@ def parallelism_ability(pipe, args):
             phaa_on_pipe(pipe, is_contain_transformer_2, transformer_3=args.joint, phaa_split_num=args.phaa_num)
 
     if is_minimax_h3 and device_type() == "cuda":
-        from .h3_cuda import configure_parallelism
-
-        configure_parallelism(pipe, args)
+        configure_h3_parallelism(pipe, args)
 
     if is_minimax_h3 and getattr(args, 'h3_cuda_precision', 'none') == 'none':
-        from .h3_features import enabled, configure_components
+        from x_diffusers.adaptor.validation import h3_features_enabled as enabled
+        from x_diffusers.framework.pipeline.minimax_h3 import configure_components
         if enabled(args):
-            configure_components(pipe, args, torch.device(device_type(), torch.get_device_module(device_type()).current_device()))
+            configure_components(
+                pipe, resolve_h3_execution_options(args, pipe),
+                torch.device(device_type(), torch.get_device_module(device_type()).current_device()),
+            )
 
     # TP for text_encoder (Qwen3-VL) — independent of SP
     # Creates a separate ParallelManager with its own 2D mesh (dp, tp).
@@ -630,9 +1116,10 @@ def parallelism_ability(pipe, args):
         from x_base import enable_tp
         if is_minimax_h3:
             # MiniMax-H3: TP 目标是 text_encoder (Qwen3-VL)，只对前 50 层做 TP
-            enable_tp(pipe.text_encoder, args.text_encoder_tp, target_layers=range(50))
+            from x_diffusers.framework.h3_encoders import enable_text_tp
+            enable_text_tp(pipe, args.text_encoder_tp)
             if getattr(args, "h3_cuda_precision", "none") != "none":
-                from .h3_cuda_precision import prepare_text_tp
+                from x_diffusers.framework.transformer.minimax_h3 import prepare_text_tp
 
                 prepare_text_tp(pipe)
             # TP 替换后重新 apply group offloading (load_minimax_h3_pipe 中跳过了)
@@ -659,68 +1146,26 @@ def general_ability(pipe, args):
     if getattr(args, 'adaln_cache_file', None):
         _apply_adaln_cache(pipe, args)
 
-def _check_feature_conflicts(args):
-    if args.fuse_lora and args.matmul_quant != 'none':
-        args.fuse_lora = False
-        logger.warning("Conflict between fuse lora and matmul quant! Disable fuse_lora!")
-    if args.joint:
-        if not (args.x and ("Wan2.2" in args.model) and ("I2V" in args.model or "i2v" == args.task_type)):
-            args.joint = False
-            logger.warning("Jointinfer only support Wan2.2_distill_i2v! Disable jointinfer!")
-    if args.ada_brighten:
-        if not ("I2V" in args.model or "i2v" == args.task_type):
-            args.ada_brighten = False
-            logger.warning("Ada_brighten only support i2v! Disable ada_brighten!")
-
-
-def _check_parallelism_conflicts(args):
-    # text_encoder_tp 与 FSDP(text_encoder/all) 冲突 — 两者都作用于 text_encoder
-    # FSDP(transformer) 不冲突 — TP 作用于 text_encoder，FSDP 作用于 transformer
-    if args.text_encoder_tp > 1 and args.fsdp in ('text_encoder', 'all'):
-        logger.warning(
-            "text_encoder_tp conflicts with --fsdp text_encoder/all (both target text_encoder)! "
-            "Disabling FSDP for text_encoder."
-        )
-        if args.fsdp == 'all':
-            args.fsdp = 'transformer'
-        else:
-            args.fsdp = None
-
-    # transformer_path only supports MiniMax-H3
-    if getattr(args, 'transformer_path', None) and "MiniMax-H3" not in args.model:
-        args.transformer_path = None
-        logger.warning("--transformer_path only supports MiniMax-H3, disabling.")
-
-
-def check_args_conflict(args):
-    if args.vae_lightning != "none" and args.sp == 1:
-        args.vae_lightning = "none"
-        logger.warning("VAE lightning need sp>1!")
-    if args.task_type == "t2i" and args.frames != 1:
-        args.frames = 1
-        logger.warning("task t2i only support 1 frames!")
-    _check_feature_conflicts(args)
-    _check_parallelism_conflicts(args)
-
 
 def update_pipe(pipe, args):
     check_args_conflict(args)
     operator_ability(pipe, args)
     general_ability(pipe, args)
     if args.model == 'MiniMax-H3' and getattr(args, 'h3_cuda_precision', 'none') == 'none':
-        from .h3_features import enabled, configure_model
+        from x_diffusers.adaptor.validation import h3_features_enabled as enabled
+        from x_diffusers.framework.pipeline.minimax_h3 import configure_model
         if enabled(args):
-            configure_model(pipe, args, torch.device(device_type(), torch.get_device_module(device_type()).current_device()))
+            configure_model(
+                pipe, resolve_h3_execution_options(args, pipe),
+                torch.device(device_type(), torch.get_device_module(device_type()).current_device()),
+            )
     parallelism_ability(pipe, args)
     if getattr(args, 'h3_vae_backend', 'legacy') != 'legacy':
-        from ..framework.vae.omni_decoder import configure
-        configure(pipe, args, pipe._execution_device)
-    if getattr(args, 'h3_attention', 'legacy') != 'legacy':
-        from ..framework.transformer.h3_attention import install
-        install(pipe.transformer, args)
-    from .h3_npu_options import configure_model as configure_npu_fusions
+        configure_h3_vae_backend(pipe, args, pipe._execution_device)
+    from x_diffusers.adaptor.load_pipe import configure_h3_attention as configure_attention
 
-    configure_npu_fusions(pipe, args, device_type())
+    configure_attention(pipe, args)
+    configure_h3_npu_fusions(pipe, args, device_type())
     return pipe
 
 
@@ -946,8 +1391,106 @@ def pipe_to_device(pipe, args):
         _pipe_to_device_full(pipe, args)
 
     if getattr(args, "h3_cuda_precision", "none") != "none":
-        from .h3_cuda_precision import offload_audio
+        from x_diffusers.framework.vae.minimax_h3 import offload_audio
 
         offload_audio(pipe.audio_vae)
 
     return pipe
+
+
+def prepare_h3_refiner(manager, args):
+    """Coordinate Refiner startup failures independently of device collectives."""
+    import torch.distributed as dist
+
+    if not dist.is_initialized() or dist.get_world_size() != 8:
+        raise ValueError('Initialize the existing XGEN distributed environment with eight ranks first')
+    guard = getattr(manager, '_h3_refiner_failure_guard', None)
+    if guard is None:
+        from x_base.utils.distributed import DistributedFailureGuard
+
+        try:
+            guard = DistributedFailureGuard()
+        except BaseException:
+            manager._h3_refiner_failed = True
+            raise
+        manager._h3_refiner_failure_guard = guard
+    with guard:
+        try:
+            return _prepare_h3_refiner(manager, args)
+        except BaseException as error:
+            manager._h3_refiner_failed = True
+            guard.fail(error)
+            raise
+
+
+def _prepare_h3_refiner(manager, args):
+    """Load once through the original loader/ability functions; borrow manager.pipe."""
+    from x_diffusers.adaptor.validation import h3_refiner_model_key
+    from x_diffusers.adaptor.validation import resolve_h3_npu_features
+    from x_diffusers.adaptor.validation import validate_h3_refiner_settings
+    validate_h3_refiner_settings(args)
+    resolve_h3_npu_features(args)
+    if getattr(manager, '_h3_refiner_failed', False):
+        raise RuntimeError('H3 Refiner initialization failed; restart the worker before loading again')
+    if getattr(manager, '_h3_refiner_key', None) is not None:
+        if manager._h3_refiner_key != h3_refiner_model_key(args):
+            raise ValueError('H3 Refiner model/workflow/settings are fixed at startup; restart for changes')
+        if manager.sr_pipe.failed:
+            raise RuntimeError('H3 Refiner worker failed; restart before accepting more requests')
+        return
+    if manager.pipe is not None:
+        raise ValueError('Enable H3 Refiner on a fresh manager; restart to change the backend')
+    from x_diffusers.framework.pipeline.minimax_h3 import H3RefinerPipeline
+    started = time.perf_counter()
+    try:
+        from x_base.vae_parallelism.save_av_stream import FFMPEG_PATH
+        if which(FFMPEG_PATH) is None:
+            raise RuntimeError('H3 Refiner requires FFmpeg on PATH or an executable FFMPEG_PATH')
+        pipe = load_pipe(args)
+        from x_diffusers.framework.h3_config import H3RefinerConfig
+        config = H3RefinerConfig(
+            weights=args.h3_refiner_weights, prepared=args.h3_refiner_prepared,
+            backend=device_type(), loading=args.h3_refiner_loading,
+            base_steps=args.num_inference_steps, turbo8=getattr(args, "h3_turbo8", False),
+            base_cache_file=getattr(args, "adaln_cache_file", None),
+        )
+        refiner = H3RefinerPipeline(pipe, config)
+    except Exception:
+        manager._h3_refiner_failed = True
+        logger.exception('H3_REFINER_INIT_FAILED retry=false restart_required=true')
+        raise
+    manager.pipe, manager.sr_pipe = pipe, refiner
+    manager.init_args = deepcopy(args)
+    manager.current_model = args.model
+    manager._h3_refiner_key = h3_refiner_model_key(args)
+    refiner.startup_seconds = time.perf_counter() - started
+    logger.warning('H3_REFINER_READY experimental=true sp=8 init_seconds=%.3f backend=%s',
+                   refiner.startup_seconds, args.h3_refiner_loading)
+
+
+def configure_h3_attention(pipe, args):
+    """Install a selected optional backend; leave the legacy pipeline untouched."""
+    from x_diffusers.adaptor.validation import h3_attention_config
+    from x_diffusers.adaptor.validation import validate_h3_attention
+    if getattr(args, 'h3_attention', 'legacy') != 'legacy':
+        from x_diffusers.framework.transformer.minimax_h3 import install_h3_attention as install
+
+        validate_h3_attention(args)
+        install(pipe.transformer, h3_attention_config(args))
+
+
+def configure_h3_reference_image_size(pipe, args):
+    """Apply the legacy fixed short-edge override."""
+    import logging
+    from x_diffusers.adaptor.validation import validate_h3_reference_image_size
+    edge = validate_h3_reference_image_size(args)
+    if edge is None:
+        return
+    if "reference_image_short_edge" not in pipe.config:
+        raise ValueError("This Diffusers pipeline does not expose reference_image_short_edge; upgrade the H3 runtime")
+    previous = pipe.config["reference_image_short_edge"]
+    pipe.update_components(reference_image_short_edge=edge)
+    logging.getLogger(__name__).info(
+        "Experimental H3 reference image short edge: %s -> %d; shared VAE/Qwen input, output canvas unchanged",
+        previous, edge,
+    )

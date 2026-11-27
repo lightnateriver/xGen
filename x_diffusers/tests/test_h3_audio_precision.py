@@ -1,4 +1,5 @@
 """Audio precision regressions without accelerator hardware or model downloads."""
+from importlib import import_module
 import ast
 import importlib.util
 import inspect
@@ -11,9 +12,7 @@ import torch
 
 
 ADAPTOR = Path(__file__).resolve().parents[1] / 'x_diffusers/adaptor'
-spec = importlib.util.spec_from_file_location('h3_audio_precision', ADAPTOR / 'h3_audio_precision.py')
-precision = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(precision)
+precision = import_module('x_diffusers.framework.vae.minimax_h3')
 
 
 class Audio(torch.nn.Module):
@@ -69,7 +68,7 @@ def test_audio_restores_autocast_on_decode_failure():
 
 
 @pytest.mark.parametrize('parallel_encode', [False, True])
-def test_native_audio_vae_matches_fp32_reference_under_autocast(parallel_encode):
+def test_native_audio_vae_matches_fp32_reference_under_autocast(parallel_encode, monkeypatch):
     from diffusers.models.autoencoders.autoencoder_kl_minimax_h3_audio import AutoencoderKLMiniMaxH3Audio
 
     audio = AutoencoderKLMiniMaxH3Audio(encoder_dim=2, latent_dim=32, latent_channels=8,
@@ -81,21 +80,13 @@ def test_native_audio_vae_matches_fp32_reference_under_autocast(parallel_encode)
         decoded = audio.decode(latent, return_dict=False)[0]
         precision.prepare_audio_vae(audio)
         if parallel_encode:
-            parallel_spec = importlib.util.spec_from_file_location('audio_parallel_test', ADAPTOR / 'h3_condition_parallel.py')
-            parallel = importlib.util.module_from_spec(parallel_spec)
-            parallel.__package__ = 'audio_parallel_test'
-            parallel_spec.loader.exec_module(parallel)
-            # One temporal partition exercises the actual native encoder/projection
-            # path without requiring a process group or changing the waveform.
-            with patch.dict('sys.modules', {
-                'audio_parallel_test.h3_audio_receptive': SimpleNamespace(
-                    audio_halos=lambda audio: {'encoder_used': 0, 'decoder_used': 0}),
-                'audio_parallel_test.h3_cuda_precision': SimpleNamespace(offload_audio=lambda audio: None),
-            }):
+            parallel = precision
+            with patch.object(parallel, 'audio_halos', return_value={'encoder_used': 0, 'decoder_used': 0}), \
+                 patch.object(parallel, 'offload_audio', return_value=None):
                 parallel.install_audio_parallel(audio, lambda: None, 'cpu', True, 'none', stage_weights=False)
-            parallel.dist = SimpleNamespace(get_world_size=lambda group: 1)
-            parallel.partition = lambda total, halo, group: (0, total, 0, total)
-            parallel.gather_time = lambda local, total, group: local
+            monkeypatch.setattr(parallel, 'dist', SimpleNamespace(get_world_size=lambda group: 1))
+            monkeypatch.setattr(parallel, 'partition', lambda total, halo, group: (0, total, 0, total))
+            monkeypatch.setattr(parallel, 'gather_time', lambda local, total, group: local)
         with torch.autocast('cpu', dtype=torch.bfloat16):
             actual_encoded = audio.encode(sample).latent_dist.mode()
             actual_decoded = audio.decode(latent, return_dict=False)[0]
@@ -122,6 +113,6 @@ def test_all_component_loaders_request_fp32_audio(dtype, custom, packed):
                  task_type='fl2va', transformer_path='weights/custom' if custom else None,
                  packed_checkpoint='weights/packed' if packed else None, component_options={},
                  logger=Mock(), MiniMaxH3Transformer3DModel=Mock())
-    with patch.dict('sys.modules', {'audio_loader_test.h3_nvfp4': SimpleNamespace(load_packed_h3=Mock())}):
+    with patch.dict('sys.modules', {'x_diffusers.framework.transformer.minimax_h3': SimpleNamespace(load_packed_h3=Mock())}):
         exec(code, scope)
     assert pipe.load_components.call_args.kwargs['dtype'] == {'default': dtype, 'audio_vae': torch.float32}

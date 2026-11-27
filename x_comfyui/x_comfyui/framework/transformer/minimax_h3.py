@@ -1,29 +1,7 @@
-"""NPU adaptation for the MiniMax-H3 transformer in ComfyUI.
+"""NPU model mechanisms for the MiniMax-H3 transformer in ComfyUI.
 
-This module is the ComfyUI equivalent of
-``x_diffusers/framework/transformer/minimax_h3.py``.
-
-All patching happens at **import time** — when ComfyUI loads x_comfyui
-as a custom node.  No NPUTurbo node call is needed for SP/FSDP/quant;
-those are controlled by environment variables set before launch:
-
-  X_SP_SIZE=8       — sequence parallel size
-  X_FSDP=true       — enable FSDP
-  X_PHAA_SPLIT=4    — PHAA overlap split number
-  X_QUANT=int8      — weight/activation quantization
-  X_ADALN_CACHE_FILE=./cache.safetensors  — precomputed AdaLN cache file
-
-The NPUTurbo node provides runtime overrides for 4 NPU acceleration features
-(attention mode, PHAA, quant, AdaLN cache).  See ``nodes.py``
-for details.
-
-Patches applied:
-  1. ``Attention.forward`` → routes through ``attention_manager`` + SP all_to_all
-  2. ``AdalnProj.forward`` → AdaLN cache lookup + int8 dtype fallback
-  3. ``MiniMaxH3Model._forward`` → SP split/gather around block loop + maybe_install
-  4. ``MiniMaxH3Model`` → adds ``set_parallel_manager`` / ``enable_parallel``
-  5. ``BaseModel.__init__`` → auto-apply SP + quant after model creation
-  6. ``BaseModel.load_model_weights`` → auto-apply FSDP + AdaLN cache after weight loading
+The adaptor installs loading/prompt hooks and supplies resolved SP, PHAA,
+AdaLN, quantization and FSDP settings. This module patches model computation.
 
 ComfyUI's MiniMax-H3 ``Attention`` class (``comfy/ldm/minimax/model.py``):
   - Input shape: ``(S, C)`` — no batch dimension
@@ -37,7 +15,6 @@ and FinalLayer (expand=2, no _block_idx).  The unified forward patch checks
 ``_block_idx`` to distinguish.
 """
 
-import fnmatch
 import logging
 import os
 from typing import Any
@@ -47,7 +24,6 @@ import torch.distributed as dist
 import torch_npu  # noqa: F401
 from torch_npu.contrib import transfer_to_npu  # noqa: F401
 from safetensors import safe_open
-from safetensors.torch import load_file
 
 from x_base import (
     ParallelManager,
@@ -70,13 +46,7 @@ from x_base.fsdp.fsdp import transformer_lambda_fsdp
 from x_base.operator.matmul import WeightQuantLinearModule
 from x_comfyui.framework.rope_utils import _fused_rope_minimax_h3
 
-from x_comfyui.adaptor.env import (
-    get_sp_size, get_phaa_split, get_quant, get_fsdp_enabled,
-    get_adaln_cache_file, get_adaln_transformer_path,
-    get_last_quant, set_last_quant,
-    get_last_text_tp, set_last_text_tp,
-    set_text_tp_override,
-)
+
 
 logger = logging.getLogger("x_comfyui")
 
@@ -89,7 +59,6 @@ import comfy.model_management
 import comfy.quant_ops
 import comfy.ldm.common_dit
 import comfy.model_prefetch
-import execution
 
 MiniMaxH3Model = mm_model.MiniMaxH3Model
 Attention = mm_model.Attention
@@ -873,10 +842,10 @@ def _cast_quant_params_to_input_device(module, input):
         module.bias.data = comfy.model_management.cast_to(module.bias.data, device=dev)
 
 
-def _apply_sp_and_quant(base_model: BaseModel):
+def _apply_sp_and_quant(base_model: BaseModel, *, sp_size=1, phaa_split=1, cache_file=None):
     """Apply SP and AdaLN cache to diffusion_model after creation.
 
-    Called from patched BaseModel.__init__.  Reads environment variables.
+    Called by application loading hooks with resolved settings.
     Only affects MiniMax-H3 models; silently skips others.
 
     Quantization is NOT applied here — it runs later in _apply_quant()
@@ -890,10 +859,8 @@ def _apply_sp_and_quant(base_model: BaseModel):
         return
 
     # --- SP ---
-    sp_size = get_sp_size()
     if sp_size > 1:
         if dist.is_initialized():
-            phaa_split = get_phaa_split()
             if phaa_split > 1:
                 enable_phaa()
                 set_phaa_split_num(phaa_split)
@@ -907,7 +874,6 @@ def _apply_sp_and_quant(base_model: BaseModel):
             )
 
     # --- AdaLN cache ---
-    cache_file = get_adaln_cache_file()
     if cache_file:
         install_adaln_cache_for_comfyui(diffusion_model, cache_file)
         diffusion_model._npu_adaln_strip = True
@@ -917,7 +883,7 @@ def _apply_sp_and_quant(base_model: BaseModel):
         )
 
 
-def _apply_quant(base_model: BaseModel):
+def _apply_quant(base_model: BaseModel, *, quant=""):
     """Apply int8 quantization to diffusion_model after weight loading.
 
     Called from patched BaseModel.load_model_weights, AFTER checkpoint
@@ -932,7 +898,6 @@ def _apply_quant(base_model: BaseModel):
     if "MiniMax" not in model_type:
         return
 
-    quant = get_quant()
     if quant == "int8":
         _cfg_path = os.path.join(os.path.dirname(__file__), "quant_config_comfyui.yaml")
         _quant_config = QuantLayerConfig.from_yaml(_cfg_path)
@@ -948,10 +913,10 @@ def _apply_quant(base_model: BaseModel):
         logger.info("x_comfyui: device-cast hooks registered for quantized modules")
 
 
-def _apply_fsdp(base_model: BaseModel):
+def _apply_fsdp(base_model: BaseModel, *, enabled=False, quant=""):
     """Apply FSDP to diffusion_model after weight loading.
 
-    Called from patched BaseModel.load_model_weights.  Reads X_FSDP env var.
+    Called by application loading hooks with an explicit enable flag.
     Only affects MiniMax-H3 models; silently skips others.
     """
     diffusion_model = base_model.diffusion_model
@@ -959,14 +924,13 @@ def _apply_fsdp(base_model: BaseModel):
     if "MiniMax" not in model_type:
         return
 
-    if not get_fsdp_enabled():
+    if not enabled:
         return
 
     if not dist.is_initialized():
         logger.warning("x_comfyui: FSDP requested but torch.distributed not initialised")
         return
 
-    quant = get_quant()
     device_id = torch.npu.current_device()
     base_model.diffusion_model = transformer_lambda_fsdp(
         diffusion_model,
@@ -974,59 +938,6 @@ def _apply_fsdp(base_model: BaseModel):
         is_need_dtype=(quant != "int8"),
     )
     logger.info("x_comfyui: FSDP enabled")
-
-
-def _clear_clip_related_cache(executor, prompt):
-    """Clear cache entries only for CLIPLoader nodes and their dependents.
-
-    Unlike clearing the entire cache, this preserves VAE/UNet cache entries,
-    so only the text encoder and nodes depending on it are reloaded.
-    Used for text_tp changes.
-    """
-    cache = executor.caches.outputs
-    if not getattr(cache, "initialized", False):
-        return
-
-    # 1. Find all CLIPLoader node IDs
-    clip_loader_ids = set()
-    for node_id, node_def in prompt.items():
-        if isinstance(node_def, dict) and node_def.get("class_type") == "CLIPLoader":
-            clip_loader_ids.add(node_id)
-
-    if not clip_loader_ids:
-        return
-
-    # 2. Find all transitive dependents (BFS)
-    affected_ids = set(clip_loader_ids)
-    changed = True
-    while changed:
-        changed = False
-        for node_id, node_def in prompt.items():
-            if node_id in affected_ids:
-                continue
-            if not isinstance(node_def, dict):
-                continue
-            for input_val in node_def.get("inputs", {}).values():
-                if isinstance(input_val, list) and len(input_val) == 2:
-                    ancestor_id = str(input_val[0])
-                    if ancestor_id in affected_ids:
-                        affected_ids.add(node_id)
-                        changed = True
-                        break
-
-    # 3. Clear cache entries for affected nodes
-    for node_id in affected_ids:
-        key = cache.cache_key_set.get_data_key(node_id)
-        if key is not None and key in cache.cache:
-            del cache.cache[key]
-        subcache_key = cache.cache_key_set.get_subcache_key(node_id)
-        if subcache_key is not None and subcache_key in cache.subcaches:
-            del cache.subcaches[subcache_key]
-
-    logger.info(
-        f"x_comfyui: cleared cache for {len(affected_ids)} nodes "
-        f"(CLIPLoader + dependents)"
-    )
 
 
 # ===========================================================================
@@ -1043,9 +954,6 @@ def patch_model_classes():
       - ``AdalnProj.forward`` → AdaLN cache lookup + int8 dtype fallback
       - ``MiniMaxH3Model._forward`` → SP split/gather + maybe_install
       - ``MiniMaxH3Model`` → adds set_parallel_manager / enable_parallel
-      - ``BaseModel.__init__`` → auto-apply SP + AdaLN cache
-      - ``BaseModel.load_model_weights`` → auto-apply quant + FSDP + release adaln weights
-      - ``PromptExecutor.execute_async`` → detect quant change, clear cache for reload
     """
     # Idempotency guard
     if getattr(Attention, "_x_comfyui_patched", False):
@@ -1067,134 +975,4 @@ def patch_model_classes():
     MiniMaxH3Model.set_parallel_manager = _set_parallel_manager
     MiniMaxH3Model.enable_parallel = _enable_parallel
 
-    # Patch BaseModel.__init__ for auto SP + quant + AdaLN cache
-    _original_base_init = BaseModel.__init__
-
-    def _patched_base_init(self, *args, **kwargs):
-        _original_base_init(self, *args, **kwargs)
-        if hasattr(self, "diffusion_model"):
-            _apply_sp_and_quant(self)
-
-    BaseModel.__init__ = _patched_base_init
-
-    # Patch BaseModel.load_model_weights for auto FSDP + adaln stripping
-    _original_load_weights = BaseModel.load_model_weights
-
-    def _patched_load_weights(self, sd, unet_prefix="", assign=False):
-        # If AdaLN cache is active, strip adaln weights to save ~26GB.
-        diffusion_model = getattr(self, "diffusion_model", None)
-        if (diffusion_model is not None
-                and getattr(diffusion_model, "_npu_adaln_strip", False)):
-            transformer_path = get_adaln_transformer_path()
-            if transformer_path:
-                # Strategy 1: load pre-stripped checkpoint
-                if os.path.isfile(transformer_path):
-                    sd = load_file(transformer_path)
-                elif os.path.isdir(transformer_path):
-                    sd = {}
-                    for fname in sorted(os.listdir(transformer_path)):
-                        if fname.endswith(".safetensors"):
-                            sd.update(load_file(
-                                os.path.join(transformer_path, fname)))
-                else:
-                    raise FileNotFoundError(
-                        f"X_ADALN_TRANSFORMER_PATH not found: "
-                        f"{transformer_path}")
-                logger.info(
-                    f"x_comfyui: loaded stripped checkpoint from "
-                    f"{transformer_path} ({len(sd)} keys)"
-                )
-            else:
-                # Strategy 2: filter adaln keys from original state dict
-                ADALN_PATTERNS = [
-                    "*blocks.*.adaln_proj.linear.weight",
-                    "*blocks.*.adaln_proj.linear.bias",
-                    "*final_layer.adaln_proj.linear.weight",
-                    "*final_layer.adaln_proj.linear.bias",
-                ]
-                if not getattr(diffusion_model, "use_adaln_curves", False):
-                    ADALN_PATTERNS.extend([
-                        "*time_embedder.linear_1.weight",
-                        "*time_embedder.linear_1.bias",
-                        "*time_embedder.linear_2.weight",
-                        "*time_embedder.linear_2.bias",
-                    ])
-                sd = {k: v for k, v in sd.items()
-                      if not any(fnmatch.fnmatch(k, p)
-                                 for p in ADALN_PATTERNS)}
-                logger.info(
-                    f"x_comfyui: filtered adaln keys from state dict "
-                    f"({len(sd)} keys remaining)"
-                )
-
-        result = _original_load_weights(self, sd, unet_prefix, assign)
-        # Apply quantization AFTER weight loading
-        if not getattr(self, "_npu_quant_applied", False):
-            _apply_quant(self)
-            self._npu_quant_applied = True
-        if not getattr(self, "_npu_fsdp_applied", False):
-            _apply_fsdp(self)
-            self._npu_fsdp_applied = True
-        # Release any remaining adaln weights after loading
-        diffusion_model = getattr(self, "diffusion_model", None)
-        if diffusion_model is not None and hasattr(diffusion_model, "_adaln_cache"):
-            release_adaln_weights_for_comfyui(diffusion_model)
-        return result
-
-    BaseModel.load_model_weights = _patched_load_weights
-
-    # Patch PromptExecutor.execute_async to detect quant/text changes between runs.
-    _original_execute_async = execution.PromptExecutor.execute_async
-
-    async def _patched_execute_async(self, prompt, prompt_id, extra_data=None, execute_outputs=None):
-        if extra_data is None:
-            extra_data = {}
-        if execute_outputs is None:
-            execute_outputs = []
-        # Scan prompt for NPUTurbo values before any node executes.
-        prompt_quant = None
-        prompt_text_tp = None
-        for node_id, node_def in prompt.items():
-            if isinstance(node_def, dict) and node_def.get("class_type") == "NPUTurbo":
-                inputs = node_def.get("inputs", {})
-                prompt_quant = inputs.get("quant", "disable")
-                prompt_text_tp = inputs.get("text_tp", "disable")
-                logger.info(
-                    f"x_comfyui: NPUTurbo found in prompt (node {node_id}): "
-                    f"quant={prompt_quant}, "
-                    f"text_tp={prompt_text_tp}"
-                )
-
-        if prompt_quant is None:
-            logger.debug("x_comfyui: NPUTurbo not found in prompt, using env var defaults")
-
-        if prompt_quant is not None:
-            last_quant = get_last_quant()
-            if last_quant is not None and last_quant != prompt_quant:
-                self.caches.outputs.cache.clear()
-                self.caches.outputs.subcaches.clear()
-                logger.info(
-                    f"x_comfyui: quant changed ({last_quant} → {prompt_quant}), "
-                    f"clearing model cache for reload"
-                )
-            set_last_quant(prompt_quant)
-
-        # Set text_tp override before any node executes.
-        if prompt_text_tp is not None:
-            set_text_tp_override(prompt_text_tp == "enable")
-            logger.info(f"x_comfyui: text_tp override set to {prompt_text_tp == 'enable'}")
-            last_text_tp = get_last_text_tp()
-            if last_text_tp is not None and last_text_tp != prompt_text_tp:
-                _clear_clip_related_cache(self, prompt)
-                logger.info(
-                    f"x_comfyui: text_tp changed ({last_text_tp} → {prompt_text_tp}), "
-                    f"clearing CLIP cache for reload"
-                )
-            set_last_text_tp(prompt_text_tp)
-
-        await _original_execute_async(self, prompt, prompt_id, extra_data, execute_outputs)
-
-    execution.PromptExecutor.execute_async = _patched_execute_async
-
-    logger.info("x_comfyui: MiniMax-H3 model patches applied (Attention, AdalnProj, _forward, BaseModel)")
-
+    logger.info("x_comfyui: MiniMax-H3 compute patches applied (Attention, AdalnProj, _forward)")

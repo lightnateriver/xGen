@@ -1,6 +1,6 @@
 # 视频生成服务
 
-MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](../../docs/H3-ONLINE.md)。NPU 768P Base 推荐 VC＋Ascend 融合 INT8 全并行 Streaming，20 次实际 Base DiT，使用对应 Base／Ref2VA JSON；安装与回退见 [NPU 默认方案](../../docs/H3-NPU-DEFAULT.md)。下方早期模型和性能示例不代表该默认方案的实测。
+MiniMax-H3 的 NPU、CUDA、2K 和 MaaS 启动方式见 [H3 在线服务指南](../../docs/H3-ONLINE.md)。NPU 768P Base 推荐 VC＋Ascend 融合 INT8 全并行 Streaming，20 次实际 Base DiT，使用对应 Base／Ref2VA JSON；安装与回退见 [NPU 默认方案](../../docs/H3-NPU-DEFAULT.md)。其他模型使用下方各自的配置说明。
 
 基于 Wan2.2-T2V/I2V-14B 模型的视频生成服务，支持文生视频(t2v)和图生视频(i2v)。
 
@@ -233,7 +233,6 @@ video_data = requests.get(f"{BASE_URL}/download/{task_id}").content
 with open("output.mp4", "wb") as f:
     f.write(video_data)
 ```
-
 
 # Video Generation Service API
 
@@ -490,31 +489,6 @@ while True:
     time.sleep(10)
 ```
 
-## 性能参考
+## H3 部署与配置
 
-| GPU 数量 | 推理时间 (20步) | 加速比 |
-|----------|-----------------|--------|
-| 1 x 910B3 | ~260s | 1.0x |
-| 2 x 910B3 | ~130s | 2.0x |
-| 8 x 910B3 | ~60s | 4.3x |
-
-> 实际性能取决于分辨率、帧数、模型等参数
-> 
-> 默认开启: `atten_laser`, `matmul_a8w8`, `rope_fused`
-
-
-## CUDA H3 默认配方
-
-v0.5 八卡 CUDA H3 Base 的 T2VA / I2VA / R2VA 默认采用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表：FP8 Linear、Sage attention、FP8 PHAA、文本 TP8、组件并行与50层常驻。先[准备对应工作流的表和剔除权重后的 Transformer](../../docs/H3-CUDA-ADALN.md)，并配置可信的原生 VAE 目录。NPU 使用自己的 VC＋Ascend 融合推荐入口。
-
-从仓库根目录运行八卡服务：
-
-```bash
-XGEN_DEVICE=cuda torchrun --standalone --nproc_per_node=8 \
-  server/video/video_server.py --init --maas \
-  --config example/diffusers/configs/h3_maas.example.json --host 127.0.0.1 --port 5001
-```
-
-先填写 JSON 中的模型路径。普通 Base HTTP 使用 `h3_cuda_base.example.json` 并去掉 MaaS 开关。回到原始 CUDA 路径需同时设置 `--h3_cuda_preset none --h3_cuda_precision none --h3_cuda_adaln_mode auto`，并移除已配置的表资产路径；服务启动后不能在请求间切换配方。MaaS 支持 768P、5～15 秒及各自部署的 T2VA/I2VA/R2VA，步数由启动配置决定；排队、超时、健康探针及原子发布接口不变。
-
-旧精度参考方案可选 `h3_cuda_bf16.example.json`。新默认的配置、资产和回退见 [CUDA 升级说明](../../docs/H3-V05-CUDA-UPGRADE.md)，历史与最新性能分开记录；技术解码成功不等于人工画面／音频认可。
+H3 的 CUDA、NPU、Base/Refiner 和 MaaS 启动统一见 [在线服务](../../docs/H3-ONLINE.md)，模型与 AdaLN 准备见 [资产文档](../../docs/H3-MODELS.md)。服务协议由 [MaaS API](MAAS-API.md) 维护，组件参数与启动配置见 [统一配置](../../docs/H3-CONFIGURATION.md)。

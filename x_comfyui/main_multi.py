@@ -261,6 +261,7 @@ def prompt_worker_main_thread(q, server_instance, rank, world_size):
     while True:
         # 必须小于 HCCL_CONNECT_TIMEOUT（默认 120s），否则从进程广播会超时
         timeout = 60.0
+        current_time = time.perf_counter()
         if need_gc:
             timeout = max(gc_collect_interval - (current_time - last_gc_collect), 0.0)
 

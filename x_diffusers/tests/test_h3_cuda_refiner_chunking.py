@@ -1,4 +1,5 @@
 """Token-wise chunk parity, tails, failures and no retained output tensors."""
+from importlib import import_module
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,9 +8,8 @@ import pytest
 import torch
 from diffusers.models.attention import FeedForward
 
-path=Path(__file__).resolve().parents[1]/'x_diffusers/adaptor/h3_cuda_refiner.py'
-spec=importlib.util.spec_from_file_location('input_refiner_chunk_test',path)
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+path=Path(__file__).resolve().parents[1]/'x_diffusers/framework/transformer/minimax_h3.py'
+module = import_module('x_diffusers.framework.transformer.minimax_h3')
 
 
 @pytest.mark.parametrize('tokens',[1,7,8,9,16,19])
@@ -44,4 +44,3 @@ def test_original_failure_is_preserved_without_retry():
     with torch.inference_mode(),pytest.raises(RuntimeError) as caught:ff.forward(torch.ones(1,19,4))
     assert caught.value is error and calls==[8]
     assert model._h3_refiner_ff_chunking['completed']==0
-

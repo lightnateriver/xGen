@@ -1,10 +1,10 @@
 # H3 MaaS API（V2 与兼容接口）
 
-> v0.5 八卡 CUDA H3 Base 默认使用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表；需先[准备匹配资产](../../docs/H3-CUDA-ADALN.md)。`h3_cuda_adaln_mode`、`h3_cuda_adaln_dir` 是启动配置，不是请求字段。目录模式按实际步数选表；显式固定表仍须步数匹配。NPU 配方及 API 输入限制不变。
+> v0.5 八卡 CUDA H3 Base 默认使用 Sage-FP8 全并行 Streaming + BF16 AdaLN 表；需先[准备匹配资产](../../docs/H3-MODELS.md#adaln-cuda)。`h3_cuda_adaln_mode`、`h3_cuda_adaln_dir` 是启动配置，不是请求字段。目录模式按实际步数选表；显式固定表仍须步数匹配。NPU 配方及 API 输入限制不变。
 
 `--init --maas` 开启 CUDA H3 Base 的输入校验、排队、探针和成片发布。旧 CLI 开关 `--maas-fl2va-input` 是弃用别名；不开 MaaS 时普通入口保持原有行为。
 
-这里的 MaaS 指 xGen 的服务模式开关。上层 MaaS 平台负责客户鉴权、调度和计费，V2 定义两层之间的 HTTP 路径和字段，CUDA/NPU 是执行模型的后端。**V2 协议不限定 CUDA；当前 `--maas` 的实现仍有 CUDA-only 启动校验，尚不能据此启动 NPU V2 服务。** [分层及开关说明](../../docs/H3-MAAS-V2.md#接口平台与计算后端)。
+这里的 MaaS 指 xGen 的服务模式开关。上层 MaaS 平台负责客户鉴权、调度和计费，V2 定义两层之间的 HTTP 路径和字段，CUDA/NPU 是执行模型的后端。**V2 协议不限定 CUDA；当前 `--maas` 的实现仍有 CUDA-only 启动校验，尚不能据此启动 NPU V2 服务。** [分层及开关说明](../../docs/H3-ONLINE.md#maas)。
 
 ## 与 MiniMax 官网的对齐范围
 
@@ -19,13 +19,13 @@
 | 未实现 | `/v2/video_regeneration`；不将离线 Refiner 支持宣称为 MaaS 再生成能力 |
 | 仍有差异 | 当前恰好一个 text；额外图片像素上限、静态图片及公网下载约束；实际输出尺寸和 R2VA adaptive 算法不保证与托管服务相同 |
 
-本实例列表和历史不跨副本聚合；客户身份、租户、计费、配额和集群路由由 MaaS 平台负责。内部 V2 可用 `XGEN_MAAS_API_KEY` 配置 Bearer 校验，未配置时仅应在受控内网使用。详见[完整对齐边界](../../docs/H3-MAAS-V2.md)。
+本实例列表和历史不跨副本聚合；客户身份、租户、计费、配额和集群路由由 MaaS 平台负责。内部 V2 可用 `XGEN_MAAS_API_KEY` 配置 Bearer 校验，未配置时仅应在受控内网使用。详见[完整对齐边界](../../docs/H3-ONLINE.md#maas)。
 
 ## 启动
 
 从仓库根目录执行，先填写配置中的模型路径，并准备 `ffmpeg`、`ffprobe`：
 
-CUDA 推荐示例的 decoder 为 `native-stream`；同时填写可信原生 `video_vae` 路径并确认 `h3_vae_trust_remote_code=true` 授权。Diffusers 的 `vae` 目录不能替代原生目录。可在启动时显式改为 legacy 或 lightning，并移除原生路径和授权；生成请求不能切换后端。详见 [VAE 配置与回退](../../docs/H3-OMNI-VAE.md)。
+CUDA 推荐示例的 decoder 为 `native-stream`；同时填写可信原生 `video_vae` 路径并确认 `h3_vae_trust_remote_code=true` 授权。Diffusers 的 `vae` 目录不能替代原生目录。可在启动时显式改为 legacy 或 lightning，并移除原生路径和授权；生成请求不能切换后端。详见 [VAE 配置与回退](../../docs/H3-CONFIGURATION.md#vae)。
 
 ```bash
 pip install -r server/requirements-maas.txt
@@ -81,7 +81,7 @@ curl -fsS -X DELETE "http://127.0.0.1:5001/v2/video_generation/$TASK_ID"
 
 IR/2K 联调在启动命令追加 **`--maas-mock-backends`**。不能在请求里打开模拟开关。查询、创建和下载模拟结果均有 `X-XGen-Mock: ir` 或 `2k`；实例还返回 `X-XGen-Mock-Enabled: ir,2k`。模拟结果不返回真实用量，不能参与性能/精度/计费统计。
 
-机器可读定义：[OpenAPI](../../docs/openapi/h3-maas-v2.json)。完整调用、默认值、回调约束及后端替换见 [V2 部署说明](../../docs/H3-MAAS-V2.md)。
+机器可读定义：[OpenAPI](../../docs/openapi/h3-maas-v2.json)。完整调用、默认值、回调约束及后端替换见 [V2 部署说明](../../docs/H3-ONLINE.md#maas)。
 
 ## 兼容接口请求与输入限制
 
@@ -211,7 +211,7 @@ I2VA 使用 `first_frame` 即首帧，两个字段同时提供即首尾帧。R2V
 
 ## 验证范围
 
-历史 CPU 回归为 **46 项、242 个子用例通过**；V2 新增测试见 [test_maas_v2.py](test_maas_v2.py)。最新校验记录见 [V2 部署说明](../../docs/H3-MAAS-V2.md)。原回归覆盖 CLI、路由、真实图片解码（含 HEIC/HEIF）、音视频探测、受控下载、输入校验、去重和清理及原可靠性能力。测试文件：[新 MaaS](test_maas.py)、[原 MaaS 回归](test_maas_fl2va.py)、[成片发布](test_maas_artifacts.py)。
+V2 协议测试见 [test_maas_v2.py](test_maas_v2.py)。部署与交付边界见 [在线服务](../../docs/H3-ONLINE.md#maas)。原回归覆盖 CLI、路由、真实图片解码（含 HEIC/HEIF）、音视频探测、受控下载、输入校验、去重和清理及原可靠性能力。测试文件：[新 MaaS](test_maas.py)、[原 MaaS 回归](test_maas_fl2va.py)、[成片发布](test_maas_artifacts.py)。
 
 ```bash
 CUDA_VISIBLE_DEVICES='' XGEN_DEVICE=cuda python -m pytest -q \

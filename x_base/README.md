@@ -1,4 +1,4 @@
-﻿# X_BASE
+# X_BASE
 
 X_BASE 是 X_GEN 的基础库，实现各类高性能加速特性。
 
@@ -81,4 +81,4 @@ X_BASE 作为底层库，通常不直接使用。通过 x_diffusers 的参数自
 
 ## 单元测试
 
-详见 [单元测试文档](../单元测试.md)。
+详见 [开发检查说明](../docs/ARCHITECTURE.md#validation)。

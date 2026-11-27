@@ -1,12 +1,28 @@
-from .framework.transformer import attention_backend
-from .framework.lora import lora
-from .framework.vae import hunyuan, wan, cogvideox
-from .framework.transformer import transformer_z_image
-from .framework.transformer import cogvideox, hunyuan, wan, wan_vace
-from .framework.transformer import minimax_h3
-from .framework.vae import minimax_h3 as minimax_h3_vae
-from .framework.schedulers import FlowMatchEulerDiscreteSchedulerPusa
-from .framework.pipeline import pipeline, WanImageToVideoPipelineJoint, WanVideoToVideoPipeline
-from .framework.pipeline import longcat_image, z_image, qwenimage
-from .adaptor import init_env, InferenceManager, parse_args
-from .adaptor import init_cfg_env, ImageInferenceManager
+"""Public xGen API. Importing the package does not initialize model patches."""
+from importlib import import_module
+
+_EXPORTS = {
+    "parse_args": (".adaptor.config", "parse_args"),
+    "init_env": (".adaptor.runtime_env", "init_env"),
+    "init_cfg_env": (".adaptor.runtime_env", "init_cfg_env"),
+    "InferenceManager": (".adaptor.infer_tools", "InferenceManager"),
+    "ImageInferenceManager": (".adaptor.infer_tools", "ImageInferenceManager"),
+    "initialize_framework": (".framework", "initialize_framework"),
+    "FlowMatchEulerDiscreteSchedulerPusa": (".framework.schedulers", "FlowMatchEulerDiscreteSchedulerPusa"),
+    "WanImageToVideoPipelineJoint": (".framework.pipeline.joint", "WanImageToVideoPipelineJoint"),
+    "WanVideoToVideoPipeline": (".framework.pipeline.ten_second", "WanVideoToVideoPipeline"),
+}
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module, attribute = _EXPORTS[name]
+    value = getattr(import_module(module, __name__), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

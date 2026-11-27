@@ -1,124 +1,229 @@
-"""Tests for NPUTurbo prompt-scan override and cache invalidation.
-
-Verifies that text_tp overrides are set in the prompt-scan (before any
-node executes), eliminating the race condition with CLIPLoader. Also
-tests cache invalidation on parameter changes.
-
-These tests run on Windows without NPU/torch_npu by loading env.py
-directly via importlib and checking minimax_h3.py source via file read.
-"""
-
+"""Execute real workflow hooks with fake ComfyUI/cache/device objects."""
 import importlib.util
 import os
+from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
+
+ROOT = Path(__file__).resolve().parents[1] / "x_comfyui/adaptor"
 
 
-def _load_env_module():
-    """Load env.py directly, bypassing x_comfyui.__init__ (which needs x_base)."""
-    env_path = os.path.join(
-        os.path.dirname(__file__), "..",
-        "x_comfyui", "adaptor", "env.py",
-    )
-    env_path = os.path.normpath(env_path)
-    spec = importlib.util.spec_from_file_location("env_test", env_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _read_minimax_h3_source():
-    """Read minimax_h3.py source directly (can't import — needs torch/x_base)."""
-    src_path = os.path.join(
-        os.path.dirname(__file__), "..",
-        "x_comfyui", "framework", "transformer", "minimax_h3.py",
-    )
-    src_path = os.path.normpath(src_path)
-    with open(src_path, encoding="utf-8") as f:
-        return f.read()
-
-
-class TestEnvStorage(unittest.TestCase):
-    """Test _last_text_tp storage in env.py."""
-
+class PromptSettingsTests(unittest.TestCase):
     def setUp(self):
-        self.env = _load_env_module()
+        self.environment = patch.dict(os.environ, {})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        for name in ("X_QUANT", "X_TEXT_TP", "X_ADALN_CACHE_FILE", "X_ADALN_TRANSFORMER_PATH",
+                     "X_ATTENTION_MODE", "X_PHAA_SPLIT", "X_ROPE_FUSED"):
+            os.environ.pop(name, None)
+        os.environ["X_SP_SIZE"] = "8"
+        self.modules = patch.dict(sys.modules, {})
+        self.modules.start()
+        self.addCleanup(self.modules.stop)
+        package = ModuleType("_prompt_test_adaptor")
+        package.__path__ = [str(ROOT)]
+        sys.modules[package.__name__] = package
+        self.env = self.load(package.__name__ + ".env", "env.py")
+        self.hooks = self.load(package.__name__ + ".model_hooks", "model_hooks.py")
+        self.records = []
+        owner = self
 
-    def tearDown(self):
-        """Reset global state to avoid cross-test pollution."""
-        self.env.set_text_tp_override(None)
-        self.env.set_last_text_tp(None)
+        class BaseModel:
+            def __init__(self):
+                self.diffusion_model = object()
 
-    def test_last_text_tp_initial_none(self):
-        """get_last_text_tp() returns None on fresh module load."""
-        self.assertIsNone(self.env.get_last_text_tp())
+            def load_model_weights(self, *args):
+                return "loaded"
 
-    def test_set_get_last_text_tp(self):
-        """set_last_text_tp / get_last_text_tp round-trip."""
-        self.env.set_last_text_tp("enable")
-        self.assertEqual(self.env.get_last_text_tp(), "enable")
-        self.env.set_last_text_tp("disable")
-        self.assertEqual(self.env.get_last_text_tp(), "disable")
+        class Executor:
+            def __init__(self):
+                self.caches = SimpleNamespace(outputs=SimpleNamespace(
+                    initialized=True, cache={}, subcaches={},
+                    cache_key_set=SimpleNamespace(get_data_key=lambda node: node,
+                                                  get_subcache_key=lambda node: node),
+                ))
+                self.fail = False
 
+            async def execute_async(self, *args):
+                owner.records.append(dict(quant=owner.env.get_quant(), text_tp=owner.env.get_text_tp(),
+                                          cache=owner.env.get_adaln_cache_file(),
+                                          path=owner.env.get_adaln_transformer_path(),
+                                          rope=owner.rope.is_rope_fused,
+                                          phaa=owner.phaa.PHAA_SPLIT_NUM))
+                if self.fail:
+                    raise RuntimeError("execution failed")
+                return "executed"
 
-class TestOverrideBehavior(unittest.TestCase):
-    """Test override setting behavior (simulating prompt-scan)."""
+        self.Executor = Executor
+        self.model = SimpleNamespace(BaseModel=BaseModel, patch_model_classes=Mock(),
+                                     _apply_sp_and_quant=Mock(), _apply_quant=Mock(), _apply_fsdp=Mock())
+        self.attention = Mock()
+        self.phaa = ModuleType("x_base.phaa.globals")
+        self.phaa.ENABLE_PHAA = False
+        self.phaa.PHAA_SPLIT_NUM = None
+        self.rope = SimpleNamespace(is_rope_fused=False)
+        self.rope.enable_rope_fused = lambda: setattr(self.rope, "is_rope_fused", True)
+        base = ModuleType("x_base")
+        base.attention_manager = self.attention
+        base.phaa = ModuleType("x_base.phaa")
+        base.phaa.globals = self.phaa
+        sys.modules.update({
+            "execution": SimpleNamespace(PromptExecutor=Executor),
+            "safetensors.torch": SimpleNamespace(load_file=Mock()),
+            "x_comfyui.framework.transformer": SimpleNamespace(minimax_h3=self.model),
+            "x_base": base, "x_base.phaa": base.phaa, "x_base.phaa.globals": self.phaa,
+            "x_base.operator.rope": SimpleNamespace(rope_manager=self.rope),
+        })
+        self.hooks.install_model_hooks()
+        self.executor = Executor()
 
-    def setUp(self):
-        self.env = _load_env_module()
-        # Clear any env vars that could interfere
-        self._old_tp = os.environ.pop("X_TEXT_TP", None)
+    def load(self, name, filename):
+        spec = importlib.util.spec_from_file_location(name, ROOT / filename)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
 
-    def tearDown(self):
-        """Reset global state to avoid cross-test pollution."""
-        self.env.set_text_tp_override(None)
-        if self._old_tp is not None:
-            os.environ["X_TEXT_TP"] = self._old_tp
+    def prompt(self, **inputs):
+        return {
+            "control": {"class_type": "NPUTurbo", "inputs": inputs},
+            "clip": {"class_type": "CLIPLoader", "inputs": {}},
+            "text": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0]}},
+            "model": {"class_type": "UNETLoader", "inputs": {}},
+        }
 
+    def execute(self, prompt):
+        coroutine = self.executor.execute_async(prompt, "id")
+        try:
+            coroutine.send(None)
+        except StopIteration as complete:
+            return complete.value
+        self.fail("Fake executor unexpectedly suspended")
 
-class TestPatchedExecuteAsyncSource(unittest.TestCase):
-    """Verify _patched_execute_async source code has required patterns.
+    def cache(self):
+        output = self.executor.caches.outputs
+        output.cache = {key: object() for key in ("clip", "text", "model")}
+        output.subcaches = dict(output.cache)
+        return output
 
-    These tests read the source file directly since the module can't be
-    imported without torch_npu/x_base
-    """
+    def test_removing_node_resets_quant_and_tp_and_invalidates_models(self):
+        self.execute(self.prompt(quant="enable", text_tp="enable"))
+        cache = self.cache()
+        self.execute({"clip": {"class_type": "CLIPLoader", "inputs": {}}})
+        self.assertEqual([(r["quant"], r["text_tp"]) for r in self.records], [("int8", 8), ("", 0)])
+        self.assertEqual(cache.cache, {})
+        self.assertEqual(cache.subcaches, {})
 
-    @classmethod
-    def setUpClass(cls):
-        cls.source = _read_minimax_h3_source()
+    def test_node_removal_restores_enabled_environment_defaults(self):
+        os.environ.update(X_QUANT="int8", X_TEXT_TP="4")
+        self.execute(self.prompt(quant="disable", text_tp="disable"))
+        self.execute({})
+        self.assertEqual((self.records[-1]["quant"], self.records[-1]["text_tp"]), ("int8", 4))
 
-    def test_patched_execute_async_has_text_scan(self):
-        """_patched_execute_async scans for text_tp."""
-        self.assertIn("text_tp", self.source,
-                       "text_tp not in _patched_execute_async")
-        # Verify scanning reads from inputs dict
-        self.assertIn('inputs.get("text_tp"', self.source,
-                       "text_tp not scanned from inputs")
+    def test_tp_change_selectively_clears_clip_and_dependents(self):
+        self.execute(self.prompt(text_tp="enable"))
+        cache = self.cache()
+        self.execute(self.prompt(text_tp="disable"))
+        self.assertEqual(set(cache.cache), {"model"})
+        self.assertEqual(set(cache.subcaches), {"model"})
 
-    def test_patched_execute_async_sets_override_before_execution(self):
-        """Overrides are set BEFORE await _original_execute_async."""
-        self.assertIn("set_text_tp_override", self.source,
-                       "set_text_tp_override not called")
-        # Verify override calls appear before the await call
-        override_pos = self.source.index("set_text_tp_override")
-        await_pos = self.source.index("await _original_execute_async")
-        self.assertLess(override_pos, await_pos,
-                        "Override must be set before await _original_execute_async")
+    def test_node_removal_with_same_effective_values_keeps_cache(self):
+        os.environ.update(X_QUANT="int8", X_TEXT_TP="4")
+        self.execute(self.prompt(quant="enable", text_tp="enable"))
+        cache = self.cache()
+        before = dict(cache.cache)
+        self.execute({})
+        self.assertEqual(cache.cache, before)
 
-    def test_patched_execute_async_clears_cache_on_change(self):
-        """Cache clearing exists in text_tp change detection."""
-        # Count cache.clear() calls — should be at least 1 (quant).
-        # text_tp uses _clear_clip_related_cache (selective, not full clear).
-        cache_clear_count = self.source.count("cache.clear()")
-        self.assertGreaterEqual(cache_clear_count, 1,
-                                f"Expected >=1 cache.clear() calls, found {cache_clear_count}")
-        # Verify subcaches.clear() also present
-        self.assertIn("subcaches.clear()", self.source,
-                      "subcaches.clear() not found")
-        # Verify last value storage
-        self.assertIn("set_last_text_tp", self.source,
-                      "set_last_text_tp not called")
-        self.assertIn("get_last_text_tp", self.source,
-                      "get_last_text_tp not called")
+    def test_unchanged_workflow_keeps_cached_models(self):
+        prompt = self.prompt(quant="enable", text_tp="enable")
+        self.execute(prompt)
+        cache = self.cache()
+        before = dict(cache.cache)
+        self.execute(prompt)
+        self.assertEqual(cache.cache, before)
+
+    def test_environment_tp_size_change_invalidates_clip_even_without_toggle_change(self):
+        os.environ["X_TEXT_TP"] = "2"
+        self.execute(self.prompt(text_tp="enable"))
+        cache = self.cache()
+        os.environ["X_TEXT_TP"] = "4"
+        self.execute(self.prompt(text_tp="enable"))
+        self.assertEqual(self.records[-1]["text_tp"], 4)
+        self.assertEqual(set(cache.cache), {"model"})
+
+    def test_adaln_path_change_and_node_removal_invalidate_models(self):
+        os.environ.update(X_ADALN_CACHE_FILE="env-cache", X_ADALN_TRANSFORMER_PATH="env-weights")
+        self.execute(self.prompt(adaln="enable", adaln_cache_file="node-cache", adaln_transformer_path="node-weights"))
+        cache = self.cache()
+        self.execute(self.prompt(adaln="enable", adaln_cache_file="other-cache", adaln_transformer_path="other-weights"))
+        self.assertEqual(cache.cache, {})
+        self.cache()
+        self.execute({})
+        self.assertEqual((self.records[-1]["cache"], self.records[-1]["path"]), ("env-cache", "env-weights"))
+        self.assertEqual(cache.cache, {})
+
+    def test_adaln_disable_and_removal_restore_environment(self):
+        os.environ.update(X_ADALN_CACHE_FILE="env-cache", X_ADALN_TRANSFORMER_PATH="env-weights")
+        self.execute(self.prompt(adaln="disable", adaln_cache_file="ignored"))
+        self.assertIsNone(self.records[-1]["cache"])
+        self.execute({})
+        self.assertEqual((self.records[-1]["cache"], self.records[-1]["path"]), ("env-cache", "env-weights"))
+
+    def test_runtime_switches_return_to_environment_when_node_is_removed(self):
+        self.execute(self.prompt(attention_mode="sageattn", phaa_split="4", rope_fused="enable"))
+        self.assertEqual((self.records[-1]["rope"], self.records[-1]["phaa"]), (True, 4))
+        self.attention.enable_sage_attention.assert_called_once()
+        self.execute({})
+        self.assertEqual((self.records[-1]["rope"], self.records[-1]["phaa"]), (False, None))
+        self.assertEqual(self.attention.disable_sage_attention.call_count, 2)
+
+    def test_environment_runtime_switches_are_restored(self):
+        os.environ.update(X_ATTENTION_MODE="laserattn", X_PHAA_SPLIT="2", X_ROPE_FUSED="true")
+        self.execute(self.prompt(attention_mode="sdpa", rope_fused="disable"))
+        self.execute({})
+        self.attention.enable_laser_attention.assert_called_once()
+        self.assertEqual((self.records[-1]["rope"], self.records[-1]["phaa"]), (True, 2))
+
+    def test_overrides_are_ready_before_model_loaders_execute(self):
+        self.execute(self.prompt(quant="enable", text_tp="enable", adaln="enable", adaln_cache_file="cache"))
+        base = self.model.BaseModel()
+        base.load_model_weights({})
+        self.model._apply_quant.assert_called_once_with(base, quant="int8")
+        self.assertEqual(self.model._apply_sp_and_quant.call_args.kwargs["cache_file"], "cache")
+
+    def test_failed_execution_does_not_leak_settings_to_next_workflow(self):
+        self.executor.fail = True
+        with self.assertRaisesRegex(RuntimeError, "execution failed"):
+            self.execute(self.prompt(quant="enable", text_tp="enable"))
+        self.executor.fail = False
+        cache = self.cache()
+        self.execute({})
+        self.assertEqual((self.records[-1]["quant"], self.records[-1]["text_tp"]), ("", 0))
+        self.assertEqual(cache.cache, {})
+
+    def test_multiple_control_nodes_are_rejected_before_execution(self):
+        prompt = self.prompt()
+        prompt["another"] = {"class_type": "NPUTurbo", "inputs": {}}
+        with self.assertRaisesRegex(ValueError, "one NPUTurbo"):
+            self.execute(prompt)
+        self.assertFalse(self.records)
+
+    def test_hook_installation_is_idempotent(self):
+        self.hooks.install_model_hooks()
+        self.assertEqual(self.execute({}), "executed")
+        self.assertEqual(len(self.records), 1)
+
+    def test_node_and_prompt_hook_share_effective_settings(self):
+        nodes = self.load("_prompt_test_adaptor.nodes", "nodes.py")
+        inputs = dict(attention_mode="sdpa", phaa_split="1", quant="enable", adaln="enable",
+                      adaln_cache_file="cache", adaln_transformer_path="weights", text_tp="enable", rope_fused="enable")
+        expected = self.env.resolve_prompt_options(self.prompt(**inputs))
+        self.assertEqual(nodes.NPUTurbo().apply(**inputs), ())
+        actual = (self.env.get_quant(), self.env.get_text_tp(), self.env.get_adaln_cache_file(), self.env.get_rope_fused())
+        self.assertEqual(actual, (expected.quant, expected.text_tp, expected.adaln_cache_file, expected.rope_fused))
 
 
 if __name__ == "__main__":

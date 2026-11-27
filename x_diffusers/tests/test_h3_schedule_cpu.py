@@ -1,6 +1,5 @@
 """CPU regression coverage for the H3 step-count boundary."""
 import ast
-import importlib.util
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -14,9 +13,7 @@ from safetensors.torch import save_file
 
 ROOT = Path(__file__).resolve().parents[2]
 ADAPTOR = ROOT / "x_diffusers/x_diffusers/adaptor"
-spec = importlib.util.spec_from_file_location("h3_schedule", ADAPTOR / "h3_schedule.py")
-schedule = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(schedule)
+from x_diffusers.adaptor import validation as schedule
 
 
 class ScheduleTests(unittest.TestCase):
@@ -25,14 +22,14 @@ class ScheduleTests(unittest.TestCase):
             for shift in (3.0, 6.0, 12.0):
                 with self.subTest(steps=steps, shift=shift):
                     scheduler = MiniMaxH3Scheduler(shift=shift)
-                    scheduler.set_timesteps(schedule.schedule_points(steps), device="cpu")
+                    scheduler.set_timesteps(schedule.h3_schedule_points(steps), device="cpu")
                     # The vLLM-Omni H3 uniform-schedule formula includes both endpoints.
                     grid = torch.linspace(1.0, 0.0, steps + 1, dtype=torch.float32)
                     sigmas = shift * grid / (1 + (shift - 1) * grid)
                     torch.testing.assert_close(scheduler.sigmas, sigmas, rtol=0, atol=0)
                     torch.testing.assert_close(scheduler.timesteps, 1 - sigmas[:-1], rtol=0, atol=0)
                     for dtype in (torch.float32, torch.bfloat16):
-                        scheduler.set_timesteps(schedule.schedule_points(steps), device="cpu")
+                        scheduler.set_timesteps(schedule.h3_schedule_points(steps), device="cpu")
                         state = torch.tensor([0.25, -0.5], dtype=dtype)
                         velocity = torch.tensor([0.5, -1], dtype=dtype)
                         for index, timestep in enumerate(scheduler.timesteps):
@@ -48,22 +45,22 @@ class ScheduleTests(unittest.TestCase):
             cache = Path(directory) / "arbitrary-name.safetensors"
             for metadata in ({"num_steps": "21", "num_eval_steps": "20"}, {"num_steps": "21"}):
                 save_file({}, cache, metadata=metadata)
-                self.assertEqual(schedule.schedule_points(20, cache), 21)
+                self.assertEqual(schedule.h3_schedule_points(20, cache), 21)
                 with self.assertRaisesRegex(ValueError, "evaluation count"):
-                    schedule.schedule_points(21, cache)
+                    schedule.h3_schedule_points(21, cache)
             save_file({}, cache, metadata={"num_steps": "21", "num_eval_steps": "21"})
             with self.assertRaisesRegex(ValueError, "sigma point"):
-                schedule.cache_steps(cache)
+                schedule.h3_adaln_cache_steps(cache)
             cache.write_bytes(b"broken cache")
             with self.assertRaisesRegex(ValueError, "metadata"):
-                schedule.cache_steps(cache)
+                schedule.h3_adaln_cache_steps(cache)
 
     def test_online_h3_boundary_and_wan_passthrough(self):
         tree = ast.parse((ROOT / "server/video/video_server.py").read_text(encoding="utf-8"))
         names = {"_mmh3_build_infer_params", "_validate_mmh3_steps"}
         methods = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
         namespace = dict(torch=torch, Dict=Dict, Any=Any, List=List,
-                         schedule_points=schedule.schedule_points, cache_steps=schedule.cache_steps)
+                         schedule_points=schedule.h3_schedule_points, cache_steps=schedule.h3_adaln_cache_steps)
         exec(compile(ast.Module(body=methods, type_ignores=[]), "video_server.py", "exec"), namespace)
         server = SimpleNamespace(default_config={})
         for steps in (1, 20, 50):

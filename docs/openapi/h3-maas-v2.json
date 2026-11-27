@@ -3,7 +3,7 @@
   "info": {
     "title": "xGen H3 MaaS V2",
     "version": "0.4",
-    "description": "MiniMax-H3 V2 protocol subset. Real 768P inference; IR/2K are opt-in labelled mocks. Regeneration is not implemented. See H3-MAAS-V2.md for documented local restrictions."
+    "description": "MiniMax-H3 V2 protocol subset. Real 768P inference; IR/2K are opt-in labelled mocks. Regeneration is not implemented. See H3-ONLINE.md#maas for documented local restrictions."
   },
   "servers": [
     {

@@ -1,8 +1,4 @@
 import os
-import csv
-import shutil
-import random
-from itertools import product
 import time
 from copy import deepcopy
 from contextlib import nullcontext
@@ -16,6 +12,7 @@ import ffmpeg
 import gc
 import inspect
 
+from .h3_runtime import refiner_worker_scope
 from .load_pipe import load_pipe, load_v2v_pipe, load_seedvr2_pipe, update_scheduler, update_lora, update_pipe, \
     pipe_to_device
 from x_base import (infer_info, prepare_video_and_mask, attention_manager,
@@ -231,152 +228,8 @@ class InferenceManager(object):
             im = Image.fromarray(output)
             im.save(save_path)
 
-    def parse_test_matrix(self, args, mode):
-        """根据模式获取测试矩阵，支持用户通过命令行参数覆盖默认值"""
-        # 1. 设定默认值
-        if mode == "speed":
-            default_res = [(832, 480), (1280, 720)]
-            default_frames = [81, 49, 17]
-            default_targets = ["none", "encoder", "decoder", "encoder_and_decoder"]
-        else:  # accuracy
-            default_res = [(832, 480)]
-            default_frames = [81]
-            default_targets = ["none", "encoder_and_decoder"]
-
-        # 2. 解析分辨率
-        resolutions = default_res
-        if args.batch_test_resolutions:
-            try:
-                res_list = []
-                for r in args.batch_test_resolutions.split(","):
-                    w, h = r.lower().split("x")
-                    res_list.append((int(w), int(h)))
-                resolutions = res_list
-            except Exception as e:
-                print(f"解析 --batch_test_resolutions 失败，使用默认值。错误: {e}")
-
-        # 3. 解析帧数
-        frames = default_frames
-        if args.batch_test_frames:
-            try:
-                frames = [int(f.strip()) for f in args.batch_test_frames.split(",")]
-            except Exception as e:
-                print(f"解析 --batch_test_frames 失败，使用默认值。错误: {e}")
-
-        # 4. 解析加速对象
-        targets = default_targets
-        if args.batch_test_targets:
-            targets = [t.strip() for t in args.batch_test_targets.split(",")]
-
-        return resolutions, frames, targets
-
-    def run_test_pipeline(self, args):
-        """
-        根据 args.batch_test_mode 决定执行常规推理、速度测试还是精度测试。
-        """
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-
-        if rank == 0 and args.batch_test_mode in ["speed", "accuracy"]:
-            os.makedirs(args.batch_test_report_dir, exist_ok=True)
-
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-
-        # ================= 1. 获取并抽样数据集 =================
-        sampled_dirs = self._sample_test_cases(args)
-        args.sampled_case_dirs = sampled_dirs  # 透传给 infer_batch_from_testdata
-
-        # ================= 2. 分支执行 =================
-        if args.batch_test_mode == "normal":
-            self.infer_batch(args)
-        elif args.batch_test_mode == "speed":
-            self._run_speed_test(args, sampled_dirs, rank)
-        elif args.batch_test_mode == "accuracy":
-            self._run_accuracy_test(args, sampled_dirs, rank)
-
-    def _sample_test_cases(self, args):
-        """抽取测试用例"""
-        all_case_dirs = list_cases(args.batch_test_input_dir)
-        if args.batch_test_sample_size > 0 and len(all_case_dirs) > args.batch_test_sample_size:
-            # 固定随机种子，保证每次运行抽样的 case 都是一样的
-            random.seed(args.seed if hasattr(args, 'seed') else 42)
-            return random.sample(all_case_dirs, args.batch_test_sample_size)
-        return all_case_dirs
-
-    def _run_speed_test(self, args, sampled_dirs, rank):
-        """执行速度测试逻辑"""
-        report_path = os.path.join(args.batch_test_report_dir, "report_speed.csv")
-        if rank == 0:
-            logger.info(f">>> 启动 [速度验证] 测试，共 {len(sampled_dirs)} 个 case...\n")
-            os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
-            with open(report_path, "w", newline="", encoding="utf-8") as f:
-                f.write("Case_ID,Resolution,Frames,VAE_Lighting_Target,Encode_Time(ms),Decode_Time(ms)\n")
-
-        resolutions, frames, targets = self.parse_test_matrix(args, "speed")
-
-        # 使用 itertools.product 替代三层嵌套循环，直接降低圈复杂度
-        for (w, h), f, target in product(resolutions, frames, targets):
-            test_args = deepcopy(args)
-            test_args.enable_vae_time_count = True
-            test_args.width = w
-            test_args.height = h
-            test_args.frames = f
-            test_args.vae_lightning = target
-
-            if rank == 0:
-                logger.info(f"--- 速度测试组合: {w}x{h}, {f}帧, {target} ---")
-            self.infer_batch(test_args)
-
-        if rank == 0:
-            logger.info(f">>> [速度验证] 测试完成，报告已保存至 {report_path}")
-
-    def _run_accuracy_test(self, args, sampled_dirs, rank):
-        """执行精度测试逻辑"""
-        report_path = os.path.join(args.batch_test_report_dir, "prompt.txt")
-        task_desc_path = os.path.join(args.batch_test_report_dir, "任务描述.txt")
-
-        if rank == 0:
-            logger.info(f">>> 启动 [精度验证] 测试，共 {len(sampled_dirs)} 个 case...")
-            os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
-            with open(task_desc_path, "w", encoding="utf-8") as f:
-                f.write("任务背景：VAE并行加速精度测试\n\n原始目录：original\n\n对比目录：target\n")
-
-            with open(report_path, "w", encoding="utf-8") as f:
-                for case_dir in sampled_dirs:
-                    case_id = os.path.basename(case_dir)
-                    prompt_file = os.path.join(case_dir, "prompt.txt")
-                    prompt_text = read_text(prompt_file).strip().replace('\n', '')
-                    f.write(f"{case_id}.mp4,{prompt_text}\n")
-
-        resolutions, frames, targets = self.parse_test_matrix(args, "accuracy")
-
-        # 同样使用 product 压平嵌套循环
-        for (w, h), f, target in product(resolutions, frames, targets):
-            test_args = deepcopy(args)
-            test_args.enable_vae_time_count = False
-            test_args.width = w
-            test_args.height = h
-            test_args.frames = f
-            test_args.vae_lightning = target
-
-            if rank == 0:
-                logger.info(f"--- 精度测试组合: {w}x{h}, {f}帧, VAE加速对象：{target} ---")
-            self.infer_batch(test_args)
-
-        if rank == 0:
-            logger.info(f">>> [精度验证] 测试完成，报告已保存至 {report_path}")
-
-    def _get_output_dir(self, case_args, case_dir: str, report_dir: str) -> str:
-        """抽离：根据不同测试模式动态计算输出目录"""
-        if case_args.batch_test_mode == "speed":
-            return os.path.join(report_dir, f"{case_args.width}x{case_args.height}_{case_args.frames}f",
-                                f"lighting-{case_args.vae_lightning}")
-
-        if case_args.batch_test_mode == "accuracy":
-            sub_folder = "original" if case_args.vae_lightning == "none" else "target"
-            return os.path.join(report_dir, sub_folder)
-
-        # 常规模式
+    def _get_batch_output_dir(self, case_args, case_dir: str) -> str:
+        """Return the normal batch output directory for one input case."""
         output_dir = os.path.join(case_dir, case_args.task_type)
         is_lightning_mode = (
                 case_args.vae_lightning in ["encoder", "decoder", "encoder_and_decoder"]
@@ -397,81 +250,93 @@ class InferenceManager(object):
 
         return os.path.join(output_dir, f"pad_latent_size-{case_args.vae_pad_latent_size}")
 
-    def _append_speed_report(self, args, case_id: str):
-        """抽离：仅速度测试时追加CSV记录"""
-        if args.batch_test_mode != "speed":
-            return
-        speed_report = os.path.join(getattr(args, "batch_test_report_dir", "./"), "report_speed.csv")
-        with open(speed_report, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                case_id, f"{args.width}x{args.height}", args.frames,
-                args.vae_lightning, infer_info.vae_last_encode_time, infer_info.vae_last_decode_time
-            ])
-
-    def infer_batch_from_testdata(
+    def infer_batch(
             self,
             args,
+            *,
+            case_dirs=None,
             image_name: str = "image.jpg",
             prompt_name: str = "prompt.txt",
             out_video_name: str = "output.mp4",
+            output_path_fn=None,
+            on_result=None,
     ):
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        """Run input cases, reusing the pipeline and collecting per-case failures.
 
-        case_dirs = getattr(args, "sampled_case_dirs", None) or list_cases(args.batch_test_input_dir)
-        if rank == 0:
-            logger.info(f"[BATCH] Processing {len(case_dirs)} cases...")
-
-        failed = []
-
-        for idx, case_dir in enumerate(case_dirs):
-            case_id = os.path.basename(case_dir)
-            if rank == 0:
-                logger.info(f"[BATCH] ({idx + 1}/{len(case_dirs)}) case={case_id} dir={case_dir}")
-
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
-
-            case_args = deepcopy(args)
-            case_args.i2v_image_path = os.path.join(case_dir, image_name)
-            case_args.prompt = read_text(os.path.join(case_dir, prompt_name))
-
-            # 1. 调用抽离的路径生成逻辑
-            report_dir = getattr(case_args, "batch_test_report_dir", "")
-            output_dir = self._get_output_dir(case_args, case_dir, report_dir)
-
-            out_name = f"{case_id}.mp4" if case_args.batch_test_mode in ["speed", "accuracy"] else out_video_name
-            case_args.save_path = os.path.join(output_dir, out_name)
+        Callers may supply cases, an output-path function and a rank-zero success
+        callback. Inference does not interpret evaluation modes or write reports.
+        """
+        with refiner_worker_scope(self, args):
+            if case_dirs is None:
+                case_dirs = list_cases(
+                    args.batch_input_dir,
+                    sample_size=args.batch_sample_size,
+                    seed=args.seed,
+                )
+            else:
+                case_dirs = list(case_dirs)
+            if not case_dirs:
+                return []
+            self._prepare_pipeline(args)
+            self.init_args = deepcopy(args)
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
 
             if rank == 0:
-                os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"[BATCH] Processing {len(case_dirs)} cases...")
+
+            failed = []
+
+            for idx, case_dir in enumerate(case_dirs):
+                case_id = os.path.basename(case_dir)
+                if rank == 0:
+                    logger.info(f"[BATCH] ({idx + 1}/{len(case_dirs)}) case={case_id} dir={case_dir}")
+
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+
+                case_args = deepcopy(args)
+                case_args.i2v_image_path = os.path.join(case_dir, image_name)
+                case_args.prompt = read_text(os.path.join(case_dir, prompt_name))
+
+                if output_path_fn is None:
+                    output_dir = self._get_batch_output_dir(case_args, case_dir)
+                    case_args.save_path = os.path.join(output_dir, out_video_name)
+                else:
+                    case_args.save_path = os.fspath(output_path_fn(case_args, case_dir))
+                    output_dir = os.path.dirname(case_args.save_path) or "."
+
                 if case_args.vae_output_dir:
                     case_args.vae_output_dir = os.path.join(output_dir, case_args.vae_output_dir)
-                    os.makedirs(case_args.vae_output_dir, exist_ok=True)
-
-            infer_info.update_info(case_args)
-
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
-
-            torch.cuda.synchronize()
-            start_time = time.time()
-
-            try:
-                self.infer_single(case_args)
                 if rank == 0:
-                    # 2. 调用抽离的写报告逻辑
-                    self._append_speed_report(case_args, case_id)
-                    logger.info(f"[BATCH] case={case_id} OK -> {case_args.save_path}")
-            except Exception as e:
-                logger.error(f"[BATCH] case={case_id} Failed: {e}")
-                failed.append({"case_id": case_id, "error": str(e)})
+                    os.makedirs(output_dir, exist_ok=True)
+                    if case_args.vae_output_dir:
+                        os.makedirs(case_args.vae_output_dir, exist_ok=True)
 
-            torch.cuda.synchronize()
-            if rank == 0:
-                logger.info(f"time cost:{time.time() - start_time}")
+                infer_info.update_info(case_args)
 
-        return failed
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+
+                torch.cuda.synchronize()
+                start_time = time.time()
+
+                try:
+                    self.infer_single(case_args)
+                    if rank == 0:
+                        if on_result is not None:
+                            on_result(case_args, case_id)
+                        logger.info(f"[BATCH] case={case_id} OK -> {case_args.save_path}")
+                except Exception as e:
+                    logger.error(f"[BATCH] case={case_id} Failed: {e}")
+                    if getattr(args, "h3_refiner", False):
+                        raise
+                    failed.append({"case_id": case_id, "error": str(e)})
+
+                torch.cuda.synchronize()
+                if rank == 0:
+                    logger.info(f"time cost:{time.time() - start_time}")
+
+            return failed
 
     # ------------------------------------------------------------------
     # MiniMax-H3 inference (ModularPipeline — joint video + audio)
@@ -480,46 +345,25 @@ class InferenceManager(object):
     def _infer_minimax_h3(self, args):
         """Run MiniMax-H3 joint video + audio generation via ModularPipeline."""
         if getattr(args, "h3_refiner", False):
-            from .h3_refiner import infer
+            from x_diffusers.adaptor.h3_runtime import infer_h3_refiner as infer
             return infer(self, args)
-        from .h3_schedule import schedule_points
+        from .h3_runtime import (
+            build_video_parameters, load_keyframes, run_video_request,
+            validate_turbo_sla_schedule,
+        )
 
-        points = schedule_points(args.num_inference_steps, getattr(args, "adaln_cache_file", None))
-        infer_params = {
-            "prompt": args.prompt,
-            "height": args.height,
-            "width": args.width,
-            "num_frames": args.frames,
-            "num_inference_steps": points,
-            "generator": torch.Generator().manual_seed(args.seed),
-        }
+        infer_params = build_video_parameters(args, include_keyframes=False)
+        points = infer_params["num_inference_steps"]
         if getattr(args, "h3_turbo8", False):
-            from .h3_turbo8 import validate
+            from x_diffusers.adaptor.validation import validate_h3_turbo8 as validate
             validate(args)
-        from .h3_turbo_sla import validate_schedule
-        validate_schedule(self.pipe, args, points)
+        validate_turbo_sla_schedule(self.pipe, args, points)
 
-        # Keyframe conditioning (fl2va / fl2va_last_frame)
-        if getattr(args, "keyframe_image", ""):
-            infer_params["image"] = load_image(args.keyframe_image)
-        if getattr(args, "keyframe_last_image", ""):
-            infer_params["last_image"] = load_image(args.keyframe_last_image)
+        load_keyframes(args, infer_params)
 
-        # Reference conditioning (ref2va)
-        ref_paths = getattr(args, "reference_paths", None)
-        if ref_paths:
-            from .h3_references import load_references, reference_image_resize_mode, select_reference_adaln
+        from .h3_runtime import prepare_h3_media
 
-            infer_params["references"] = load_references(ref_paths)
-            mode = reference_image_resize_mode(args)
-            if mode is not None:
-                infer_params["h3_reference_image_resize_mode"] = mode
-            if args.task_type == "ref2va":
-                select_reference_adaln(self.pipe, args)
-        elif getattr(args, "adaln_cache_file", None) and args.task_type in ("t2va", "fl2va"):
-            from .h3_references import select_adaln
-
-            select_adaln(self.pipe, args, "video" if "image" in infer_params or "last_image" in infer_params else "none")
+        prepare_h3_media(self.pipe, args, infer_params)
 
         # Rainfusion / sparse attention setup (MiniMax-H3 early-returns from infer_single,
         # so the generic setup at L669 is never reached — must set up here).
@@ -540,24 +384,9 @@ class InferenceManager(object):
             from x_base.operator.rope import enable_rope_cache
             enable_rope_cache()
 
-        # ModularPipeline returns a dict when ``output=`` is specified.
-        if getattr(args, 'h3_attention', 'legacy') != 'legacy':
-            self.pipe.transformer._h3_attention_session.begin(args)
-        from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
-        from .h3_npu_options import request_context
-        condition_context = nullcontext()
-        if getattr(args, 'h3_condition_overlap', False):
-            from .h3_condition_overlap import request_context as overlap_context
-            condition_context = overlap_context(self.pipe, args)
-
-        with (base_temporal_padding(self.pipe, infer_params["num_frames"]),
-              request_context(self.pipe.transformer), condition_context):
-            if getattr(args, 'h3_cuda_precompute_conditioning', False):
-                from .h3_conditioning import request_conditioning
-                with request_conditioning(self.pipe.transformer):
-                    result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
-            else:
-                result = self.pipe(output=["videos", "audio", "sampling_rate"], **infer_params)
+        result = run_video_request(
+            self.pipe, args, infer_params, output=["videos", "audio", "sampling_rate"]
+        )
 
         videos = result.get("videos")
         audio = result.get("audio")
@@ -716,7 +545,7 @@ class InferenceManager(object):
         # --- MiniMax-H3 branch (ModularPipeline, joint video+audio) ---
         if "MiniMax-H3" in args.model:
             self._infer_minimax_h3(args)
-            from .h3_memory import release_request_memory
+            from .h3_runtime import release_request_memory
             release_request_memory()
             return
 
@@ -858,19 +687,19 @@ class InferenceManager(object):
         """抽离出的公共逻辑：处理 pipeline 重建、LoRA 更新和设备分配"""
         if (getattr(args, 'h3_condition_overlap', False)
                 or getattr(self, '_h3_condition_overlap_key', (False,))[0]):
-            from .h3_condition_overlap import validate_manager
+            from x_diffusers.adaptor.validation import validate_h3_overlap_manager as validate_manager
             validate_manager(self, args, device_type())
-        from .h3_cuda_options import needs_resolution
+        from x_diffusers.adaptor.validation import h3_needs_resolution as needs_resolution
         if needs_resolution(args) or getattr(self, '_h3_cuda_precision_key', None) in ('fp8-bf16', 'fp8-sage'):
-            from .h3_cuda_precision import validate_manager
+            from x_diffusers.adaptor.validation import validate_h3_manager as validate_manager
 
             validate_manager(self, args, device_type())
         if (getattr(args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp')
                 or getattr(self.init_args, 'h3_parallel_mode', 'sp') in ('tp_cp', 'tp_cp_shared', 'tp_sp')):
-            from .h3_parallel_config import validate_resident_args
+            from x_diffusers.adaptor.validation import validate_h3_resident_args as validate_resident_args
             validate_resident_args(self.init_args, args)
         if getattr(args, "h3_refiner", False):
-            from .h3_refiner import prepare
+            from x_diffusers.adaptor.load_pipe import prepare_h3_refiner as prepare
             return prepare(self, args)
         if getattr(self, "_h3_refiner_key", None) is not None:
             raise ValueError("Restart the manager to disable H3 Refiner and restore the legacy backend")
@@ -878,25 +707,19 @@ class InferenceManager(object):
 
         if not consistent:
             logger.info("Different abilities require rebuilding pipe")
-            self.pipe = load_pipe(args)
-            # 先加载LoRA，再进行FSDP包装
-            update_lora(
-                self.pipe,
-                args.model,
-                self.init_args.lora_path_list if self.init_args is not None else None,
-                args.lora_path_list,
-                fuse_lora=args.fuse_lora,
-                weights_list=args.lora_scale_weight_list
-            )
-            update_pipe(self.pipe, args)
-            if args.adopt_sr:
-                self.sr_pipe = load_seedvr2_pipe(args)
-            if args.ten_second:
-                v2v_args = deepcopy(args)
-                self.v2v_pipe = load_v2v_pipe(v2v_args)
-                v2v_args.matmul_quant = 'none'
-                v2v_args.joint = False
-                update_pipe(self.v2v_pipe, v2v_args)
+            from .load_pipe import PipelineBuildOptions
+            def prepare_auxiliary_pipelines():
+                if args.adopt_sr:
+                    self.sr_pipe = load_seedvr2_pipe(args)
+                if args.ten_second:
+                    v2v_args = deepcopy(args)
+                    self.v2v_pipe = load_v2v_pipe(v2v_args)
+                    v2v_args.matmul_quant = 'none'
+                    v2v_args.joint = False
+                    update_pipe(self.v2v_pipe, v2v_args)
+            self.pipe = load_pipe(args, build_options=PipelineBuildOptions(
+                initial_lora_paths=self.init_args.lora_path_list if self.init_args is not None else None,
+                before_placement=prepare_auxiliary_pipelines))
         else:
             # consistent为True时，只更新LoRA（不重建pipeline）
             update_lora(
@@ -911,87 +734,83 @@ class InferenceManager(object):
                 from .load_pipe import _apply_attention_backend
 
                 _apply_attention_backend(args)
-            from .h3_npu_options import configure_model as configure_npu_fusions
+            from .load_pipe import configure_h3_npu_fusions
 
-            configure_npu_fusions(self.pipe, args, device_type())
+            configure_h3_npu_fusions(self.pipe, args, device_type())
 
         if not consistent:
-            self.pipe = pipe_to_device(self.pipe, args)
             if args.ten_second:
                 self.v2v_pipe = pipe_to_device(self.v2v_pipe, args)
 
-    def infer_batch(self, args):
-        self._prepare_pipeline(args)
-
-        self.init_args = deepcopy(args)
-        return self.infer_batch_from_testdata(args)
-
     def infer(self, args) -> float:
-        if getattr(args, "h3_reference_image_resize_mode", None) is not None:
-            from .h3_references import reference_image_resize_mode
+        with refiner_worker_scope(self, args):
+            if getattr(args, "h3_reference_image_resize_mode", None) is not None:
+                from x_diffusers.adaptor.validation import h3_reference_image_resize_mode as reference_image_resize_mode
 
-            reference_image_resize_mode(args)
-        if args.model == "MiniMax-H3" and args.task_type == "ref2va":
-            from .h3_references import reference_conditioning
+                reference_image_resize_mode(args)
+            if args.model == "MiniMax-H3" and args.task_type == "ref2va":
+                from x_diffusers.adaptor.validation import h3_reference_conditioning as reference_conditioning
 
-            reference_conditioning(args)
-        if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
-                getattr(self.init_args, 'h3_attention', 'legacy') != 'legacy'):
-            from .h3_attention_config import key
-            if self.init_args is not None and key(self.init_args) != key(args):
-                raise ValueError('Restart the manager to change H3 attention backend or predictor')
-        if args.sp not in [1, 2, 4, 8, 16]:
-            raise ValueError(f"--sp must be one of [1, 2, 4, 8, 16], got {args.sp}")
+                reference_conditioning(args)
+            if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
+                    getattr(self.init_args, 'h3_attention', 'legacy') != 'legacy'):
+                from x_diffusers.adaptor.validation import h3_attention_key as key
+                if self.init_args is not None and key(self.init_args) != key(args):
+                    raise ValueError('Restart the manager to change H3 attention backend or predictor')
+            if args.sp not in [1, 2, 4, 8, 16]:
+                raise ValueError(f"--sp must be one of [1, 2, 4, 8, 16], got {args.sp}")
 
-        if args.ulysses_degree is not None and args.ring_degree is not None:
-            if args.ulysses_degree * args.ring_degree != args.sp:
-                raise ValueError(
-                    f"--ulysses_degree ({args.ulysses_degree}) * --ring_degree ({args.ring_degree}) "
-                    f"must equal --sp ({args.sp})"
-                )
-            if args.sp == 16 and args.ulysses_degree == 16:
-                raise ValueError(
-                    "--ulysses_degree cannot be set to 16 when --sp is 16"
-                )
-        else:
-            if args.ulysses_degree is not None or args.ring_degree is not None:
-                raise ValueError(
-                    "--ulysses_degree and --ring_degree must be specified together"
-                )
+            if args.ulysses_degree is not None and args.ring_degree is not None:
+                if args.ulysses_degree * args.ring_degree != args.sp:
+                    raise ValueError(
+                        f"--ulysses_degree ({args.ulysses_degree}) * --ring_degree ({args.ring_degree}) "
+                        f"must equal --sp ({args.sp})"
+                    )
+                if args.sp == 16 and args.ulysses_degree == 16:
+                    raise ValueError(
+                        "--ulysses_degree cannot be set to 16 when --sp is 16"
+                    )
+            else:
+                if args.ulysses_degree is not None or args.ring_degree is not None:
+                    raise ValueError(
+                        "--ulysses_degree and --ring_degree must be specified together"
+                    )
 
-        self._prepare_pipeline(args)
+            self._prepare_pipeline(args)
 
-        infer_info.update_info(args)
-        self.init_args = deepcopy(args)
+            infer_info.update_info(args)
+            self.init_args = deepcopy(args)
 
-        try:
-            os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
-        except OSError as e:
-            logger.error(f"Failed to create output directory: {args.save_path}")
-            return 0.0
+            try:
+                os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
+            except OSError as e:
+                logger.error(f"Failed to create output directory: {args.save_path}")
+                if getattr(args, "h3_refiner", False):
+                    raise
+                return 0.0
 
-        if args.guidance_scale is None or ("Wan2.2" in args.model and args.guidance_scale_2 is None):
-            args.guidance_scale, args.guidance_scale_2 = GUIDANCE_SCALE_MAP[args.model]
-            logger.info(f"The guidance scale was not set correctly and has been reset to "
-                        f"guidance scale={args.guidance_scale}, guidance scale 2={args.guidance_scale_2}.")
+            if args.guidance_scale is None or ("Wan2.2" in args.model and args.guidance_scale_2 is None):
+                args.guidance_scale, args.guidance_scale_2 = GUIDANCE_SCALE_MAP[args.model]
+                logger.info(f"The guidance scale was not set correctly and has been reset to "
+                            f"guidance scale={args.guidance_scale}, guidance scale 2={args.guidance_scale_2}.")
 
-        if args.x:
-            args.guidance_scale = X_GUIDANCE_SCALE
-            if "Wan2.2" in args.model:
-                args.guidance_scale_2 = X_GUIDANCE_SCALE
+            if args.x:
+                args.guidance_scale = X_GUIDANCE_SCALE
+                if "Wan2.2" in args.model:
+                    args.guidance_scale_2 = X_GUIDANCE_SCALE
 
-        torch.distributed.barrier()
-        torch.cuda.synchronize()
-        start_time = time.time()
+            torch.distributed.barrier()
+            torch.cuda.synchronize()
+            start_time = time.time()
 
-        self.infer_single(args)
+            self.infer_single(args)
 
-        torch.cuda.synchronize()
-        end_time = time.time()
-        infer_cost = end_time - start_time
-        logger.info(f"time cost:{infer_cost}")
+            torch.cuda.synchronize()
+            end_time = time.time()
+            infer_cost = end_time - start_time
+            logger.info(f"time cost:{infer_cost}")
 
-        return infer_cost
+            return infer_cost
 
 
 class ImageInferenceManager(object):
@@ -1031,26 +850,8 @@ class ImageInferenceManager(object):
 
     def infer(self, args) -> float:
         _t_load = time.time()
-        self.pipe = load_pipe(args)
-
-        update_scheduler(
-            self.pipe,
-            args.model,
-            args.lora_path_list
-        )
-
-        update_lora(
-            self.pipe,
-            args.model,
-            init_lora_path_list=None,
-            lora_path_list=args.lora_path_list,
-            fuse_lora=args.fuse_lora,
-            weights_list=args.lora_scale_weight_list
-        )
-
-        update_pipe(self.pipe, args)
-
-        self.pipe = pipe_to_device(self.pipe, args)
+        from .load_pipe import PipelineBuildOptions
+        self.pipe = load_pipe(args, build_options=PipelineBuildOptions(configure_scheduler=True))
         _load_t = time.time() - _t_load
         logger.info(f"[STAGE] load_pipe + setup: {_load_t:.3f}s")
 

@@ -29,7 +29,7 @@ def load(name,path):
 @unittest.skipUnless(torch is not None,'requires Torch CPU')
 class RuntimeTests(unittest.TestCase):
     def test_vae_conv_accepts_bf16_after_loader_kept_conv_in_fp32(self):
-        source=(ROOT/'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py').read_text()
+        source=(ROOT/'x_diffusers/x_diffusers/framework/pipeline/minimax_h3.py').read_text()
         node=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='prepare_vae_precision')
         namespace={'torch':torch}
         exec(compile(ast.Module(body=[node],type_ignores=[]),'vae-precision','exec'),namespace)
@@ -67,12 +67,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(torch.equal(expected,actual))
         self.assertTrue(torch.equal(torch.cat(old_frames,2),torch.cat(new_frames,2)))
         callback=[]
-        callback_result=new(vae,z,None,object(),frame_callback=lambda value:callback.append(value.clone()))
+        callback_result=new(vae,z,None,None,frame_callback=lambda value:callback.append(value.clone()))
         self.assertTrue(torch.equal(expected,callback_result))
         self.assertTrue(torch.equal(torch.cat(old_frames,2),torch.cat(callback,2)))
 
     def test_vendor_import_shims_are_restored(self):
-        path=ROOT/'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/vendor/upscaler.py'
+        path=ROOT/'x_diffusers/x_diffusers/framework/_vendor/h3_regenerate/upscaler.py'
         mod=load('_upscaler_test',path)
         names=('folder_paths','comfy.model_management','comfy_api.latest')
         sentinel=object();previous={name:sys.modules.get(name,sentinel) for name in names}

@@ -1,27 +1,30 @@
-# 版本与升级
+# 版本能力与迁移
 
-[文档目录](README.md) · [当前推荐部署](H3-VIDEO-QUICKSTART.md)
+[文档目录](README.md)
 
-以下按版本倒序记录功能演进。“原默认”“旧路径”等措辞仅描述相应发布时的行为；当前 CUDA/NPU 推荐视频示例均按 **20 次实际 Base DiT** 编写。历史 50 步能力及已有显式配置继续保留。
+本页只记录版本能力和配置迁移。当前工作区的文档收拢不代表产生了新的发布版本，也不改变模型、默认参数或接口。
 
-| 分支 | 核心变化 | 文档 |
-|---|---|---|
-| [v0.6](https://github.com/lightnateriver/xGen/tree/v0.6) | 增加 MiniMax-H3-Image 六步文生图／参考图编辑与四卡 NPU W8A8 常驻方案；当前 NPU 768P Base 默认推荐 VC＋Ascend 融合全并行 Streaming。R2VA 条件准备重叠默认关闭，CUDA 保留 Sage-FP8／Align16。 | [图像入口](H3-IMAGE.md) · [优化](H3-IMAGE-NPU-OPTIMIZATIONS.md) · [40项性能](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-image-npu-40cases.md) · [NPU默认](H3-NPU-DEFAULT.md) · [条件重叠](H3-CONDITION-OVERLAP.md) |
-| [v0.5](https://github.com/lightnateriver/xGen/tree/v0.5) | CUDA Base 默认 Sage-FP8 全并行 Streaming + AdaLN 表，覆盖 T2VA/I2VA/R2VA；保留旧精度回退。NPU Base 默认 Laser INT8全并行Streaming，覆盖T2VA/I2VA/R2VA、20实际步、SP8，共用组件调度与Stream FP16存储。 | [NPU默认与升级](H3-NPU-DEFAULT.md) · [复测](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-native-shared-fp16.md) · [通用适配](H3-PORTABLE.md) |
-| [v0.4](https://github.com/lightnateriver/xGen/tree/v0.4) | 增加 `cuda-5090 r2va` 优选 Sage-FP8 全并行预设：SAP、本地输入投影、请求内固定条件复用及组件并行，DiT 全程常驻；各项可独立关闭。新增统一 `--maas`、多模态输入校验、首尾帧、768P 自适应比例和公网素材下载。旧 CUDA/NPU 默认保留，TP/CP 为默认关闭的实验选项。 | [启动与开关](H3-CUDA-COMPOSABLE.md) · [实测性能](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda5090-full-parallel.md) · [MaaS API](../server/video/MAAS-API.md) · [在线启动](H3-ONLINE.md) |
-| [v0.3.2-maas](https://github.com/lightnateriver/xGen/tree/v0.3.2-maas) | CUDA 提供默认精度参考 fp8-bf16 和更快的 Sage-FP8 两套标准方案；增加输出 AdaLN 融合与长视频实测。保留 MaaS 排队、超时、健康探针、原子发布、环境采集，以及 NPU 离线 benchmark、R2VA 多媒体参考、实际步数语义和逐视频显存回收。 | [CUDA 方案一](H3-CUDA-PRECISION.md) · [CUDA 方案二](H3-CUDA-SAGE.md) · [API](../server/video/MAAS-API.md) · [在线启动](H3-ONLINE.md) · [benchmark](H3-NPU-BENCHMARK.md) · [升级说明](H3-UPGRADE.md) |
-| [v0.3.1](https://github.com/lightnateriver/xGen/tree/v0.3.1) | CUDA 配置集中到 adaptor。增加可选异步 FP8 PHAA、回程直写、DiT 算子融合和 VAE 空间切片。完成 CUDA、NPU 双设备冒烟。 | [实测](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-cuda.md#v031-双设备冒烟) |
-| [v0.3-cuda](https://github.com/lightnateriver/xGen/tree/v0.3-cuda) | CUDA H3 FL2VA、NVFP4 DiT 常驻、Sage/Sparge、FP8 PHAA 双向通信、文本 TP8、VAE SP、FastVideo C4 预设及可选 FL2VA 2K。 | [CUDA 部署](H3-CUDA.md) |
-| [v0.3](https://github.com/lightnateriver/xGen/tree/v0.3) | NPU Base DiT 增加可选 Spark-H3 和 Veda。支持 Veda 稀疏度配置和实验性 LightX2V 8 步配方。 | [启动和回退](H3-ATTENTION.md) · [实测](H3-ATTENTION-VALIDATION.md) |
-| [v0.2](https://github.com/lightnateriver/xGen/tree/v0.2) | 增加默认关闭的 H3 → Open-H3-Regenerate-2K 链路，复用原 Manager 和 HTTP 服务。 | [NPU 部署](H3-DEPLOYMENT.md) |
-| [v0.1](https://github.com/lightnateriver/xGen/tree/v0.1) | 原始 xGen，包含 Diffusers 适配、SP、FSDP、PHAA、量化和视频服务。 | [基础示例](../example/diffusers) |
+| 版本 | 主要能力 |
+|---|---|
+| v0.6 | 独立 H3-Image 生成/编辑；NPU 文本 W8A8、VC 与 Ascend 融合；Ref2VA 图片缩放选择；CUDA native-stream 可选 VAE 编译 |
+| v0.5 | CUDA/NPU 共用组件调度、full-parallel 与 native-stream；继续保留各自精度和后端约束 |
+| v0.4 | CUDA H3 组件并行与全并行预设；MaaS V2、首尾帧、多媒体校验与输出发布 |
+| v0.3 系列 | CUDA 精度/通信适配与可选 Base attention，旧配置保留显式选择 |
+| v0.2 | 可选 Base → latent upscaler → Refiner 2K 链路 |
 
-## v0.6 当前补充
+<a id="migration"></a>
+## 升级时核对
 
-- 当前推荐视频默认采用 Sage-FP8 全并行 Streaming＋AdaLN 表（CUDA）和 VC＋Ascend 融合 INT8 全并行 Streaming（NPU 768P Base）。
-- NPU 推荐脚本和 Base／Ref2VA 在线 JSON 默认请求 VC＋Ascend 融合；当前整网性能和人工视听证据限定八卡 910B3、单图 R2VA 5／10 秒、20 步。
-- H3-Image 使用独立模型与依赖，NPU Qwen 文本解码器默认 W8A8，CUDA 文本默认 BF16。
-- R2VA 条件准备重叠使用 CUDA/NPU 共用开关，默认关闭；CUDA 一步接入和容量验证不代表 NPU 或完整步数精度验收。
-- 文档按用户入口重组，当前推荐的 CUDA Base／MaaS／NPU Refiner 示例 JSON 统一为 20 步；Refiner 示例同步选择匹配的 21 点 Base 表。算子数值实现与低层默认参数保持原样。
+1. **实际步数**：H3 的 `num_inference_steps` 填实际 Base DiT 次数。普通 NPU 21/51 点表分别匹配 20/50 次；Turbo/LoRA 调度按各自规则校验。不能只改文件名或请求步数。
+2. **模型与资产**：T2VA/I2VA 使用 FL2VA，Ref2VA 使用独立模型与表；CUDA/NPU 准备工具及布局不能混用。原始权重用于 owner，stripped Transformer 与对应表一起使用。
+3. **启动层级**：推荐 shell/JSON 会显式选择配置，低层 CLI 的未指定默认不一定相同。部署前查看 [CUDA](H3-CUDA.md)、[NPU](H3-NPU-DEFAULT.md) 或 [Image](H3-IMAGE.md)。
+4. **原生 VAE**：native-stream 需要独立可信 `video_vae` 目录和授权。更改 decoder、表模式、精度、并行或固定模型后重启，不能在同一常驻实例内热切换。
+5. **服务协议**：普通 HTTP、旧任务接口和 MaaS V2 的状态、错误与交付字段分别遵守 [API](../server/video/MAAS-API.md)。模拟 IR/2K 不等于真实后端。
+6. **扩展能力**：TP/CP、条件重叠、编译、稀疏 attention 与 Turbo 均按 [统一配置](H3-CONFIGURATION.md) 的适用范围显式启用。
 
-详见 [v0.6 发布说明](H3-V06-RELEASE.md)、[CUDA 升级与兼容](H3-V05-CUDA-UPGRADE.md) 和[早期步数语义升级](H3-UPGRADE.md)。当前视频性能见[总表](performance/README.md)，原始历史证据见相应发布提交，不从历史版本名称推导当前默认值。
+<a id="documentation"></a>
+## 文档和开发工具
+
+主文档按使用任务与架构职责收拢，实验过程、专项验证/基准记录和独立基准脚本已从当前工作区清理。第三方许可证、来源声明、协议定义和模块 README 仍由各自目录维护。
+
+模型实现继续采用既有包入口与补丁注册方式，组件加载由 adaptor 统一编排。质量检查及运行验证的边界见 [架构](ARCHITECTURE.md#validation)。

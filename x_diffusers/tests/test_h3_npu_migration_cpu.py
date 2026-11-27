@@ -33,7 +33,13 @@ def load(name, path):
     return module
 
 
-options = load('_h3_npu_options_cpu', ADAPTORS / 'h3_npu_options.py')
+loader_path = ADAPTORS / 'load_pipe.py'
+configure = next(node for node in ast.parse(loader_path.read_text(encoding='utf-8')).body
+                 if isinstance(node, ast.FunctionDef) and node.name == 'configure_h3_npu_fusions')
+loader_scope = dict(__package__='x_diffusers.adaptor')
+exec(compile(ast.Module(body=[configure], type_ignores=[]), str(loader_path), 'exec'), loader_scope)
+configure_h3_npu_fusions = loader_scope['configure_h3_npu_fusions']
+from x_diffusers.adaptor.h3_runtime import fusion_context
 vc = load('_h3_vc_cpu', OPERATORS / 'vc_attention.py')
 runtime = load('_h3_runtime_cpu', OPERATORS / 'npu_fusion/runtime.py')
 signature = load('_h3_signature_cpu', OPERATORS / 'npu_fusion/tensor_signature.py').signature
@@ -44,6 +50,10 @@ def args(**values):
     return SimpleNamespace(model='MiniMax-H3', atten='laser', h3_opts=None, **values)
 
 
+
+from x_diffusers.adaptor import config as _parameter_config
+from x_diffusers.adaptor import validation as _parameter_validation
+
 class OptionTests(unittest.TestCase):
     def setUp(self):
         self.environment = patch.dict(os.environ, {}, clear=True)
@@ -52,60 +62,60 @@ class OptionTests(unittest.TestCase):
 
     def test_unset_fusions_are_off(self):
         value = args()
-        self.assertEqual(options.resolve_h3_features(value), ())
+        self.assertEqual(_parameter_validation.resolve_h3_npu_features(value), ())
 
     def test_cli_none_overrides_environment(self):
         os.environ['H3_OPT_FEATURES'] = 'all'
         value = args(); value.h3_opts = 'none'
-        self.assertEqual(options.resolve_h3_features(value), ())
+        self.assertEqual(_parameter_validation.resolve_h3_npu_features(value), ())
 
     def test_feature_order_and_individual_overrides(self):
         value = args(); value.h3_opts = 'all,-rope'
         value.h3_opt_rope = True
         value.h3_opt_swiglu = False
-        self.assertEqual(options.resolve_h3_features(value), tuple(n for n in options.H3_FUSION_FEATURES if n != 'swiglu'))
+        self.assertEqual(_parameter_validation.resolve_h3_npu_features(value), tuple(n for n in _parameter_config.H3_NPU_FUSION_FEATURES if n != 'swiglu'))
 
     def test_unknown_feature_rejected(self):
         value = args(); value.h3_opts = 'silently_misspelled'
-        with self.assertRaises(ValueError): options.resolve_h3_features(value)
+        with self.assertRaises(ValueError): _parameter_validation.resolve_h3_npu_features(value)
 
     def test_boolean_cli_spellings(self):
         parser = argparse.ArgumentParser()
-        options.add_arguments(parser)
+        _parameter_config.add_h3_npu_arguments(parser)
         value = parser.parse_args(['--h3-opts','all','--no-h3-opt-rope','--no-h3_opt_swiglu'])
-        selected = options.resolve_h3_features(value)
+        selected = _parameter_validation.resolve_h3_npu_features(value)
         self.assertNotIn('rope', selected); self.assertNotIn('swiglu', selected)
 
     def test_cpu_and_image_reject_explicit_video_fusions(self):
         value = args(); value.h3_opts = 'rope'
-        with self.assertRaises(ValueError): options.validate(value, 'cuda')
+        with self.assertRaises(ValueError): _parameter_validation.validate_h3_npu_fusions(value, 'cuda')
         value.model = 'MiniMax-H3-Image'
-        with self.assertRaises(ValueError): options.validate(value, 'npu')
+        with self.assertRaises(ValueError): _parameter_validation.validate_h3_npu_fusions(value, 'npu')
 
     def test_image_defaults_do_not_touch_video_transformer(self):
         value = args(); value.model = 'MiniMax-H3-Image'
-        options.configure_model(SimpleNamespace(), value, 'npu')
+        configure_h3_npu_fusions(SimpleNamespace(), value, 'npu')
         self.assertEqual(value.h3_fused_ops, ())
 
     def test_default_configuration_does_not_install_runtime(self):
         configure = Mock()
         pipe = SimpleNamespace(transformer=SimpleNamespace(configure_fused_ops=configure))
-        options.configure_model(pipe, args(), 'npu')
+        configure_h3_npu_fusions(pipe, args(), 'npu')
         configure.assert_not_called()
 
     def test_disabling_existing_fusions_is_explicit(self):
         configure = Mock()
         pipe = SimpleNamespace(transformer=SimpleNamespace(_h3_fused_ops=('rope',), configure_fused_ops=configure))
-        options.configure_model(pipe, args(), 'npu')
+        configure_h3_npu_fusions(pipe, args(), 'npu')
         configure.assert_called_once_with(())
 
     def test_vc_and_fusions_are_independent(self):
         value = args(); value.atten = 'vc'
-        self.assertEqual(options.validate(value, 'npu'), ())
-        with self.assertRaises(ValueError): options.validate(value, 'cuda')
+        self.assertEqual(_parameter_validation.validate_h3_npu_fusions(value, 'npu'), ())
+        with self.assertRaises(ValueError): _parameter_validation.validate_h3_npu_fusions(value, 'cuda')
 
     def test_request_context_without_runtime_is_noop(self):
-        with options.request_context(SimpleNamespace()): pass
+        with fusion_context(SimpleNamespace()): pass
 
 
 class VCTests(unittest.TestCase):
@@ -188,13 +198,14 @@ class AttentionSelectionTests(unittest.TestCase):
         self.assertTrue(torch.equal(actual,expected))
 
 
-tree = ast.parse((ROOT/'x_diffusers/x_diffusers/framework/transformer/h3_npu_fusion.py').read_text(encoding='utf-8'))
+tree = ast.parse((ROOT/'x_diffusers/x_diffusers/framework/transformer/minimax_h3.py').read_text(encoding='utf-8'))
 scope = dict(torch=torch, F=torch.nn.functional, threading=threading, weakref=weakref, contextmanager=contextmanager,
              logger=logging.getLogger('test.h3.fusions'), Diagnostics=runtime.Diagnostics, Kernels=runtime.Kernels,
              no_hooks=runtime.no_hooks, tensors_ok=runtime.tensors_ok, signature=signature, caps=caps,
              SwiGLU=SwiGLU, FeedForward=FeedForward, MiniMaxH3TransformerBlock=MiniMaxH3TransformerBlock,
              _original_h3_block_forward=MiniMaxH3TransformerBlock.forward)
-exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef)],type_ignores=[]),
+fusion_end = next(n.lineno for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'assert_weights_absent')
+exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.lineno < fusion_end],type_ignores=[]),
              'h3-fusion-functions','exec'),scope)
 
 

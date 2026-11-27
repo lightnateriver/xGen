@@ -5,13 +5,13 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-from x_diffusers.adaptor import h3_collective_warmup as module
+import x_base.tensor_parallelism.warmup as module
 
 
 def test_disabled_warmup_never_touches_cuda(monkeypatch):
     current=Mock(side_effect=AssertionError('disabled warmup touched CUDA'))
     monkeypatch.setattr(torch.cuda,'current_device',current)
-    assert module.warmup_groups(None,SimpleNamespace(warmup_mib=0)) is None
+    assert module.warmup_groups(None,buffer_mib=0) is None
     current.assert_not_called()
 
 
@@ -31,7 +31,7 @@ def test_explicit_groups_dtypes_and_no_tensor_cache(monkeypatch,tp,cp,wire):
     monkeypatch.setattr(module.dist,'all_gather_into_tensor',gather)
     monkeypatch.setattr(module.dist,'all_to_all_single',exchange)
     manager=SimpleNamespace(tp_size=tp,sp_size=cp,tp_group=object(),sp_group=object())
-    stats=module.warmup_groups(manager,SimpleNamespace(warmup_mib=1,tp_comm=wire,cp_comm=wire))
+    stats=module.warmup_groups(manager,buffer_mib=1,tp_wire=wire,cp_wire=wire)
     assert stats['completed'] and stats['calls']==1 and stats['cp_buffer_bytes']==1024**2
     assert calls[-1][0]=='exchange' and calls[-1][2]['group'] is manager.sp_group
     assert calls[-1][1]==(torch.uint8 if wire=='fp8' else torch.bfloat16)
@@ -50,7 +50,7 @@ def test_collective_error_is_propagated_once(monkeypatch):
     monkeypatch.setattr(module.dist,'all_to_all_single',exchange)
     with pytest.raises(RuntimeError,match='NCCL failed'):
         module.warmup_groups(SimpleNamespace(tp_size=1,sp_size=8,sp_group=object()),
-                             SimpleNamespace(warmup_mib=1,cp_comm='fp8'))
+                             buffer_mib=1,cp_wire='fp8')
     exchange.assert_called_once()
 
 
@@ -70,7 +70,7 @@ def test_shared_sequence_bridges_warm_actual_collectives_without_unused_cp_group
             assert kwargs['group'] is manager.tp_group
             calls.append((_name,values[-1].dtype))
         monkeypatch.setattr(module.dist,name,record)
-    stats=module.warmup_groups(manager,SimpleNamespace(mode=mode,warmup_mib=1,tp_comm=wire,cp_comm=wire))
+    stats=module.warmup_groups(manager,buffer_mib=1,tp_wire=wire,cp_wire=wire,shared_layout=True)
     assert stats['cp_buffer_bytes']==0
     assert [n for n,d in calls]==['all_reduce','all_gather_into_tensor',
         'all_to_all_single' if wire=='fp8' else 'reduce_scatter_tensor']

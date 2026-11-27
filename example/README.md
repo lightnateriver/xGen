@@ -97,6 +97,12 @@ bash infer_wan2.2_14b_t2v_720p.sh
 bash infer_wan2.1_1.3b_t2v.sh
 ```
 
+## 批量推理
+
+`diffusers/infer_batch.py` 只执行正常批量推理。使用 `--batch_input_dir` 指定数据集，每个用例目录包含 `image.jpg` 和 `prompt.txt`；默认处理全部用例，`--batch_sample_size` 配合 `--seed` 可固定抽样。原 `--batch_test_input_dir`、`--batch_test_sample_size` 分别改为以上两个参数。
+
+输出仍保存在各用例的任务目录，保留 VAE 加速配置的子目录布局。模型在批次内复用，单个用例失败会记录并继续处理后续用例。VAE 速度、输出对照及报告生成改由独立的 [评测工具](../tools/README.md#vae-加速评测) 执行。
+
 ## 自定义示例
 
 `scripts_self/` 目录存放自定义脚本，参考现有脚本修改参数即可。

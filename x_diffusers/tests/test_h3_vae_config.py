@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
-spec=importlib.util.spec_from_file_location('h3_vae_config',ROOT/'x_diffusers/adaptor/h3_vae_config.py')
+spec=importlib.util.spec_from_file_location('h3_vae_config',ROOT/'x_diffusers/adaptor/validation.py')
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 

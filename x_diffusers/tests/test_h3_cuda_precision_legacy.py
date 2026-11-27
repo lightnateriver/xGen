@@ -131,7 +131,7 @@ class DisabledPrecision(ast.NodeTransformer):
         return node
 
 
-@pytest.mark.parametrize('name',('config.py','load_pipe.py','infer_tools.py','h3_cuda.py'))
+@pytest.mark.parametrize('name',('config.py','load_pipe.py','infer_tools.py'))
 def test_new_flags_off_preserve_previous_core(name):
     path='x_diffusers/x_diffusers/adaptor/'+name
     result=subprocess.run(['git','show',BASELINE+':'+path],cwd=ROOT,text=True,encoding='utf-8',capture_output=True)

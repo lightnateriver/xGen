@@ -1,15 +1,11 @@
 """Request reuse, changing conditions and successful/failed request cleanup."""
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 import weakref
 
 import pytest
 import torch
 
-path=Path(__file__).resolve().parents[1]/'x_diffusers/adaptor/h3_conditioning.py'
-spec=importlib.util.spec_from_file_location('h3_conditioning_unit',path)
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+import x_diffusers.framework.transformer.minimax_h3 as module
 
 
 def model():

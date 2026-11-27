@@ -1,6 +1,7 @@
 """Default isolation, chunk ownership/error propagation and staged GPU decode."""
-import importlib.util
+import ast
 import json
+import logging
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -9,11 +10,25 @@ import numpy as np
 import pytest
 import torch
 
-VAE=Path(__file__).resolve().parents[1]/'x_diffusers/framework/vae'
-sys.path.insert(0,str(VAE))
-from x_diffusers.framework.vae import omni_decoder
-from omni_h3.chunked_video import ChunkedVideoMP4Session, quantize_chunk
-from omni_h3.media_utils import ChunkedMP4Encoder
+VAE=Path(__file__).resolve().parents[1]/'x_diffusers/framework/_vendor'
+import x_diffusers.framework.vae.minimax_h3 as omni_decoder
+from x_diffusers.adaptor.validation import validate_h3_vae
+from x_diffusers.framework._vendor.omni_h3.chunked_video import ChunkedVideoMP4Session, quantize_chunk
+from x_diffusers.framework._vendor.omni_h3.media_utils import ChunkedMP4Encoder
+
+
+def load_vae_backend_configurator():
+    """Load the actual assembly function without accelerator patch initializers."""
+    path = Path(__file__).resolve().parents[1] / 'x_diffusers/adaptor/load_pipe.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    configure = next(node for node in tree.body
+                     if isinstance(node, ast.FunctionDef) and node.name == 'configure_h3_vae_backend')
+    namespace = {'__package__': 'x_diffusers.adaptor', 'logger': logging.getLogger(__name__)}
+    exec(compile(ast.Module(body=[configure], type_ignores=[]), str(path), 'exec'), namespace)
+    return namespace['configure_h3_vae_backend']
+
+
+configure_h3_vae_backend = load_vae_backend_configurator()
 
 
 def options(**kw):
@@ -34,8 +49,8 @@ def test_legacy_does_not_construct_a_backend(monkeypatch):
     def fail(*a,**kw):raise AssertionError('legacy loaded new checkpoint')
     monkeypatch.setattr(omni_decoder,'OmniH3Decoder',fail)
     pipe=SimpleNamespace()
-    omni_decoder.validate_options(options(),'npu')
-    omni_decoder.configure(pipe,options(),torch.device('cpu'))
+    validate_h3_vae(options(),'npu')
+    configure_h3_vae_backend(pipe,options(),torch.device('cpu'))
     assert not hasattr(pipe,'_h3_vae_decode_backend')
 
 
@@ -44,9 +59,9 @@ def test_lightning_selects_original_decoder_without_native_checkpoint(monkeypatc
     def fail(*a,**kw):raise AssertionError('Lightning constructed native decoder')
     monkeypatch.setattr(omni_decoder,'OmniH3Decoder',fail)
     args=options(h3_vae_backend='lightning')
-    omni_decoder.validate_options(args,device_type)
+    validate_h3_vae(args,device_type)
     pipe=SimpleNamespace()
-    omni_decoder.configure(pipe,args,torch.device('cpu'))
+    configure_h3_vae_backend(pipe,args,torch.device('cpu'))
     assert args.vae_lightning=='decoder' and pipe._h3_vae_backend_name=='lightning'
     assert not hasattr(pipe,'_h3_vae_decode_backend')
 
@@ -55,7 +70,7 @@ def test_native_stream_npu_options_do_not_construct_cuda_objects(monkeypatch):
     def fail(*a,**kw):raise AssertionError('validation allocated an accelerator object')
     monkeypatch.setattr(torch.cuda,'Stream',fail)
     args=options(h3_vae_backend='native-stream',h3_vae_model_path='weights/video_vae',h3_vae_trust_remote_code=True)
-    omni_decoder.validate_options(args,'npu')
+    validate_h3_vae(args,'npu')
     assert args.vae_lightning=='none'
 
 
@@ -63,7 +78,7 @@ def test_native_stream_npu_options_do_not_construct_cuda_objects(monkeypatch):
 @pytest.mark.parametrize('selected',['legacy','lightning','native-stream'])
 def test_all_three_backends_validate_on_both_devices(device_type,selected):
     extra=dict(h3_vae_model_path='weights/video_vae',h3_vae_trust_remote_code=True) if selected=='native-stream' else {}
-    omni_decoder.validate_options(options(h3_vae_backend=selected,**extra),device_type)
+    validate_h3_vae(options(h3_vae_backend=selected,**extra),device_type)
 
 
 @pytest.mark.parametrize('backend',['cuda','npu'])
@@ -75,12 +90,12 @@ def test_native_backend_reuses_fp16_linear_storage_on_both_devices(monkeypatch,b
     monkeypatch.setattr(omni_decoder,'OmniH3Decoder',construct)
     args=options(h3_vae_backend='native-stream',h3_vae_model_path='weights/video_vae',
                  h3_vae_trust_remote_code=True,h3_cuda_precision=profile)
-    omni_decoder.configure(SimpleNamespace(),args,backend+':0')
+    configure_h3_vae_backend(SimpleNamespace(),args,backend+':0')
     assert captured['fp16_linears'] is True
 
 
 def test_fp16_storage_preserves_non_linear_parameters():
-    from x_diffusers.framework.vae.h3_cuda_chunks import prepare_decoder_linears
+    from x_diffusers.framework.vae.minimax_h3 import prepare_decoder_linears
     decoder=torch.nn.Sequential(torch.nn.Linear(8,8),torch.nn.LayerNorm(8),torch.nn.Conv1d(8,8,1))
     assert prepare_decoder_linears(decoder)==1
     assert decoder[0].weight.dtype==decoder[0].bias.dtype==torch.float16
@@ -89,7 +104,7 @@ def test_fp16_storage_preserves_non_linear_parameters():
 
 @pytest.mark.parametrize('old,new', [('legacy','lightning'),('lightning','legacy')])
 def test_resident_service_requires_restart_to_change_lightning(old,new):
-    from x_diffusers.adaptor.h3_cuda_precision import validate_manager
+    from x_diffusers.adaptor.validation import validate_h3_manager as validate_manager
     args=options(h3_vae_backend=new,h3_cuda_precision='none')
     manager=SimpleNamespace(pipe=SimpleNamespace(_h3_vae_backend_name=old))
     with pytest.raises(ValueError,match='Restart the service to change H3 VAE'):
@@ -104,7 +119,7 @@ def test_resident_service_requires_restart_to_change_lightning(old,new):
     ({'h3_vae_backend':'native-stream','h3_vae_model_path':'weights/video_vae','h3_vae_trust_remote_code':True,'vae_matmul_quant':'int8'},'npu'),
 ])
 def test_reject_invalid_combinations(kw,backend):
-    with pytest.raises(ValueError):omni_decoder.validate_options(options(**kw),backend)
+    with pytest.raises(ValueError):validate_h3_vae(options(**kw),backend)
 
 
 def test_cpu_chunk_encoder_and_reader_release():
@@ -148,7 +163,7 @@ def test_invalid_frame_limit_fails_before_encoder_start(value):
 
 
 def test_decoder_linear_storage_reuses_existing_fp16_policy_only_for_linears():
-    from x_diffusers.framework.vae.h3_cuda_chunks import prepare_decoder_linears
+    from x_diffusers.framework.vae.minimax_h3 import prepare_decoder_linears
     decoder=torch.nn.Sequential(torch.nn.Linear(4,4),torch.nn.LayerNorm(4),torch.nn.Linear(4,4))
     assert prepare_decoder_linears(decoder)==2
     assert decoder[0].weight.dtype==decoder[2].weight.dtype==torch.float16
@@ -160,10 +175,10 @@ def test_configure_reuses_installed_backend(monkeypatch):
     pipe=SimpleNamespace(_h3_vae_decode_backend=existing)
     def fail(*a,**kw):raise AssertionError('reloaded resident backend')
     monkeypatch.setattr(omni_decoder,'OmniH3Decoder',fail)
-    omni_decoder.configure(pipe,options(h3_vae_backend='native-stream',h3_vae_model_path=existing.path),'cuda')
+    configure_h3_vae_backend(pipe,options(h3_vae_backend='native-stream',h3_vae_model_path=existing.path),'cuda')
     assert pipe._h3_vae_decode_backend is existing
     with pytest.raises(ValueError,match='Restart'):
-        omni_decoder.configure(pipe,options(h3_vae_backend='native-stream',h3_vae_model_path='different'),'cuda')
+        configure_h3_vae_backend(pipe,options(h3_vae_backend='native-stream',h3_vae_model_path='different'),'cuda')
 
 
 def test_latent_output_bypasses_device_staging():
@@ -217,7 +232,7 @@ def test_master_restoration_attempted_after_each_staging_failure(monkeypatch,fai
 def test_encoder_abort_cannot_skip_restoration_or_hide_original_error(monkeypatch,tmp_path,decode_fails):
     from contextlib import nullcontext
     from x_base.utils.infer_info import infer_info
-    from x_diffusers.framework.vae.omni_h3 import chunked_video
+    import x_diffusers.framework._vendor.omni_h3.chunked_video as chunked_video
     calls=[]
     def abort():
         calls.append('abort');raise RuntimeError('abort injected')

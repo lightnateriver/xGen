@@ -5,7 +5,8 @@ from unittest.mock import patch
 from PIL import Image
 import pytest
 import video_server
-from x_diffusers.adaptor.h3_npu_options import H3_FUSION_FEATURES, validate
+from x_diffusers.adaptor.config import H3_NPU_FUSION_FEATURES as H3_FUSION_FEATURES
+from x_diffusers.adaptor.validation import validate_h3_npu_fusions as validate
 
 
 @pytest.mark.parametrize('task',['t2va','fl2va','ref2va'])

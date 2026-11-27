@@ -1,8 +1,6 @@
 """CPU contracts: defaults, device-neutral scheduling, bytes, isolation and errors."""
 import argparse
 from contextlib import nullcontext
-import importlib.util
-from pathlib import Path
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
@@ -11,15 +9,14 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 
-ADAPTOR = Path(__file__).resolve().parents[1] / 'x_diffusers/adaptor'
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, ADAPTOR/(name+'.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from x_diffusers.adaptor.config import add_h3_aliases
+from x_diffusers.adaptor.h3_runtime import condition_overlap_context
+from x_diffusers.adaptor.validation import (
+    h3_overlap_key, resolve_h3_feature_defaults, validate_h3_overlap,
+    validate_h3_overlap_manager,
+)
+import x_diffusers.framework.pipeline.minimax_h3 as overlap
 
-overlap = load('h3_condition_overlap')
-features = load('h3_features')
 
 def args(**changes):
     values = dict(model='MiniMax-H3', task_type='ref2va', sp=1,
@@ -30,21 +27,22 @@ def args(**changes):
 
 def test_default_off_and_explicit_rollback():
     parser = argparse.ArgumentParser()
-    features.add_aliases(parser)
-    assert overlap.option_key(parser.parse_args([])) == (False,600.)
+    add_h3_aliases(parser)
+    assert h3_overlap_key(parser.parse_args([])) == (False,600.)
     assert parser.parse_args(['--h3_condition_overlap']).h3_condition_overlap is True
     assert parser.parse_args(['--h3_condition_overlap', '--no-h3_condition_overlap']).h3_condition_overlap is False
-    with patch.object(overlap, 'ConditionOverlap', side_effect=AssertionError('must not initialize')):
-        with overlap.request_context(object(), parser.parse_args([])):
+    with patch.object(overlap, 'ConditionOverlap', side_effect=AssertionError('must not initialize')) as construct:
+        with condition_overlap_context(object(), parser.parse_args([])):
             pass
+    construct.assert_not_called()
     settings = args(h3_condition_overlap=False, h3_features='full-parallel')
-    features.resolve_defaults(settings)
+    resolve_h3_feature_defaults(settings)
     assert not settings.h3_condition_overlap
 
 
 @pytest.mark.parametrize('backend', ['cuda', 'npu'])
 def test_same_validation_for_both_backends(backend):
-    overlap.validate(args(), backend)
+    validate_h3_overlap(args(), backend)
 
 
 @pytest.mark.parametrize('changes,backend', [({'model':'Wan2.2'},'cuda'), ({'task_type':'t2va'},'npu'),
@@ -52,31 +50,43 @@ def test_same_validation_for_both_backends(backend):
     ({'h3_condition_overlap_timeout':0},'cuda'), ({'h3_condition_overlap_timeout':float('nan')},'npu'), ({},'cpu')])
 def test_invalid_profiles_rejected(changes, backend):
     with pytest.raises(ValueError):
-        overlap.validate(args(**changes), backend)
+        validate_h3_overlap(args(**changes), backend)
 
 
 def test_disabled_does_not_validate_unrelated_models():
-    overlap.validate(args(model='Wan2.2', h3_condition_overlap=False), 'cpu')
+    validate_h3_overlap(args(model='Wan2.2', h3_condition_overlap=False), 'cpu')
 
 
 def test_debug_barriers_rejected_only_when_enabled(monkeypatch):
     monkeypatch.setenv('DEBUG_TIME', '1')
     with pytest.raises(ValueError, match='DEBUG_TIME'):
-        overlap.validate(args(), 'cuda')
-    overlap.validate(args(h3_condition_overlap=False), 'npu')
+        validate_h3_overlap(args(), 'cuda')
+    validate_h3_overlap(args(h3_condition_overlap=False), 'npu')
 
 
 def test_live_option_changes_require_restart():
     manager = SimpleNamespace(pipe=None, init_args=None)
-    overlap.validate_manager(manager, args(), 'npu')
+    validate_h3_overlap_manager(manager, args(), 'npu')
     manager.pipe = object()
     with pytest.raises(ValueError, match='Restart'):
-        overlap.validate_manager(manager, args(h3_condition_overlap=False), 'npu')
+        validate_h3_overlap_manager(manager, args(h3_condition_overlap=False), 'npu')
     with pytest.raises(ValueError, match='Restart'):
-        overlap.validate_manager(manager, args(h3_condition_overlap_timeout=3), 'npu')
+        validate_h3_overlap_manager(manager, args(h3_condition_overlap_timeout=3), 'npu')
     old = SimpleNamespace(pipe=object(), init_args=args(h3_condition_overlap=False))
     with pytest.raises(ValueError, match='Restart'):
-        overlap.validate_manager(old, args(), 'cuda')
+        validate_h3_overlap_manager(old, args(), 'cuda')
+
+
+def test_enabled_requests_reuse_the_same_controller():
+    pipe = SimpleNamespace()
+    controller = SimpleNamespace(request=Mock(side_effect=lambda: nullcontext()))
+    with patch.object(overlap, 'ConditionOverlap', return_value=controller) as construct:
+        for _ in range(2):
+            with condition_overlap_context(pipe, args()):
+                pass
+    construct.assert_called_once_with(pipe, sp=1, timeout=2.)
+    assert pipe._h3_condition_overlap is controller
+    assert controller.request.call_count == 2
 
 
 @pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16, torch.float32])
@@ -166,7 +176,7 @@ def owner(monkeypatch, backend='cuda', **kwargs):
     with patch.object(torch, 'get_device_module', return_value=accelerator), \
          patch.object(torch, 'device', return_value=SimpleNamespace(type=backend)), \
          patch('torch.distributed.is_initialized', return_value=False):
-        controller = overlap.ConditionOverlap(pipe, args())
+        controller = overlap.ConditionOverlap(pipe, sp=1, timeout=2.)
     return pipe, controller
 
 

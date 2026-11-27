@@ -1,14 +1,19 @@
 """Image text precision defaults and explicit rollback, without checkpoint loading."""
 import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from x_diffusers.adaptor import h3_image
+from x_diffusers.adaptor import validation
+from importlib import import_module
+
+loader = import_module("x_diffusers.adaptor.load_pipe")
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
 spec = importlib.util.spec_from_file_location("image_cli", ROOT / "example/diffusers/infer_minimax_h3_image.py")
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
@@ -20,22 +25,22 @@ spec.loader.exec_module(cli)
 ])
 def test_backend_default_and_explicit_precision(backend, explicit, expected):
     args = SimpleNamespace(image_text_int8=explicit)
-    h3_image.resolve_image_text_options(args, backend)
+    validation.resolve_image_text_options(args, backend)
     assert args.image_text_int8 is expected
-    h3_image.resolve_image_text_options(args, backend)
+    validation.resolve_image_text_options(args, backend)
     assert args.image_text_int8 is expected
 
 
 @pytest.mark.parametrize("backend,expected", [("npu", True), ("cuda", False)])
 def test_python_arguments_without_new_attribute(backend, expected):
     args = SimpleNamespace()
-    h3_image.resolve_image_text_options(args, backend)
+    validation.resolve_image_text_options(args, backend)
     assert args.image_text_int8 is expected
 
 
 def test_explicit_int8_rejected_on_cuda():
     with pytest.raises(ValueError, match="requires NPU"):
-        h3_image.resolve_image_text_options(SimpleNamespace(image_text_int8=True), "cuda")
+        validation.resolve_image_text_options(SimpleNamespace(image_text_int8=True), "cuda")
 
 
 @pytest.mark.parametrize("backend", ["npu", "cuda"])
@@ -47,27 +52,32 @@ def test_cli_resolves_auto_and_explicit_choices(backend, flags, expected):
     assert args.image_text_int8 is expected
     if backend == "cuda" and expected is True:
         with pytest.raises(ValueError, match="requires NPU"):
-            h3_image.resolve_image_text_options(args, backend)
+            validation.resolve_image_text_options(args, backend)
     else:
-        h3_image.resolve_image_text_options(args, backend)
+        validation.resolve_image_text_options(args, backend)
         assert args.image_text_int8 is (backend == "npu" if expected is None else expected)
 
 
-@pytest.mark.parametrize("entry", ["load_pipeline", "run_image"])
+@pytest.mark.parametrize("entry", ["load_pipe", "run_image"])
 @pytest.mark.parametrize("backend,explicit,expected", [
     ("npu", None, True), ("npu", False, False), ("cuda", None, False),
 ])
 def test_python_entry_resolves_before_validation_without_loading_weights(monkeypatch, entry, backend, explicit, expected):
-    args = SimpleNamespace(image_text_int8=explicit)
+    args = SimpleNamespace(model="MiniMax-H3-Image", image_text_int8=explicit)
     class ReachedValidation(Exception):
         pass
     def validate(actual, world):
         assert actual is args and actual.image_text_int8 is expected
         raise ReachedValidation
-    monkeypatch.setattr(h3_image, "device_type", lambda: backend)
-    monkeypatch.setattr(h3_image, "validate_options", validate)
+    monkeypatch.setattr(validation, "validate_h3_image_options", validate)
+    monkeypatch.setattr(validation, "validate_h3_image_request", validate)
+    monkeypatch.setitem(sys.modules, "x_base.device", SimpleNamespace(device_type=lambda: backend))
+    monkeypatch.setattr(sys.modules["x_base"], "attention_manager", SimpleNamespace(), raising=False)
+    monkeypatch.setattr(loader, "device_type", lambda: backend)
+    monkeypatch.setattr(loader, "dist", SimpleNamespace(is_initialized=lambda: False))
+    run = cli.run_image if entry == "run_image" else loader.load_pipe
     with pytest.raises(ReachedValidation):
-        getattr(h3_image, entry)(args)
+        run(args)
 
 
 @pytest.mark.parametrize("world", [1, 2, 4])
@@ -80,8 +90,8 @@ def test_default_accepts_matching_text_tp_and_keeps_other_input_guards(tmp_path,
     (tmp_path / "pdd_config.json").write_text('{"num_inference_steps":6,"sigmas":[0,0,0,0,0,0,0]}')
     args = SimpleNamespace(sp=world, text_encoder_tp=world, num_inference_steps=6, width=4096, height=4096,
                            min_generation_area=4194304, image_path_list=[], pretrained_model_name_or_path=str(tmp_path))
-    h3_image.resolve_image_text_options(args, "npu")
-    h3_image.validate_options(args, world)
+    validation.resolve_image_text_options(args, "npu")
+    validation.validate_h3_image_request(args, world)
     args.num_inference_steps = 46
     with pytest.raises(ValueError, match="six PDD"):
-        h3_image.validate_options(args, world)
+        validation.validate_h3_image_request(args, world)

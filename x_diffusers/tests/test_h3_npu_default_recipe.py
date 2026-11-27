@@ -5,9 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from x_diffusers.adaptor.h3_cuda_precision import resolve
-from x_diffusers.adaptor.h3_npu_options import H3_FUSION_FEATURES, validate as validate_fusions
-from x_diffusers.framework.vae.omni_decoder import validate_options
+from x_diffusers.adaptor.validation import resolve_h3_precision as resolve
+from x_diffusers.adaptor.config import H3_NPU_FUSION_FEATURES as H3_FUSION_FEATURES
+from x_diffusers.adaptor.validation import validate_h3_npu_fusions as validate_fusions
+from x_diffusers.adaptor.validation import validate_h3_vae as validate_options
 
 ROOT=Path(__file__).resolve().parents[2]
 

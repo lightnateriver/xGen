@@ -2,30 +2,18 @@
 
 X_DIFFUSERS 是 X_GEN 的 Diffusers 适配层，提供模型推理的 Pipeline 和 API。
 
-## 模块结构
+## 职责与入口
 
-```
-x_diffusers/
-├── x_diffusers/
-│   ├── adaptor/          # 适配器
-│   │   ├── config.py     # 配置解析
-│   │   ├── load_pipe.py  # Pipeline 加载
-│   │   ├── infer_tools.py # 推理工具
-│   │   ├── distillation.py # 蒸馏支持
-│   │   └── utils.py      # 工具函数
-│   └── framework/        # 推理框架
-│       ├── pipeline/     # 推理 Pipeline
-│       ├── transformer/  # Transformer 模型适配
-│       ├── vae/          # VAE 模型适配
-│       ├── schedulers/   # 调度器
-│       └── lora/         # LoRA 支持
-└── requirements.txt
-```
+Diffusers 集成的应用编排在 adaptor，模型组件实现在 framework，共用计算与并行机制复用 x_base。文件归属、配置流和模型组织见 [架构文档](../docs/ARCHITECTURE.md)。
+
+`load_pipe(args)` 完成组件加载、装配和设备放置；参数规则由 `config.py` / `validation.py` 维护，请求生命周期由 `h3_runtime.py` 处理。H3 的使用文档统一到 [视频](../docs/H3-VIDEO-QUICKSTART.md)、[图像](../docs/H3-IMAGE.md) 和 [配置](../docs/H3-CONFIGURATION.md)。
 
 ## 支持模型
 
 | 模型 | Transformer 模块 | VAE 模块 |
 |------|-------------------|----------|
+| MiniMax-H3 | `transformer/minimax_h3.py` | `vae/minimax_h3.py` |
+| MiniMax-H3-Image | `transformer/minimax_h3_image.py` | `vae/minimax_h3_image.py` |
 | Wan | `transformer/wan.py` | `vae/wan.py` |
 | Wan VACE | `transformer/wan_vace.py` | `vae/wan.py` |
 | HunyuanVideo | `transformer/hunyuan.py` | `vae/hunyuan.py` |
@@ -52,16 +40,14 @@ x_diffusers/
 ```python
 from x_diffusers import init_env, InferenceManager, parse_args
 
-# 初始化环境
-init_env()
-
-# 创建推理管理器
-inference_manager = InferenceManager()
-
-# 解析参数并执行推理
+# 在初始化设备前解析参数与启动环境配置
 args = parse_args()
+init_env()
+inference_manager = InferenceManager()
 inference_manager.infer(args)
 ```
+
+`import x_diffusers` 和参数解析不会注册模型补丁。正常 Manager 流程由 `init_env()`、`load_pipe()` 显式初始化；直接使用原生 Diffusers 并依赖 xGen 补丁时，先调用 `x_diffusers.initialize_framework()`。初始化幂等，保留既有模型注册顺序。
 
 ### 命令行参数
 

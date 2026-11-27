@@ -70,7 +70,7 @@ def test_http_parallel_layout_is_startup_only():
 
 def test_http_preset_false_survives_serialization_and_request_cannot_enable_it():
     import os
-    from x_diffusers.adaptor.h3_cuda_options import resolve_options
+    from x_diffusers.adaptor.validation import resolve_h3_options as resolve_options
     config=Path(video_server.__file__).resolve().parents[2]/'example/diffusers/configs/h3_cuda_sage.example.json'
     with patch.object(video_server.VideoGenerationService,'_setup_signal_handlers'):
         service=video_server.VideoGenerationService(str(config))
@@ -86,7 +86,7 @@ def test_http_preset_false_survives_serialization_and_request_cannot_enable_it()
 
 
 def test_public_cuda5090_ref2va_config_builds_independent_requests(tmp_path):
-    from x_diffusers.adaptor.h3_cuda_options import resolve_options
+    from x_diffusers.adaptor.validation import resolve_h3_options as resolve_options
     from PIL import Image
     refs=[str(tmp_path/f'ref{i}.png') for i in range(3)]
     for path in refs:Image.new('RGB',(512,512),(60,100,140)).save(path)
@@ -142,8 +142,9 @@ def test_http_inference_manages_condition_scope_and_next_request_recomputes(enab
     """Exercise the real HTTP inference method with a small CPU condition model."""
     from contextlib import nullcontext
     import torch
-    from x_diffusers.framework.transformer.h3_conditioning import (
-        _CURRENT,project_conditioning,release_conditioning)
+    from x_diffusers.framework.transformer.minimax_h3 import _CURRENT
+    from x_diffusers.framework.transformer.minimax_h3 import project_conditioning
+    from x_diffusers.framework.transformer.minimax_h3 import release_conditioning
     model=SimpleNamespace(context_embedder=torch.nn.Linear(4,8),token_refiner=torch.nn.Linear(8,8))
     class Pipeline:
         transformer=model

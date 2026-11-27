@@ -83,14 +83,15 @@ except Exception as e:
 # If ComfyUI doesn't have MiniMax-H3 support, the import fails silently.
 
 try:
-    from .framework.transformer.minimax_h3 import patch_model_classes
-    patch_model_classes()
+    from .adaptor.model_hooks import install_model_hooks
+    install_model_hooks()
 except Exception as e:
     logger.warning(f"x_comfyui: transformer patches skipped — {e}")
 
 try:
     from .framework.vae.minimax_h3 import patch_vae_classes
-    patch_vae_classes()
+    from .adaptor.env import get_vae_copy_stream
+    patch_vae_classes(copy_stream=get_vae_copy_stream())
 except Exception as e:
     logger.warning(f"x_comfyui: VAE patches skipped — {e}")
 
@@ -98,6 +99,7 @@ except Exception as e:
 try:
     import comfy.sd
     from .framework.text_encoder.minimax_h3 import apply_tp_patch
+    from .adaptor.env import get_text_tp
 
     _original_clip_init = comfy.sd.CLIP.__init__
 
@@ -111,7 +113,7 @@ try:
 
         # TP — operates on the 50-layer text encoder
         try:
-            apply_tp_patch(text_encoder)
+            apply_tp_patch(text_encoder, tp_size=get_text_tp())
         except Exception as exc:
             logger.warning(f"x_comfyui: Text Encoder TP failed — {exc}")
 

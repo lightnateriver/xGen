@@ -11,17 +11,13 @@ import numpy as np
 from unittest.mock import MagicMock, patch
 import sys
 import torch
-from x_base.turbo.utils import are_two_tensors_similar
-from x_base.turbo.utils import create_cache_context
-from x_base.turbo.utils import pre_forwar
-from x_base.turbo.utils import batch_func
-from x_base.turbo.utils import CacheContext
-from x_base.turbo.utils import nearest_interp
-from x_base.turbo.utils import (
-            cache_context,
-            create_cache_context,
-            get_current_cache_context,
-        )
+from x_base.cache.base import (
+    _are_two_tensors_similar as are_two_tensors_similar,
+    cache_context, create_cache_context, get_current_cache_context,
+    CacheContext, nearest_interp,
+)
+from x_base.cache.utils import pre_forward
+from x_base.sequence_parallelism.comm import batch_func
 
 # ============================================================
 # Pytest markers for dependency management

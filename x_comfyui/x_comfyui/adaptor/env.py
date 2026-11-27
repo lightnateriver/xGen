@@ -47,6 +47,7 @@ pre-merged ("none").  No user-facing parameter is needed.
 """
 
 import os
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Override globals — set by NPUTurbo node
@@ -62,13 +63,6 @@ _ADALN_TRANSFORMER_PATH_OVERRIDE = None      # None / str
 _TEXT_TP_OVERRIDE = None                     # None / True / False
 _ROPE_FUSED_OVERRIDE = None                  # None / True / False
 
-# Quant value from the previous prompt execution (for cache invalidation).
-# Compared at the start of execute_async to detect quant changes.
-_last_quant = None                           # None / "enable" / "disable"
-
-# Text Encoder TP value from the previous prompt execution.
-# Used by _patched_execute_async to detect changes between runs (same as _last_quant).
-_last_text_tp = None                         # None / "enable" / "disable"
 
 
 def set_quant_override(enable: bool):
@@ -143,36 +137,6 @@ def set_adaln_transformer_path_override(path: str | None):
     """
     global _ADALN_TRANSFORMER_PATH_OVERRIDE
     _ADALN_TRANSFORMER_PATH_OVERRIDE = path if path else None
-
-
-def get_last_quant():
-    """Return the quant value from the previous prompt execution.
-
-    Used by the execute_async patch to detect quant changes between runs.
-    Returns None on the first run.
-    """
-    return _last_quant
-
-
-def set_last_quant(value):
-    """Store the quant value from the current prompt execution."""
-    global _last_quant
-    _last_quant = value
-
-
-def get_last_text_tp():
-    """Return the text_tp value from the previous prompt execution.
-
-    Used by the execute_async patch to detect text_tp changes between runs.
-    Returns None on the first run.
-    """
-    return _last_text_tp
-
-
-def set_last_text_tp(value):
-    """Store the text_tp value from the current prompt execution."""
-    global _last_text_tp
-    _last_text_tp = value
 
 
 # ---------------------------------------------------------------------------
@@ -305,3 +269,54 @@ def get_vae_copy_stream():
     Reads X_VAE_COPY_STREAM env var (default "0" = disabled).
     """
     return os.environ.get("X_VAE_COPY_STREAM", "0") == "1"
+
+
+@dataclass(frozen=True)
+class RuntimeOptions:
+    attention_mode: str
+    phaa_split: int
+    quant: str
+    adaln_cache_file: str | None
+    adaln_transformer_path: str | None
+    text_tp: int
+    rope_fused: bool
+
+    @property
+    def model_key(self):
+        return self.quant, self.adaln_cache_file, self.adaln_transformer_path
+
+
+def resolve_runtime_options(inputs=None):
+    """Replace every node override, then resolve effective values from node/env."""
+    set_quant_override(None)
+    set_text_tp_override(None)
+    set_adaln_override(None)
+    set_adaln_cache_file_override(None)
+    set_adaln_transformer_path_override(None)
+    set_rope_fused_override(None)
+    if inputs is not None:
+        set_quant_override(inputs.get("quant", "disable") == "enable")
+        set_text_tp_override(inputs.get("text_tp", "disable") == "enable")
+        set_adaln_override(inputs.get("adaln", "disable") == "enable")
+        set_adaln_cache_file_override(inputs.get("adaln_cache_file") or None)
+        set_adaln_transformer_path_override(inputs.get("adaln_transformer_path") or None)
+        set_rope_fused_override(inputs.get("rope_fused", "disable") == "enable")
+    cache_file = get_adaln_cache_file() or None
+    return RuntimeOptions(
+        attention_mode=get_attention_mode() if inputs is None else inputs.get("attention_mode", "sdpa"),
+        phaa_split=get_phaa_split() if inputs is None else int(inputs.get("phaa_split", "1")),
+        quant=get_quant(),
+        adaln_cache_file=cache_file,
+        adaln_transformer_path=(get_adaln_transformer_path() or None) if cache_file else None,
+        text_tp=get_text_tp(),
+        rope_fused=get_rope_fused(),
+    )
+
+
+def resolve_prompt_options(prompt):
+    """Resolve the optional control node before any model-loading node executes."""
+    controls = [node.get("inputs", {}) for node in prompt.values()
+                if isinstance(node, dict) and node.get("class_type") == "NPUTurbo"]
+    if len(controls) > 1:
+        raise ValueError("Only one NPUTurbo control node is supported per workflow")
+    return resolve_runtime_options(controls[0] if controls else None)

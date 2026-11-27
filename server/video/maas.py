@@ -8,7 +8,8 @@ import re
 
 from maas_fl2va import InvalidInput, _read_json
 from maas_media import BYTE_LIMITS, PIXEL_LIMITS, cleanup, materialize, new_directory, enable_image_codecs
-from x_diffusers.adaptor.h3_refiner_config import H3_MAX_PROMPT_LENGTH, h3_prompt_length
+from x_diffusers.adaptor.validation import H3_MAX_PROMPT_LENGTH
+from x_diffusers.adaptor.validation import h3_prompt_length
 
 MAX_BODY_BYTES = 64*1024*1024
 RATIOS = ('21:9', '16:9', '4:3', '1:1', '3:4', '9:16')

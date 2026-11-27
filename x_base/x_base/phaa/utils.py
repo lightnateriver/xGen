@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 import os
+from typing import TYPE_CHECKING
 import torch
+
+if TYPE_CHECKING:
+    from diffusers import DiffusionPipeline
 
 from x_base.device import device_type
 

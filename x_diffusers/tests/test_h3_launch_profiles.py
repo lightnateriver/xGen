@@ -62,11 +62,12 @@ def test_launcher_profile_contract(launch_env,backend,task,precision,monkeypatch
         # Validate the emitted recipe, including workflow-specific guards.
         import sys
         from x_diffusers.adaptor.config import parse_args
-        from x_diffusers.adaptor.h3_cuda_precision import resolve
+        from x_diffusers.adaptor.validation import resolve_h3_precision as resolve
         monkeypatch.setattr(sys,'argv',['infer.py',*args[args.index('--model'):]])
         parsed=parse_args()
         assert resolve(parsed,'npu')=='none'
-        from x_diffusers.adaptor.h3_npu_options import validate, H3_FUSION_FEATURES
+        from x_diffusers.adaptor.validation import validate_h3_npu_fusions as validate
+        from x_diffusers.adaptor.config import H3_NPU_FUSION_FEATURES as H3_FUSION_FEATURES
         assert validate(parsed,'npu')==H3_FUSION_FEATURES
 
 
@@ -77,7 +78,7 @@ def test_npu_vc_default_can_explicitly_rollback(launch_env,task,monkeypatch):
     emitted=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))['args']
     import sys
     from x_diffusers.adaptor.config import parse_args
-    from x_diffusers.adaptor.h3_npu_options import validate
+    from x_diffusers.adaptor.validation import validate_h3_npu_fusions as validate
     monkeypatch.setattr(sys,'argv',['infer.py',*emitted[emitted.index('--model'):]])
     parsed=parse_args()
     assert parsed.atten=='laser' and validate(parsed,'npu')==()
@@ -89,7 +90,7 @@ def test_npu_fusion_list_and_individual_override_win_over_recipe(launch_env,monk
     emitted=json.loads(subprocess.check_output(command,cwd=ROOT,env=launch_env,text=True))['args']
     import sys
     from x_diffusers.adaptor.config import parse_args
-    from x_diffusers.adaptor.h3_npu_options import validate
+    from x_diffusers.adaptor.validation import validate_h3_npu_fusions as validate
     monkeypatch.setattr(sys,'argv',['infer.py',*emitted[emitted.index('--model'):]])
     parsed=parse_args()
     assert parsed.atten=='vc' and validate(parsed,'npu')==('rope',)

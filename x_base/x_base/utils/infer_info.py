@@ -15,7 +15,6 @@ class InferInfo:
     vae_pad_latent_size = 8
     vae_use_blend = False
     enable_vae_time_count = False
-    batch_test_mode = "normal"
     vae_last_encode_time = "/"
     vae_last_decode_time = "/"
     matmul_quant = 'none'
@@ -42,8 +41,7 @@ class InferInfo:
         self.vae_pad_content = args.vae_pad_content
         self.vae_pad_latent_size = args.vae_pad_latent_size
         self.vae_use_blend = args.vae_use_blend
-        self.enable_vae_time_count = args.enable_vae_time_count
-        self.batch_test_mode = args.batch_test_mode
+        self.enable_vae_time_count = getattr(args, "enable_vae_time_count", False)
         self.vae_last_encode_time = "/"
         self.vae_last_decode_time = "/"
         self.matmul_quant = args.matmul_quant

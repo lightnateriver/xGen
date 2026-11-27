@@ -8,9 +8,10 @@ from typing import Any, Dict, Optional
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('reference_size', ROOT/'x_diffusers/adaptor/h3_references.py')
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from x_diffusers.adaptor.validation import h3_reference_image_resize_mode
+from x_diffusers.framework.h3_config import reference_image_size
+from x_diffusers.adaptor.load_pipe import configure_h3_reference_image_size
+
 
 
 class Pipe:
@@ -27,14 +28,14 @@ def test_unset_preserves_checkpoint_and_other_workflows():
     for task in ('t2va', 'fl2va', 'ref2va'):
         for edge in (2048, 1536):
             pipe = Pipe(edge=edge)
-            module.configure_reference_image_size(pipe, SimpleNamespace(task_type=task))
+            configure_h3_reference_image_size(pipe, SimpleNamespace(task_type=task))
             assert not pipe.updates and pipe.config['reference_image_short_edge'] == edge
 
 
 @pytest.mark.parametrize('edge', [32, 768, 1024, 1536, 2048])
 def test_explicit_size_only_updates_shared_reference_input(edge):
     pipe = Pipe()
-    module.configure_reference_image_size(pipe, SimpleNamespace(task_type='ref2va', h3_reference_image_short_edge=edge))
+    configure_h3_reference_image_size(pipe, SimpleNamespace(task_type='ref2va', h3_reference_image_short_edge=edge))
     assert pipe.updates == [dict(reference_image_short_edge=edge)]
     assert pipe.config['canvas_short_edge'] == 768
     assert pipe.config['canvas_max_pixels'] == 768*1344
@@ -44,7 +45,7 @@ def test_explicit_size_only_updates_shared_reference_input(edge):
 def test_invalid_sizes_fail_before_update(edge):
     pipe = Pipe()
     with pytest.raises(ValueError, match='integer multiple'):
-        module.configure_reference_image_size(pipe, SimpleNamespace(task_type='ref2va', h3_reference_image_short_edge=edge))
+        configure_h3_reference_image_size(pipe, SimpleNamespace(task_type='ref2va', h3_reference_image_short_edge=edge))
     assert not pipe.updates
 
 
@@ -52,7 +53,7 @@ def test_invalid_sizes_fail_before_update(edge):
 def test_unvalidated_workflows_reject_explicit_override(task, refiner):
     pipe = Pipe()
     with pytest.raises(ValueError, match='Base only'):
-        module.configure_reference_image_size(pipe, SimpleNamespace(task_type=task,h3_refiner=refiner,h3_reference_image_short_edge=768))
+        configure_h3_reference_image_size(pipe, SimpleNamespace(task_type=task,h3_refiner=refiner,h3_reference_image_short_edge=768))
     assert not pipe.updates
 
 
@@ -60,7 +61,7 @@ def test_missing_upstream_config_does_not_silently_ignore_option():
     pipe = Pipe()
     del pipe.config['reference_image_short_edge']
     with pytest.raises(ValueError, match='does not expose'):
-        module.configure_reference_image_size(pipe, SimpleNamespace(task_type='ref2va',h3_reference_image_short_edge=768))
+        configure_h3_reference_image_size(pipe, SimpleNamespace(task_type='ref2va',h3_reference_image_short_edge=768))
     assert not pipe.updates
 
 
@@ -106,7 +107,7 @@ def test_server_validates_reference_resize_at_startup(settings, error, capsys):
     startup = compile(ast.Module(body=[check], type_ignores=[]), '<server-startup>', 'exec')
     namespace = dict(argparse=argparse, parser=argparse.ArgumentParser(),
                      service=SimpleNamespace(default_config=dict(task_type='ref2va', **settings)),
-                     reference_image_resize_mode=module.reference_image_resize_mode)
+                     reference_image_resize_mode=h3_reference_image_resize_mode)
     if error is None:
         exec(startup, namespace)
     else:
@@ -163,7 +164,7 @@ def test_server_ref2va_resize_uses_deployment_settings(task, startup, request_da
 ])
 def test_resize_modes_distinguish_small_medium_and_large_sources(mode, expected):
     sources = [(1920, 1080), (640, 360), (4000, 3000)]
-    assert tuple(module.reference_image_size(*size, 1344, 768, 32, mode) for size in sources) == expected
+    assert tuple(reference_image_size(*size, 1344, 768, 32, mode) for size in sources) == expected
 
 
 def test_resize_mode_rejects_conflicting_short_edge_and_other_workflows():
@@ -176,4 +177,4 @@ def test_resize_mode_rejects_conflicting_short_edge_and_other_workflows():
         args = dict(task_type='ref2va', h3_reference_image_resize_mode='match')
         args.update(overrides)
         with pytest.raises(ValueError, match=message):
-            module.reference_image_resize_mode(SimpleNamespace(**args))
+            h3_reference_image_resize_mode(SimpleNamespace(**args))

@@ -1,4 +1,3 @@
-import torch
 from diffusers import WanImageToVideoPipeline
 import html
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -269,6 +268,7 @@ class WanImageToVideoPipelineJoint(WanImageToVideoPipeline):
         small_boundary = distill_timesteps[-1]
         small_noise = timesteps[timesteps < small_boundary]
 
+        noise_pred = None
         with self.progress_bar(total=distill_steps + len(small_noise)) as progress_bar:
             for i, t in enumerate(timesteps):
                 self._current_timestep = t
@@ -276,6 +276,8 @@ class WanImageToVideoPipelineJoint(WanImageToVideoPipeline):
                 current_model, current_guidance_scale = self.switch_model(t.item(), high_noise, low_noise,
                                                                           small_boundary)
                 if current_model is None:
+                    if noise_pred is None:
+                        raise RuntimeError("Joint inference must evaluate a model before reusing its noise prediction")
                     latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                     continue
 

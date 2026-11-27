@@ -1,0 +1,5 @@
+target-version = "py311"
+
+[lint]
+# Gate correctness first without reformatting historical model implementations.
+select = ["E9", "F821", "F822", "F823", "F811"]

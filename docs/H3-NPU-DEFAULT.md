@@ -1,77 +1,80 @@
-# NPU Base 默认：VC＋Ascend 融合全并行 Streaming
+# H3 NPU 部署与算子
 
-v0.6 推荐的 NPU **768P Base** 入口使用 **VC attention＋Ascend 融合＋INT8 DiT＋全并行 Streaming＋AdaLN 表**。离线 `run_h3.sh npu` 和在线 Base／Ref2VA 示例 JSON 对齐，默认 20 次实际 Base DiT。CUDA、H3-Image、2K Refiner 及未使用推荐入口的低层 CLI 默认不由本页改变。
+[文档目录](README.md) · [资产准备](H3-MODELS.md#adaln-npu) · [视频命令](H3-VIDEO-QUICKSTART.md#npu)
 
-## 默认配置
+<a id="defaults"></a>
+## Base 默认方案
+
+NPU 768P 推荐启动器和 Base/Ref2VA 服务 JSON 使用 VC attention、Ascend 融合、INT8 DiT、通用 full-parallel、BF16 AdaLN 表和 native-stream。推荐入口显式设置默认值，低层 CLI 和 2K/Image 入口有各自配置。
 
 | 配置 | 值 |
 |---|---|
 | 进程、DiT SP、文本 TP | 8 / 8 / 8 |
-| Base 实际计算步数 | 20，匹配 21 点 AdaLN 表 |
-| attention / DiT Linear | VC ExpCast / INT8 |
-| AdaLN | BF16 表；使用完整权重实时计算时，主块及输出 AdaLN 投影保留 BF16 |
-| Ascend 融合 | `h3_opts=all`，请求开启；实际命中由形状与已安装算子决定 |
-| PHAA / RoPE | 2（4+3 头）/ fused |
-| 调度 | `h3_features=full-parallel`，50 层 DiT 常驻 |
-| 输入 Token Refiner | SP8、已选 NPU attention、BF16 FFN；R2VA chunk2048，T2VA/I2VA chunk0 |
-| 条件处理 | 本地输入／输出投影、请求内条件复用、Qwen 视觉 SP、VAE tile 编码、音频并行 |
-| 视频 decoder | `native-stream`，`vae_matmul_quant=none`；Linear FP16 存储、FP16 autocast，其余原生参数 FP32 |
+| Base 步数与表 | 20 次实际计算，对应 21 个调度点 |
+| Linear / attention | INT8 / VC ExpCast |
+| AdaLN | BF16 表；完整权重的主块/输出 AdaLN 投影保留 BF16 |
+| 调度 | full-parallel、DiT 常驻，请求内条件复用 |
+| Token Refiner | SP8、BF16 FFN；Ref2VA chunk2048，T2VA/I2VA chunk0 |
+| 视频 decoder | native-stream，`vae_matmul_quant=none`；Linear FP16 存储，其余原生参数 FP32 |
+| 音频 VAE | FP32，按条件和形状选择编码/长音频解码并行 |
 
-固定条件在同一请求的多个 DiT 步骤间复用，结束后释放，不是跨请求内容缓存。有图／视频时才运行视觉与 VAE 编码，有参考音轨时才运行 Audio Encoder，长音频 Decoder 并行仅在支持的形状生效。T2VA/I2VA 共用 FL2VA 模型与对应条件表，R2VA 使用独立模型及表。
+有图/视频时才执行视觉与 VAE 编码；有音轨时才执行音频编码。full-parallel 不自动把 DiT 改为 TP/CP，也不改变输入分辨率。
 
-使用 `dtype=bf16` 和完整 Transformer 权重时，INT8 继续用于主块 Attention 和 FFN 的线性层。AdaLN 权重保留 BF16，完整权重常驻时的显存开销因此高于将其量化为 INT8 的旧版本。使用配对的 BF16 表与已剔除 AdaLN 权重的 Transformer 时，不加载这些投影权重，已有表可以继续使用。
+<a id="operators"></a>
+## Ascend 融合算子安装
 
-## 安装与模型准备
-
-先完成 [VC 与 Ascend 融合算子构建](H3-NPU-FUSIONS.md)、[20 步模型资产准备](H3-VIDEO-QUICKSTART.md#准备模型和输入)及[原生 video_vae 下载](H3-MODELS.md#下载原生视频-vae)。`video_vae` 与转换后的 Diffusers `vae` 不同。
-
-`all` 不代表九项全部执行。SP8／PHAA2 不满足部分专用布局；部分条件预计算也会复用现有缓存。检查 `[VC_ATTENTION] enabled=expcast`、`[H3_OPT] enabled=`、请求 `summary=` 和 `fallback=`，确认真实路径。VC 缺失或初始化失败会警告并回退 SDPA；融合库缺失或形状不支持时保留原算子。回退结果不能当作 VC／融合性能，执行期算子错误不会被自动重试掩盖。
-
-## 离线
-
-下面示例生成单图 R2VA。先设置工作流对应资产：
+在目标 Ascend 910B（`dav-2201`）Linux aarch64 环境构建，使用匹配的 CANN、PyTorch/torch_npu、AscendC、CMake 和 C++17 工具链。源码位于 `x_base/x_base/operator/npu_fusion/`。
 
 ```bash
-export BASE_MODEL=weights/base
-export BASE_TRANSFORMER=model-cache/base-ref2va
-export BASE_ADALN=model-cache/ref2va-21step.safetensors
-export H3_VAE_MODEL_PATH=weights/native/FL2VA/video_vae
-export H3_VAE_TRUST_REMOTE_CODE=1
-export PROMPT_FILE=inputs/prompt.txt
-export H3_BASE_STEPS=20
-bash example/diffusers/scripts/run_h3.sh npu r2va 5 768p inputs/ref01.png
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+python -m pip install --no-deps -e ./x_base -e ./x_diffusers
+PYTHON=python BUILD_JOBS=4 bash tools/build_h3_optimizations.sh
+XGEN_NPU_META=1 python x_base/tests/test_npu_fusion_meta.py
 ```
 
-仅对可信模型代码授权。T2VA/I2VA 换用 FL2VA 的 Transformer 与表，完整命令见[视频教程](H3-VIDEO-QUICKSTART.md)。脚本默认传 `--atten vc --h3-opts all`；额外参数放在 `--` 后，可覆盖 attention、融合列表和单项开关。
+按实际 CANN 安装位置调整路径。Meta 检查只确认算子注册、shape 和 dtype，设备计算仍需实际验证。
 
-`TASK_QUEUE_ENABLE=2`、`HCCL_BUFFSIZE=512`、`OMP_NUM_THREADS=8`、`COMBINED_ENABLE=1`、`MEMORY_FRAGMENTATION=1`、`INF_NAN_MODE_FORCE_DISABLE=1`、`PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`、`ENCRYPTION_WEIGHT=false` 沿用既有配方，显式环境值优先。`H3_BASE_STEPS=50` 仍可使用，但必须准备匹配的 51 点表，不沿用本页 20 步性能。
+| 能力 | 默认库，相对于 `operator/npu_fusion/` | 覆盖变量 |
+|---|---|---|
+| `swiglu` | `f1b/build/libh3_swiglu_quant_reuse.so` | `H3_SWIGLU_QUANT_REUSE_LIBRARY` |
+| `gate_residual` | `f2a/build/libh3_gate_residual.so` | `H3_GATE_RESIDUAL_LIBRARY` |
+| `norm_quant` | `f2_nq2/build/libh3_norm_affine_quant2_cached.so` | `H3_NQ2_CACHED_LIBRARY` |
+| `rope` | `f3/build/libh3_partial_rope.so` | `H3_PARTIAL_ROPE_LIBRARY` |
+| `phaa_layout` | `f4/build/libh3_phaa_layout.so` | `H3_PHAA_LAYOUT_LIBRARY` |
+| `laser_preprocess` | `f4_preprocess/build/libh3_phaa_preprocess.so` | `H3_PHAA_PREPROCESS_LIBRARY` |
+| `merge_quant` | `f4_merge_quant/build/libh3_merge_quant.so` | `H3_MERGE_QUANT_LIBRARY` |
 
-## 在线
+`shared_qkv` 和 `text_cache` 复用 PyTorch/torch_npu。包含编译库的 wheel 按对应平台和 ABI 构建，不能跨环境复用未经确认的二进制。
 
-使用 `h3_npu_base.example.json` 部署 T2VA/I2VA，`h3_npu_ref2va.example.json` 部署 R2VA。两份示例均已设置 `"atten":"vc"`、`"h3_opts":"all"`、20 步及 native-stream。先填写本地权重、原生 VAE 和配对的 AdaLN 路径，设置上述环境变量，再按[在线指南](H3-ONLINE.md#npu-base)启动。
+<a id="vc"></a>
+## VC attention 安装
 
-服务外层 CLI 没有离线 `--atten`／`--h3-opts` 参数；使用启动 JSON 设置。改变配方后重启服务。现有性能来自常驻推理与保存，不是 HTTP SLA。
-
-## 独立关闭与回退
-
-保留 VC，关闭新增融合：
+使用部署配方固定的源码版本，在同一目标环境构建：
 
 ```bash
-bash example/diffusers/scripts/run_h3.sh npu r2va 5 768p inputs/ref01.png -- --h3-opts none
+git clone --branch codex/ascend-fp16-expcast-optimize https://gitee.com/czf1234/vc-attention.git
+git -C vc-attention checkout 161108e910d86b4db954d5fb18b221ce876e2bed
+cd vc-attention
+VC_ATTENTION_BUILD_DEVICE=0 VC_ATTENTION_BUILD_JOBS=4 \
+  python -m pip install --no-deps --no-build-isolation -e .
 ```
 
-显式回退历史 attention 和原算子：
+回到 xGen 根目录后启动。VC 使用 INT8 QK、FP16 ExpCast 和 FP16 PV，支持其声明的 dense D64/D128 FP16/BF16 布局。mask、causal、dropout、梯度输入或初始化失败会使用原生 SDPA；实际执行期错误不会自动重试。
+
+<a id="switches"></a>
+## 融合选择与回退
+
+`--h3-opts all` 请求九项能力，`none` 清空列表，逗号列表和 `-名称` 可单项选择。显式列表优先于 `H3_OPT_FEATURES`，`--h3-opt-rope` / `--no-h3-opt-rope` 等单项参数再覆盖列表。服务在启动 JSON 中配置 `h3_opts`，不传离线 CLI 参数给服务外层。
+
+推荐入口已有显式 `all`；覆盖时放在额外参数中：
 
 ```bash
-bash example/diffusers/scripts/run_h3.sh npu r2va 5 768p inputs/ref01.png -- --atten laser --h3-opts none
+bash example/diffusers/scripts/run_h3.sh npu r2va 5 768p inputs/ref01.png -- \
+  --h3-opts none
 ```
 
-在线回退在 JSON 中设置 `"atten":"laser"`、`"h3_opts":"none"` 后重启。只关闭某一项可使用 CLI `--no-h3-opt-rope` 或 JSON `"h3_opt_rope":false`；列表与单项的优先级见[融合开关](H3-NPU-FUSIONS.md)。推荐入口显式传入 `all`，所以单独设置 `H3_OPT_FEATURES` 不能覆盖它。
+保留原 attention 与融合时可选择 `--atten laser --h3-opts none`。原生 VAE 和组件并行分别控制，见 [统一配置](H3-CONFIGURATION.md)。
 
-VAE 仍可独立选择 legacy／lightning／native-stream，不与 attention 绑定；回退旧 VAE 时移除原生路径及授权，按[VAE 指南](H3-OMNI-VAE.md)配对量化选项。2K 使用独立协调器与原有配方，不继承本页 VC／融合默认；Base 20 步与 Refiner 3 步分别统计。H3-Image 使用自己的入口和默认设置。
+量化融合需要匹配的 INT8 投影；部分 PHAA 布局融合要求 SP4/PHAA7/56 头/D128，常用 SP8/PHAA2 使用其原布局。`laser_preprocess` 需要匹配的 MindIE Laser。`all` 是请求列表，具体 shape、后端、钩子和库决定实际执行。
 
-## 性能与验收范围
-
-当前对照数据统一见[性能总表](performance/README.md)。NPU 按提供的“910B2 截图”端到端／去噪列列出 12 项，不与另一批 910B3 数据混用；源表未提供对应显存和完整运行日志，本次不补造这些字段。
-
-此前八卡 910B3、单图 R2VA 5／10 秒、20 步样例的人工画面／声音认可仅属于该批设备与样例，不转移到总表的 910B2 12 项。原始验证保留在[固定提交的历史记录](https://github.com/lightnateriver/xGen/blob/6822583e0021e3ca64701d7c8aa49789a0d55f1c/docs/performance/h3-v06-npu-vc-fusions.md)。默认配置、CPU 回归、技术生成和人工质量验收是不同证据，不互相替代。
+检查 `[VC_ATTENTION] enabled=expcast`、`[H3_OPT] enabled=`、`summary=`、`fallback=` 确认命中及回退。NPU 2K 和 H3-Image 使用独立配方，不继承 Base 的所有默认值；可选 Spark/Veda 见 [attention 配置](H3-CONFIGURATION.md#attention)。

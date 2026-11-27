@@ -1,4 +1,5 @@
 """Opt-in boundaries and uneven temporal transport without model downloads."""
+from importlib import import_module
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,32 +11,25 @@ import torch
 ROOT = Path(__file__).resolve().parents[1] / 'x_diffusers/adaptor'
 
 
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / (name + '.py'))
-    module = importlib.util.module_from_spec(spec)
-    module.__package__ = 'x_diffusers.adaptor'
-    spec.loader.exec_module(module)
-    return module
+parallel = import_module('x_diffusers.framework.vae.minimax_h3')
+precision = import_module('x_diffusers.adaptor.validation')
 
 
-parallel = load('h3_condition_parallel')
-precision = load('h3_cuda_precision')
 
-
-@pytest.mark.parametrize('name', precision.CONDITION_PARALLEL)
+@pytest.mark.parametrize('name', precision.H3_CONDITION_PARALLEL)
 def test_cuda_precision_guards_remain_separate_from_shared_scheduling(name):
     base = dict(model='MiniMax-H3', task_type='ref2va', sp=8, h3_cuda_precision='fp8-sage',
                 h3_parallel_mode='sp', h3_vae_backend='legacy')
     base[name] = 'long' if name.endswith('decoder_parallel') else True
-    assert precision.resolve(SimpleNamespace(**base), 'cuda') == 'fp8-sage'
+    assert precision.resolve_h3_precision(SimpleNamespace(**base), 'cuda') == 'fp8-sage'
     for task in ('t2va', 'fl2va'):
-        assert precision.resolve(SimpleNamespace(**(base | dict(task_type=task))), 'cuda') == 'fp8-sage'
+        assert precision.resolve_h3_precision(SimpleNamespace(**(base | dict(task_type=task))), 'cuda') == 'fp8-sage'
     for changes, backend in ((dict(task_type='t2v'), 'cuda'), (dict(sp=4), 'cuda'),
                              ({}, 'npu')):
         with pytest.raises(ValueError):
-            precision.resolve(SimpleNamespace(**(base | changes)), backend)
+            precision.resolve_h3_precision(SimpleNamespace(**(base | changes)), backend)
     with pytest.raises(ValueError, match='Restart the service to change H3 condition parallelism'):
-        precision.validate_manager(SimpleNamespace(pipe=object()), SimpleNamespace(**base), 'cuda')
+        precision.validate_h3_manager(SimpleNamespace(pipe=object()), SimpleNamespace(**base), 'cuda')
 
 
 @pytest.mark.parametrize('total,unit', [(7, 1), (8, 1), (17, 1), (400, 1),
@@ -69,7 +63,7 @@ def test_numeric_policy_restores_after_error():
 
 def test_disabled_profile_preserves_npu_defaults():
     args = SimpleNamespace(model='MiniMax-H3', task_type='ref2va', h3_cuda_precision='auto')
-    assert precision.resolve(args, 'npu') == 'none'
+    assert precision.resolve_h3_precision(args, 'npu') == 'none'
     assert precision.condition_parallel_key(args) == (False, False, False, 'none')
 
 

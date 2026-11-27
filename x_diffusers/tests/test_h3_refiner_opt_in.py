@@ -1,4 +1,5 @@
-"""Dependency-light regression tests. Run directly with unittest; no NPU required."""
+"""Refiner regressions using the installed xGen runtime without checkpoint loading."""
+from importlib import import_module
 import argparse
 import ast
 import copy
@@ -11,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import re
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -27,12 +30,11 @@ def load(name, path):
     return module
 
 
-package = ModuleType('_h3_test'); package.__path__ = [str(ADAPTOR)]
-sys.modules['_h3_test'] = package
-contract = load('_h3_test.h3_refiner_config', ADAPTOR/'h3_refiner_config.py')
-service_config = load('_h3_test.h3_refiner_service', ADAPTOR/'h3_refiner_service.py')
-references = sys.modules['_h3_test.h3_references']
-config = load('_h3_test.config', ADAPTOR/'config.py')
+contract = import_module("x_diffusers.adaptor.validation")
+references = contract
+runtime = import_module("x_diffusers.adaptor.h3_runtime")
+config = import_module("x_diffusers.adaptor.config")
+
 
 
 def args(**overrides):
@@ -42,6 +44,9 @@ def args(**overrides):
         setattr(result,key,value)
     return result
 
+
+
+import x_diffusers.framework.pipeline.minimax_h3 as _refiner_state
 
 class PortableBaseline(ast.NodeTransformer):
     """Normalize v0.1 example asset locations; do not alter inference logic."""
@@ -61,7 +66,46 @@ BASELINE_COMMIT = 'bc1209305717762419ba89a117db21b876c289a3'  # Published v0.4.
 
 def baseline(path):
     raw = subprocess.check_output(['git','show',BASELINE_COMMIT+':'+path], cwd=ROOT).decode()
-    return ast.unparse(PortableBaseline().visit(ast.parse(raw)))
+    class CurrentParameterImports(ast.NodeTransformer):
+        # Execute published logic against the current parameter owners. Only
+        # import locations/names change; defaults and service logic stay intact.
+        def visit_ImportFrom(self, node):
+            source = (node.module or '').rsplit('.', 1)[-1]
+            targets = {
+                'h3_refiner_config': {
+                    'add_arguments': ('config', 'add_h3_refiner_arguments'),
+                    'H3_BASE_MAX_DURATION_S': ('validation', 'H3_BASE_MAX_DURATION_S'),
+                    'H3_MAX_PROMPT_LENGTH': ('validation', 'H3_MAX_PROMPT_LENGTH'),
+                    'h3_prompt_length': ('validation', 'h3_prompt_length'),
+                    'base_temporal_padding': ('h3_runtime', 'base_temporal_padding'),
+                    'validate_settings': ('validation', 'validate_h3_refiner_settings'),
+                },
+                'h3_attention_config': {'add_arguments': ('config', 'add_h3_attention_arguments')},
+                'h3_parallel_config': {'add_arguments': ('config', 'add_h3_parallel_arguments')},
+                'h3_cuda_options': {
+                    'add_arguments': ('config', 'add_h3_cuda_arguments'),
+                    'STARTUP_OPTIONS': ('config', 'H3_CUDA_STARTUP_OPTIONS'),
+                    'BOOL_OPTIONS': ('config', 'H3_CUDA_BOOL_OPTIONS'),
+                    'resolve_options': ('validation', 'resolve_h3_options'),
+                    'commit_environment': ('validation', 'commit_h3_environment'),
+                    'needs_resolution': ('validation', 'h3_needs_resolution'),
+                    'bootstrap_preset_environment': ('validation', 'bootstrap_h3_preset_environment'),
+                },
+                'h3_cuda_precision': {'validate_manager': ('validation', 'validate_h3_manager')},
+            }
+            if source not in targets:
+                return node
+            result = []
+            for alias in node.names:
+                if alias.name not in targets[source]:
+                    result.append(ast.ImportFrom(module=node.module, level=node.level, names=[alias]))
+                    continue
+                owner, name = targets[source][alias.name]
+                result.append(ast.ImportFrom(module='x_diffusers.adaptor.' + owner, level=0,
+                    names=[ast.alias(name=name, asname=alias.asname or alias.name)]))
+            return result
+    tree=CurrentParameterImports().visit(PortableBaseline().visit(ast.parse(raw)))
+    return ast.unparse(ast.fix_missing_locations(tree))
 
 
 class WithoutDocstrings(ast.NodeTransformer):
@@ -96,7 +140,7 @@ def logic_tree(text):
 
 class ContractTests(unittest.TestCase):
     def test_refiner_draft_loads_reference_audio_weights_and_restores_them(self):
-        source = ROOT/'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate/pipeline.py'
+        source = ROOT/'x_diffusers/x_diffusers/framework/pipeline/minimax_h3.py'
         tree = ast.parse(source.read_text(encoding='utf-8'))
         pipeline = next(node for node in tree.body if isinstance(node, ast.ClassDef)
                         and node.name == 'H3RefinerPipeline')
@@ -104,7 +148,7 @@ class ContractTests(unittest.TestCase):
                      and node.name == '_draft')
         draft.decorator_list = []
         torch = Mock()
-        namespace = dict(torch=torch, schedule_points=lambda steps: steps + 1)
+        namespace = dict(torch=torch, H3RefinerRequest=SimpleNamespace, schedule_points=lambda steps: steps + 1, native_padding=lambda *args: nullcontext())
         exec(compile(ast.Module(body=[draft], type_ignores=[]), str(source), 'exec'), namespace)
         @contextmanager
         def scope(model):
@@ -114,10 +158,7 @@ class ContractTests(unittest.TestCase):
                 model._h3_conditioning_metrics = dict(cleared=True)
         modules = {
             'diffusers.utils': SimpleNamespace(load_image=Mock()),
-            'x_diffusers.adaptor.h3_refiner_config': SimpleNamespace(native_padding=lambda *args: nullcontext()),
-            'x_diffusers.adaptor.h3_references': SimpleNamespace(
-                load_references=Mock(), reference_conditioning=Mock(), select_adaln=Mock()),
-            'x_diffusers.adaptor.h3_conditioning': SimpleNamespace(request_conditioning=scope),
+            'x_diffusers.framework.transformer.minimax_h3': SimpleNamespace(request_conditioning=scope),
         }
         for conditioning, precompute in (('both', False), ('video', False), ('both', True), ('video', True)):
             base = Mock(side_effect=RuntimeError('encode sentinel'))
@@ -132,7 +173,9 @@ class ContractTests(unittest.TestCase):
                                      metrics=SimpleNamespace(span=lambda *args: nullcontext()))
             request = SimpleNamespace(task_type='ref2va', prompt='test', num_inference_steps=20,
                                       seed=42, reference_paths=['reference'])
-            modules['x_diffusers.adaptor.h3_references'].reference_conditioning.return_value = conditioning
+            runner.config = SimpleNamespace(base_steps=20)
+            request.media = {'references': ['loaded']}
+            request.reference_audio = conditioning == 'both'
             with patch.dict(sys.modules, modules), self.assertRaisesRegex(RuntimeError, 'encode sentinel'):
                 namespace['_draft'](runner, request, {'generation_frames': 124})
             self.assertIs(base._blocks, original)
@@ -148,7 +191,7 @@ class ContractTests(unittest.TestCase):
         loader=ModuleType(package_name+'.adaptor.load_pipe')
         loader.load_pipe=Mock(return_value=object())
         loader.update_lora=Mock();loader.update_pipe=Mock();loader.pipe_to_device=lambda pipe,args:pipe
-        pipeline=ModuleType(package_name+'.framework.pipeline.h3_regenerate.pipeline')
+        pipeline=ModuleType(package_name+'.framework.pipeline.minimax_h3')
         pipeline.H3RefinerPipeline=Mock(side_effect=RuntimeError('constructor sentinel'))
         torch_stub=ModuleType('torch');torch_stub.__path__=[]
         distributed=ModuleType('torch.distributed');distributed.is_initialized=lambda:True;distributed.get_world_size=lambda:8
@@ -157,38 +200,42 @@ class ContractTests(unittest.TestCase):
         av_writer.FFMPEG_PATH='ffmpeg'
         modules={package_name:root,package_name+'.adaptor':adaptor,
                  av_writer.__name__:av_writer,
-                 package_name+'.adaptor.h3_refiner_config':contract,
+                 package_name+'.adaptor.validation':contract,
                  package_name+'.adaptor.load_pipe':loader,
-                 package_name+'.framework.pipeline.h3_regenerate.pipeline':pipeline,
+                 package_name+'.framework.pipeline.minimax_h3':pipeline,
+                 'x_diffusers.framework.pipeline.minimax_h3':pipeline,
                  'torch':torch_stub,'torch.distributed':distributed}
         with tempfile.TemporaryDirectory() as folder,patch.dict(sys.modules,modules):
-            adapter=load(package_name+'.adaptor.h3_refiner',ADAPTOR/'h3_refiner.py')
+            prepare = import_module("x_diffusers.adaptor.load_pipe").prepare_h3_refiner
             value=args(h3_refiner=True,model='MiniMax-H3',task_type='t2va',sp=8,dtype='bf16',atten='laser',
                        num_inference_steps=50,width=2560,height=1440,save_fps=24,phaa_num=2,
                        matmul_quant='int8',vae_matmul_quant='none',vae_lightning='none',
                        inf_vram_blocks_num=0,h3_refiner_weights=folder,h3_refiner_prepared=folder)
-            manager=SimpleNamespace(pipe=None)
-            with patch.object(adapter,'which',return_value='ffmpeg'):
-                with self.assertRaisesRegex(RuntimeError,'constructor sentinel'):adapter.prepare(manager,value)
+            guard=Mock()
+            guard.__enter__=Mock(return_value=guard)
+            guard.__exit__=Mock(return_value=False)
+            manager=SimpleNamespace(pipe=None,_h3_refiner_failure_guard=guard)
+            with patch.dict(prepare.__globals__, load_pipe=loader.load_pipe, which=Mock(return_value='ffmpeg')):
+                with self.assertRaisesRegex(RuntimeError,'constructor sentinel'):prepare(manager,value)
             self.assertTrue(manager._h3_refiner_failed)
-            with self.assertRaisesRegex(RuntimeError,'restart'):adapter.prepare(manager,value)
+            with self.assertRaisesRegex(RuntimeError,'restart'):prepare(manager,value)
             self.assertEqual(loader.load_pipe.call_count,1)
 
     def test_default_disabled_without_assets_or_optional_imports(self):
         before = set(sys.modules)
         value = args()
         self.assertFalse(value.h3_refiner)
-        self.assertIsNone(contract.validate_settings(value))
+        self.assertIsNone(contract.validate_h3_refiner_settings(value))
         self.assertFalse(any(name.startswith(('torch','diffusers','transformers')) for name in set(sys.modules)-before))
 
     def test_service_cli_does_not_erase_json_asset_paths(self):
         startup=dict(h3_refiner_weights='/weights',h3_refiner_prepared='/prepared',h3_refiner_seconds=15)
         value=args(h3_refiner=True)
-        service_config.apply_startup_settings(startup,value,['--h3_refiner'])
+        contract.apply_h3_refiner_startup_settings(startup,value,['--h3_refiner'])
         self.assertEqual(startup['h3_refiner_weights'],'/weights')
         self.assertEqual(startup['h3_refiner_seconds'],15)
         value.h3_refiner_seconds=10
-        service_config.apply_startup_settings(startup,value,['--h3_refiner_seconds=10'])
+        contract.apply_h3_refiner_startup_settings(startup,value,['--h3_refiner_seconds=10'])
         self.assertEqual(startup['h3_refiner_seconds'],10)
 
     def test_existing_cli_defaults_unchanged(self):
@@ -200,18 +247,29 @@ class ContractTests(unittest.TestCase):
         now = vars(args())
         self.assertIsNone(now.pop('h3_features'))
         self.assertIsNone(now.pop('h3_reference_image_short_edge'))
+        self.assertIsNone(now.pop('h3_reference_image_resize_mode'))
+        self.assertIsNone(now.pop('h3_vae_torch_compile'))
         self.assertIsNone(now.pop('h3_opts'))
         self.assertEqual(now.pop('h3_fused_ops'), ())
         for key in tuple(now):
             if key.startswith('h3_opt_'):
                 self.assertIsNone(now.pop(key))
+        # Batch input/sampling were renamed; evaluation CLI options moved to tools.
+        for previous, current in (("batch_test_input_dir", "batch_input_dir"),
+                                  ("batch_test_sample_size", "batch_sample_size")):
+            self.assertEqual(old.pop(previous), now.pop(current))
+        for removed, default in (("batch_test_mode", "normal"), ("batch_test_resolutions", ""),
+                                 ("batch_test_frames", ""), ("batch_test_targets", ""),
+                                 ("batch_test_report_dir", ""), ("enable_vae_time_count", False)):
+            self.assertEqual(old.pop(removed), default)
         self.assertEqual(old, now)
         self.assertIsNone(now['h3_nvfp4_checkpoint'])
         for flag in ('h3_nvfp4_resident','h3_nvfp4_compile','h3_cuda_vae_sp'):
             self.assertFalse(now[flag])
 
     def test_vc_and_h3_fusions_are_independent_opt_in_settings(self):
-        from _h3_test.h3_npu_options import H3_FUSION_FEATURES, validate
+        from x_diffusers.adaptor.config import H3_NPU_FUSION_FEATURES as H3_FUSION_FEATURES
+        from x_diffusers.adaptor.validation import validate_h3_npu_fusions as validate
 
         command = ['test', '--model', 'MiniMax-H3', '--atten', 'vc', '--h3-opts', 'rope',
                    '--h3-opt-swiglu', '--no-h3_opt_rope']
@@ -231,11 +289,11 @@ class ContractTests(unittest.TestCase):
 
     def test_exact_native_padding_and_output_counts(self):
         for seconds, generation, latent in [(5,124,37),(10,243,72),(15,362,107)]:
-            spec = contract.profile(seconds)
+            spec = contract.h3_refiner_profile(seconds)
             self.assertEqual((spec['output_frames'],spec['generation_frames'],spec['latent_frames']),
                              (seconds*24,generation,latent))
         for value in (True,5.0,'5',0,6,16,None):
-            with self.assertRaises(ValueError): contract.profile(value)
+            with self.assertRaises(ValueError): contract.h3_refiner_profile(value)
 
     def test_padding_is_instance_scoped_and_restored_on_error(self):
         class Pipe:
@@ -244,7 +302,7 @@ class ContractTests(unittest.TestCase):
             def max_duration(self): return 15
         first, other = Pipe(), Pipe()
         with self.assertRaisesRegex(RuntimeError,'sentinel'):
-            with contract.native_padding(first,contract.profile(15)):
+            with _refiner_state.native_padding(first,contract.h3_refiner_profile(15)):
                 self.assertGreater(first.max_duration,15)
                 self.assertEqual(other.max_duration,15)
                 raise RuntimeError('sentinel')
@@ -254,9 +312,9 @@ class ContractTests(unittest.TestCase):
     def test_shape_changes_reuse_assets_but_workflow_changes_do_not(self):
         first = args(); second = copy.copy(first)
         second.h3_refiner_seconds=15; second.frames=362; second.seed=100; second.prompt='other'
-        self.assertEqual(contract.model_key(first),contract.model_key(second))
+        self.assertEqual(contract.h3_refiner_model_key(first),contract.h3_refiner_model_key(second))
         second.task_type='ref2va'
-        self.assertNotEqual(contract.model_key(first),contract.model_key(second))
+        self.assertNotEqual(contract.h3_refiner_model_key(first),contract.h3_refiner_model_key(second))
 
     def test_conflicts_rejected_before_loading(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -264,12 +322,12 @@ class ContractTests(unittest.TestCase):
                        num_inference_steps=50,width=2560,height=1440,save_fps=24,phaa_num=2,
                        matmul_quant='int8',vae_matmul_quant='none',vae_lightning='none',
                        inf_vram_blocks_num=0,h3_refiner_weights=folder,h3_refiner_prepared=folder)
-            self.assertEqual(contract.validate_settings(valid)['output_frames'],120)
+            self.assertEqual(contract.validate_h3_refiner_settings(valid)['output_frames'],120)
             for key,value in [('sp',1),('num_inference_steps',51),('width',1344),('adopt_sr',True),
                               ('cache_dit',True),('vae_lightning','decoder'),('inf_vram_blocks_num',1),
                               ('vae_matmul_quant','int8'),('task_type','i2v'),('h3_refiner_weights','missing')]:
                 bad=copy.copy(valid); setattr(bad,key,value)
-                with self.subTest(key=key),self.assertRaises(ValueError): contract.validate_settings(bad)
+                with self.subTest(key=key),self.assertRaises(ValueError): contract.validate_h3_refiner_settings(bad)
 
     def test_reference_counts_decode_and_seed_types(self):
         from PIL import Image
@@ -280,14 +338,14 @@ class ContractTests(unittest.TestCase):
             value=args(task_type='ref2va',prompt='test',seed=42)
             for count in (1, 5, 9):
                 value.reference_paths = paths[:count]
-                contract.validate_inputs(value)
+                contract.validate_h3_refiner_inputs(value)
             for images in ([], paths, [paths[0]]*5):
                 value.reference_paths=images
-                with self.assertRaises(ValueError): contract.validate_inputs(value)
+                with self.assertRaises(ValueError): contract.validate_h3_refiner_inputs(value)
             value.reference_paths=paths[:5];value.seed=True
-            with self.assertRaises(ValueError):contract.validate_inputs(value)
+            with self.assertRaises(ValueError):contract.validate_h3_refiner_inputs(value)
             value.seed=42;value.reference_paths=paths[:1];Path(paths[0]).write_text('corrupt')
-            with self.assertRaises(Exception):contract.validate_inputs(value)
+            with self.assertRaises(Exception):contract.validate_h3_refiner_inputs(value)
 
     def test_reference_media_count_duration_and_conditioning(self):
         from decimal import Decimal
@@ -307,9 +365,9 @@ class ContractTests(unittest.TestCase):
                 return Decimal(str(durations[path])), kind == "audio" or path == videos[1]
 
             def check(paths):
-                return references.validate_references([str(path) for path in paths])
+                return references.validate_h3_references([str(path) for path in paths])
 
-            with patch.object(references, "probe_clip", side_effect=probe):
+            with patch.object(references, "probe_h3_reference_clip", side_effect=probe):
                 self.assertEqual(check([videos[0]]), "video")
                 self.assertEqual(check([videos[1]]), "both")
                 self.assertEqual(check(images[:6] + videos[:3] + audios[:3]), "both")
@@ -331,7 +389,7 @@ class ContractTests(unittest.TestCase):
                 request = args(reference_paths=[str(videos[1])], adaln_cache_file="ref2va-21step.safetensors")
                 installer = Mock()
                 with patch.dict(sys.modules, {"x_base.adaln_cache": SimpleNamespace(install_adaln_cache=installer)}):
-                    references.select_reference_adaln(pipe, request)
+                    runtime.select_h3_reference_adaln(pipe, request)
                 installer.assert_called_once_with(pipe, "ref2va-21step.safetensors", conditioning_type="both")
 
     def test_service_profiles_and_immutable_startup_settings(self):
@@ -340,12 +398,12 @@ class ContractTests(unittest.TestCase):
         fake._validate_mmh3_frame_fields=lambda data,task,errors:('','')
         fake._validate_mmh3_ref_path=lambda data,task,errors:[]
         for duration in (5,10,15):
-            ok,result=service_config.validate_request(fake,dict(prompt='test',duration=duration),[],[])
+            ok,result=contract.validate_h3_refiner_request(fake,dict(prompt='test',duration=duration),[],[])
             self.assertTrue(ok,result)
             self.assertEqual(result['data']['resolution'],'2k')
         for data in [dict(h3_refiner=False),dict(duration=6),dict(resolution='1080p'),dict(task_type='ref2va'),
                      dict(num_inference_steps=21),dict(seed=True),dict(enable_audio='true'),dict(adopt_sr=True)]:
-            ok,_=service_config.validate_request(fake,data,[],[]);self.assertFalse(ok,data)
+            ok,_=contract.validate_h3_refiner_request(fake,data,[],[]);self.assertFalse(ok,data)
 
 
 class LegacyCompatibilityTests(unittest.TestCase):
@@ -356,12 +414,40 @@ class LegacyCompatibilityTests(unittest.TestCase):
                      'x_diffusers/x_diffusers/framework/vae/minimax_h3.py'):
             with self.subTest(path=path):
                 old_tree = logic_tree(baseline(path))
-                new_tree = logic_tree((ROOT/path).read_text(encoding='utf-8'))
+                current = (ROOT/path).read_text(encoding='utf-8')
+                if path.endswith('/vae/minimax_h3.py'):
+                    # Compare the original model registration/codec section;
+                    # preceding sections now hold the consolidated H3 features.
+                    current = current.split('# vae.minimax_h3\n', 1)[1]
+                    class WithoutImports(ast.NodeTransformer):
+                        def visit_Import(self, node): return None
+                        def visit_ImportFrom(self, node): return None
+                    old_tree = WithoutImports().visit(old_tree)
+                    new_tree = WithoutImports().visit(logic_tree(current))
+                else:
+                    new_tree = logic_tree(current)
                 if path.endswith('/config.py'):
-                    updated = {'parse_args', 'add_minimax_h3_args', 'add_abilities_args'}
+                    shared = {'add_network_args', 'add_inference_args', 'add_wan_vace_args', 'add_benchmark_args'}
                     for tree in (old_tree, new_tree):
-                        tree.body = [node for node in tree.body if not (
-                            isinstance(node, ast.FunctionDef) and node.name in updated)]
+                        tree.body = [node for node in tree.body if (
+                            isinstance(node, ast.FunctionDef) and node.name in shared)]
+                    class WithoutBatchOptions(ast.NodeTransformer):
+                        def visit_Expr(self, node):
+                            value = node.value
+                            if (isinstance(value, ast.Call) and value.args
+                                    and isinstance(value.args[0], ast.Constant)
+                                    and isinstance(value.args[0].value, str)
+                                    and value.args[0].value.startswith('--batch_')):
+                                return None
+                            return self.generic_visit(node)
+                    old_tree = WithoutBatchOptions().visit(old_tree)
+                    new_tree = WithoutBatchOptions().visit(new_tree)
+                else:
+                    # This loop now supports a standalone chunk callback. Its
+                    # numerical output is compared directly in the Torch suite.
+                    for tree in (old_tree, new_tree):
+                        tree.body = [node for node in tree.body
+                                     if getattr(node, 'name', '') != '_decode_chunks_streaming']
                 old=ast.dump(old_tree,include_attributes=False)
                 new=ast.dump(new_tree,include_attributes=False)
                 self.assertEqual(old,new,'Default-path AST changed: '+path)
@@ -385,16 +471,19 @@ class LegacyCompatibilityTests(unittest.TestCase):
             # also compares intentionally added H3-only registration/options.
             tree.body = [node for node in tree.body if (
                 isinstance(node, ast.FunctionDef) and node.name.startswith('load_')
-                and node.name not in ('load_pipe', 'load_minimax_h3_pipe'))]
+                and node.name not in ('load_pipe', 'load_minimax_h3_pipe', 'load_minimax_h3_image_pipe'))]
             loaders.append(ast.dump(tree, include_attributes=False))
         self.assertEqual(*loaders, msg='Non-H3 model loaders changed')
 
     def test_no_independent_service_or_scheduler(self):
-        folder=ROOT/'x_diffusers/x_diffusers/framework/pipeline/h3_regenerate'
+        folder=ROOT/'x_diffusers/x_diffusers/framework/pipeline'
         self.assertFalse((folder/'serve.py').exists())
         self.assertFalse((folder/'resident.py').exists())
         self.assertFalse((folder/'export.py').exists())
-        source=(folder/'pipeline.py').read_text(encoding='utf-8')
+        source=(folder/'minimax_h3.py').read_text(encoding='utf-8')
+        tree = ast.parse(source)
+        pipeline = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'H3RefinerPipeline')
+        source = ast.get_source_segment(source, pipeline)
         self.assertNotIn('InferenceManager(',source)
         self.assertNotIn('while True',source)
         self.assertNotIn('from_pretrained =',source)
@@ -441,13 +530,13 @@ class ServiceCompatibilityTests(unittest.TestCase):
 
     def test_service_enabled_build_args_keeps_startup_model_and_changes_duration(self):
         service=self.instance(self.new,True)
-        modules={'x_diffusers.adaptor.h3_refiner_service':service_config}
+        modules={'x_diffusers.adaptor.validation':contract}
         with patch.dict(sys.modules,modules):
             for seconds in (5,10,15):
                 value=service._build_args(dict(prompt='test',duration=seconds,resolution='2k'),'./test.mp4')
                 self.assertTrue(value.h3_refiner)
                 self.assertEqual((value.width,value.height,value.num_inference_steps),(2560,1440,50))
-                self.assertEqual(value.frames,contract.profile(seconds)['generation_frames'])
+                self.assertEqual(value.frames,contract.h3_refiner_profile(seconds)['generation_frames'])
                 self.assertFalse(value.adopt_sr)
 
     def test_params_route_unchanged_by_default_and_has_opt_in_bounds(self):
@@ -457,7 +546,7 @@ class ServiceCompatibilityTests(unittest.TestCase):
                 def register(fn):self.routes[path]=fn;return fn
                 return register
         services=[self.instance(self.old,False),self.instance(self.new,False),self.instance(self.new,True)]
-        with patch.dict(sys.modules,{'x_diffusers.adaptor.h3_refiner_service':service_config}):
+        with patch.dict(sys.modules,{'x_diffusers.adaptor.validation':contract}):
             for service in services:
                 service.app=App();service._setup_config_routes()
             old=services[0].app.routes['/params']();new=services[1].app.routes['/params']()

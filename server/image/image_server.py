@@ -275,15 +275,9 @@ class CachedImageInferenceManager:
         if args.lora_path_list:
             args.fuse_lora = True
 
-        self.pipe = load_pipe(args)
-        
-        update_scheduler(self.pipe, args.model, args.lora_path_list)
-        update_lora(self.pipe, args.model, init_lora_path_list=None, 
-                    lora_path_list=args.lora_path_list, fuse_lora=args.fuse_lora,
-                    weights_list=args.lora_scale_weight_list)
-        update_pipe(self.pipe, args)
-        self.pipe = pipe_to_device(self.pipe, args)
-        
+        from x_diffusers.adaptor.load_pipe import PipelineBuildOptions
+        self.pipe = load_pipe(args, build_options=PipelineBuildOptions(configure_scheduler=True))
+
         self.init_args = args
         self.current_model = model_name
         self.loaded = True

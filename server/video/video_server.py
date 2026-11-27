@@ -37,9 +37,20 @@ from maas_artifacts import StorageError, publish_obs, publish_video, validate_me
 
 from x_diffusers import init_env, parse_args
 from x_base.device import device_type
-from x_diffusers.adaptor.h3_refiner_config import H3_BASE_MAX_DURATION_S, H3_MAX_PROMPT_LENGTH, base_temporal_padding, h3_prompt_length
-from x_diffusers.adaptor.h3_schedule import cache_steps, schedule_points
-from x_diffusers.adaptor.h3_references import LIMITS, MAX_FILES, reference_conditioning
+from x_diffusers.adaptor.validation import H3_BASE_MAX_DURATION_S
+from x_diffusers.adaptor.validation import H3_MAX_PROMPT_LENGTH
+from x_diffusers.adaptor.h3_runtime import base_temporal_padding, refiner_worker_scope
+from x_diffusers.adaptor.validation import h3_prompt_length
+from x_diffusers.adaptor.validation import (
+    h3_adaln_cache_steps as cache_steps,
+    h3_schedule_points as schedule_points,
+)
+from x_diffusers.adaptor.config import (
+    H3_REFERENCE_IMAGE_EXTS, H3_REFERENCE_VIDEO_EXTS, H3_REFERENCE_AUDIO_EXTS,
+)
+from x_diffusers.adaptor.config import H3_REFERENCE_LIMITS as LIMITS
+from x_diffusers.adaptor.config import H3_REFERENCE_MAX_FILES as MAX_FILES
+from x_diffusers.adaptor.validation import h3_reference_conditioning as reference_conditioning
 from x_diffusers.adaptor.load_pipe import load_pipe, load_v2v_pipe, update_pipe, pipe_to_device, load_seedvr2_pipe, update_lora
 from x_diffusers.adaptor.infer_tools import InferenceManager, GUIDANCE_SCALE_MAP
 from x_diffusers.framework.vae.wan import vfi
@@ -431,20 +442,20 @@ class VideoInferenceManager:
     def initialize_pipe(self, args):
         if (getattr(args, 'h3_condition_overlap', False)
                 or getattr(self, '_h3_condition_overlap_key', (False,))[0]):
-            from x_diffusers.adaptor.h3_condition_overlap import validate_manager
+            from x_diffusers.adaptor.validation import validate_h3_overlap_manager as validate_manager
             validate_manager(self, args, device_type())
-        from x_diffusers.adaptor.h3_cuda_options import needs_resolution
+        from x_diffusers.adaptor.validation import h3_needs_resolution as needs_resolution
         if (needs_resolution(args)
                 or getattr(self, "_h3_cuda_precision_key", None) in ("fp8-bf16", "fp8-sage")):
-            from x_diffusers.adaptor.h3_cuda_precision import validate_manager
+            from x_diffusers.adaptor.validation import validate_h3_manager as validate_manager
 
             validate_manager(self, args, device_type())
         if (getattr(args, 'h3_attention', 'legacy') != 'legacy' or
                 getattr(getattr(self, 'init_args', None), 'h3_attention', 'legacy') != 'legacy'):
-            from x_diffusers.adaptor.h3_attention_service import validate_manager
+            from x_diffusers.adaptor.validation import validate_h3_attention_manager as validate_manager
             validate_manager(self, args)
         if getattr(args, 'h3_refiner', False):
-            from x_diffusers.adaptor.h3_refiner import prepare
+            from x_diffusers.adaptor.load_pipe import prepare_h3_refiner as prepare
             return prepare(self, args)
         if getattr(self, '_h3_refiner_key', None) is not None:
             raise ValueError('Restart the service to disable H3 Refiner and restore the legacy backend')
@@ -466,24 +477,11 @@ class VideoInferenceManager:
         rank = dist.get_rank() if dist.is_initialized() else 0
         logger.info(f"[Rank {rank}] Loading pipe for {model_name}...")
         
-        self.pipe = load_pipe(args)
+        from x_diffusers.adaptor.load_pipe import PipelineBuildOptions
+        self.pipe = load_pipe(args, build_options=PipelineBuildOptions(
+            lora_after_setup=True, fsdp_for_lora="text_encoder", fuse_lora=False,
+            lora_transformer_list=getattr(args, 'lora_transformer_list', None)))
 
-        if args.lora_path_list:
-            args.fsdp = "text_encoder"
-            update_pipe(self.pipe, args)
-            update_lora(
-                self.pipe,
-                args.model,
-                None,
-                args.lora_path_list,
-                fuse_lora=False,
-                weights_list=args.lora_scale_weight_list,
-                lora_transformer_list=args.lora_transformer_list
-            )
-        else:
-            update_pipe(self.pipe, args)
-        self.pipe = pipe_to_device(self.pipe, args)
-        
         logger.info(f"[Rank {rank}] Setting return_output=True for VAE")
         self.pipe.vae.return_output = True
         if hasattr(self.pipe, 'video_processor'):
@@ -519,9 +517,9 @@ class VideoInferenceManager:
     # MiniMax-H3 inference (ModularPipeline — joint video + audio)
     # ------------------------------------------------------------------
 
-    _MMH3_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-    _MMH3_VIDEO_EXTS = {".mp4", ".avi", ".mov", ".webm", ".mkv"}
-    _MMH3_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".aac", ".ogg"}
+    _MMH3_IMAGE_EXTS = H3_REFERENCE_IMAGE_EXTS
+    _MMH3_VIDEO_EXTS = H3_REFERENCE_VIDEO_EXTS
+    _MMH3_AUDIO_EXTS = H3_REFERENCE_AUDIO_EXTS
 
     @staticmethod
     def _mmh3_videos_to_numpy(videos):
@@ -573,42 +571,9 @@ class VideoInferenceManager:
         return need_sr, None, None
 
     def _mmh3_build_infer_params(self, args):
-        """Build inference parameters dict for MiniMax-H3."""
-        infer_params = {
-            "prompt": args.prompt,
-            "height": args.height,
-            "width": args.width,
-            "num_frames": args.frames,
-            "num_inference_steps": schedule_points(args.num_inference_steps, getattr(args, "adaln_cache_file", None)),
-            "generator": torch.Generator().manual_seed(args.seed),
-        }
-        if getattr(args, "keyframe_image", ""):
-            infer_params["image"] = load_image(args.keyframe_image)
-        if getattr(args, "keyframe_last_image", ""):
-            infer_params["last_image"] = load_image(args.keyframe_last_image)
-        return infer_params
+        from x_diffusers.adaptor.h3_runtime import build_video_parameters
 
-    def _mmh3_load_references(self, ref_paths):
-        """Load reference media for MiniMax-H3 ref2va."""
-        if not ref_paths:
-            return None
-        from diffusers.modular_pipelines.minimax_h3 import (
-            MiniMaxH3ImageReference,
-            MiniMaxH3VideoReference,
-            MiniMaxH3AudioReference,
-        )
-        references = []
-        for path in ref_paths:
-            ext = os.path.splitext(path)[1].lower()
-            if ext in self._MMH3_IMAGE_EXTS:
-                references.append(MiniMaxH3ImageReference.from_file(path))
-            elif ext in self._MMH3_VIDEO_EXTS:
-                references.append(MiniMaxH3VideoReference.from_file(path))
-            elif ext in self._MMH3_AUDIO_EXTS:
-                references.append(MiniMaxH3AudioReference.from_file(path))
-            else:
-                logger.warning(f"Unknown reference media type for: {path}, skipping")
-        return references if references else None
+        return build_video_parameters(args)
 
     def _mmh3_setup_attention(self, args):
         """Setup attention optimization for MiniMax-H3."""
@@ -640,80 +605,6 @@ class VideoInferenceManager:
 
         MiniMaxH3LoopDenoiser.__call__ = _patched_call
         return True, _orig_call
-
-    @staticmethod
-    def _probe_video_has_audio(path: str) -> bool:
-        """Quick probe: does this video file have an audio stream?
-
-        Matches the denoiser's behavior: _decode_video_file extracts audio
-        iff container.streams.audio is non-empty, regardless of enable_audio.
-        """
-        try:
-            import av
-            with av.open(path) as container:
-                return len(container.streams.audio) > 0
-        except Exception:
-            return False
-
-    def _mmh3_switch_adaln_cache(self, args, transformer, ref_paths, rank):
-        """Switch AdaLN cache conditioning_type if needed."""
-        adaln_cache_file = getattr(args, "adaln_cache_file", None)
-        if not adaln_cache_file or transformer is None:
-            return
-        _cache = getattr(transformer, "_adaln_cache", None)
-        if _cache is None:
-            return
-        logger.debug(f"[Rank {rank}] _mmh3_switch_adaln_cache: "
-                     f"ref_paths={ref_paths}, "
-                     f"args.reference_paths={getattr(args, 'reference_paths', 'MISSING')}, "
-                     f"args.keyframe_image={getattr(args, 'keyframe_image', None)}, "
-                     f"args.keyframe_last_image={getattr(args, 'keyframe_last_image', None)}, "
-                     f"args.enable_audio={getattr(args, 'enable_audio', None)}, "
-                     f"task_type={getattr(args, 'task_type', None)}")
-        # conditioning_type must match the constant timesteps that the
-        # denoiser injects via build_row_timesteps():
-        #   - 0.999 (keyframe_noise_aug) is present iff there are video
-        #     condition rows (first_frame, last_frame, or ref media).
-        #   - 1.0 is present iff there are audio reference rows, which
-        #     happens when ref_paths contains a video file with an audio
-        #     stream (the model extracts its audio track) or an audio file.
-        # enable_audio controls audio GENERATION only; it does not affect
-        # audio reference extraction from the video file.
-        _has_video = bool(
-            getattr(args, "keyframe_image", "")
-            or getattr(args, "keyframe_last_image", "")
-        )
-        _has_audio = False
-        if ref_paths:
-            for _p in ref_paths:
-                _ext = os.path.splitext(_p)[1].lower()
-                if _ext in self._MMH3_IMAGE_EXTS:
-                    _has_video = True
-                elif _ext in self._MMH3_VIDEO_EXTS:
-                    _has_video = True
-                    if self._probe_video_has_audio(_p):
-                        _has_audio = True
-                elif _ext in self._MMH3_AUDIO_EXTS:
-                    _has_audio = True
-        _needed_cond = (
-            "both" if (_has_video and _has_audio) else
-            "video" if _has_video else
-            "audio" if _has_audio else
-            "none"
-        )
-        if getattr(transformer, '_h3_cuda_adaln_table', False):
-            from x_diffusers.adaptor.h3_references import select_adaln
-            select_adaln(self.pipe, args, _needed_cond)
-            return
-        if _cache._conditioning_type != _needed_cond:
-            logger.info(f"[Rank {rank}] AdaLN cache conditioning_type "
-                        f"switching: {_cache._conditioning_type} -> {_needed_cond}")
-            from x_base.adaln_cache import install_adaln_cache
-            install_adaln_cache(
-                self.pipe,
-                cache_file=adaln_cache_file,
-                conditioning_type=_needed_cond,
-            )
 
     def _mmh3_cleanup(self, transformer, denoiser_patched, orig_denoiser_call):
         """Cleanup MiniMax-H3 inference: unpatch processors and denoiser."""
@@ -794,7 +685,7 @@ class VideoInferenceManager:
     def _infer_minimax_h3(self, args, task_id=None, task_manager=None):
         """Run MiniMax-H3 joint video + audio generation via ModularPipeline."""
         if getattr(args, 'h3_refiner', False):
-            from x_diffusers.adaptor.h3_refiner import infer
+            from x_diffusers.adaptor.h3_runtime import infer_h3_refiner as infer
             return infer(self, args)
         rank = dist.get_rank() if dist.is_initialized() else 0
 
@@ -804,16 +695,9 @@ class VideoInferenceManager:
         # --- Build inference params ---
         infer_params = self._mmh3_build_infer_params(args)
 
-        # --- Reference conditioning (ref2va) ---
-        ref_paths = getattr(args, "reference_paths", None)
-        references = self._mmh3_load_references(ref_paths)
-        if references:
-            from x_diffusers.adaptor.h3_references import reference_image_resize_mode
+        from x_diffusers.adaptor.h3_runtime import prepare_h3_media
 
-            infer_params["references"] = references
-            mode = reference_image_resize_mode(args)
-            if mode is not None:
-                infer_params["h3_reference_image_resize_mode"] = mode
+        prepare_h3_media(self.pipe, args, infer_params)
 
         # --- Attention optimization ---
         self._mmh3_setup_attention(args)
@@ -821,9 +705,6 @@ class VideoInferenceManager:
         # --- Patch denoiser ---
         transformer = getattr(self.pipe, "transformer", None)
         denoiser_patched, orig_denoiser_call = self._mmh3_patch_denoiser(transformer)
-
-        # --- AdaLN cache conditioning_type switching ---
-        self._mmh3_switch_adaln_cache(args, transformer, ref_paths, rank)
 
         logger.info(f"[Rank {rank}] MiniMax-H3 inference starting (task_type={args.task_type}, "
                     f"steps={args.num_inference_steps}, frames={args.frames}, "
@@ -836,22 +717,9 @@ class VideoInferenceManager:
         try:
             if getattr(args, 'h3_vae_backend', None) == 'native-stream':
                 infer_info._h3_native_frame_limit = args.frames if args.frames == 360 else None
-            if getattr(args, 'h3_attention', 'legacy') != 'legacy':
-                self.pipe.transformer._h3_attention_session.begin(args)
-            from x_diffusers.adaptor.h3_npu_options import request_context
-            condition_context = nullcontext()
-            if getattr(args, 'h3_condition_overlap', False):
-                from x_diffusers.adaptor.h3_condition_overlap import request_context as overlap_context
-                condition_context = overlap_context(self.pipe, args)
+            from x_diffusers.adaptor.h3_runtime import run_video_request
 
-            with (base_temporal_padding(self.pipe, infer_params["num_frames"]),
-                  request_context(transformer), condition_context):
-                if getattr(args, 'h3_cuda_precompute_conditioning', False):
-                    from x_diffusers.adaptor.h3_conditioning import request_conditioning
-                    with request_conditioning(transformer):
-                        result = self.pipe(output=output_keys, **infer_params)
-                else:
-                    result = self.pipe(output=output_keys, **infer_params)
+            result = run_video_request(self.pipe, args, infer_params, output=output_keys)
         finally:
             self._mmh3_cleanup(transformer, denoiser_patched, orig_denoiser_call)
             infer_info._h3_native_frame_limit = None
@@ -1230,7 +1098,7 @@ class VideoGenerationService:
                 file_config = json.load(f)
                 # If loading a MiniMax-H3 config, merge with defaults
                 if file_config.get("model", "").lower() == "minimax-h3":
-                    from x_diffusers.adaptor.h3_features import normalize_mapping
+                    from x_diffusers.adaptor.validation import normalize_h3_mapping as normalize_mapping
                     file_config = normalize_mapping(file_config)
                     config.update(DEFAULT_MINIMAX_H3_CONFIG)
                 config.update(file_config)
@@ -1729,10 +1597,10 @@ class VideoGenerationService:
     def _validate_minimax_h3_params(self, data: Dict[str, Any], errors: List[str], warnings: List[str]) -> tuple:
         """Validate parameters for MiniMax-H3 model (t2va/fl2va/ref2va)."""
         if self.default_config.get('h3_attention', 'legacy') != 'legacy':
-            from x_diffusers.adaptor.h3_attention_service import validate_request as validate_sparse_request
+            from x_diffusers.adaptor.validation import validate_h3_attention_request as validate_sparse_request
             validate_sparse_request(self.default_config, data, errors)
         if self.default_config.get('h3_refiner', False):
-            from x_diffusers.adaptor.h3_refiner_service import validate_request
+            from x_diffusers.adaptor.validation import validate_h3_refiner_request as validate_request
             return validate_request(self, data, errors, warnings)
         prompt = self._validate_prompt(data, errors)
 
@@ -2236,10 +2104,10 @@ class VideoGenerationService:
                     return jsonify(parameter_spec(self.default_config))
                 return jsonify(maas_parameter_spec())
             if self.default_config.get('h3_attention', 'legacy') != 'legacy':
-                from x_diffusers.adaptor.h3_attention_service import parameter_spec as sparse_parameter_spec
+                from x_diffusers.adaptor.validation import h3_attention_parameter_spec as sparse_parameter_spec
                 return jsonify(sparse_parameter_spec(self.default_config))
             if self.default_config.get('h3_refiner', False):
-                from x_diffusers.adaptor.h3_refiner_service import parameter_spec
+                from x_diffusers.adaptor.validation import h3_refiner_parameter_spec as parameter_spec
                 return jsonify(parameter_spec(self.default_config))
             h3_base = 'minimax-h3' in self.default_config.get('model', '').lower()
             step_constraints = {"min": 1, "max": 200}
@@ -2805,8 +2673,8 @@ class VideoGenerationService:
             config['frame_model_path'] = data.get('frame_model_path', TEN_SECOND_CONFIG['frame_model_path'])
 
     def _config_to_arg_list(self, config: Dict[str, Any]) -> List[str]:
-        from x_diffusers.adaptor.h3_cuda_options import BOOL_OPTIONS
-        from x_diffusers.adaptor.h3_features import normalize_mapping
+        from x_diffusers.adaptor.config import H3_CUDA_BOOL_OPTIONS as BOOL_OPTIONS
+        from x_diffusers.adaptor.validation import normalize_h3_mapping as normalize_mapping
         config = normalize_mapping(config)
         excluded_keys = {'external_base_url'}
         arg_list = []
@@ -2914,10 +2782,10 @@ class VideoGenerationService:
             args.seedvr2_model_dir = _mmh3_seedvr2_dir
             args.seedvr2_model_name = _mmh3_seedvr2_name
             if self.default_config.get('h3_refiner', False):
-                from x_diffusers.adaptor.h3_refiner_service import configure_args
+                from x_diffusers.adaptor.validation import configure_h3_refiner_args as configure_args
                 configure_args(self.default_config, data, args)
             if self.default_config.get('h3_attention', 'legacy') != 'legacy':
-                from x_diffusers.adaptor.h3_attention_service import configure_args as configure_sparse_args
+                from x_diffusers.adaptor.validation import configure_h3_attention_args as configure_sparse_args
                 configure_sparse_args(self.default_config, data, args)
             if args.task_type == "ref2va" and data.get("ref_path"):
                 reference_conditioning(args)
@@ -3269,40 +3137,41 @@ class VideoGenerationService:
 
             if self.maas_health and not self.maas_health.model_loaded:
                 self.maas_health = self.maas_health.advance('loading')
-            self.inference_manager.initialize_pipe(args)
-            if self.maas_health:
-                self.maas_health = self.maas_health.advance('generating', model_loaded=True)
+            with refiner_worker_scope(self.inference_manager, args):
+                self.inference_manager.initialize_pipe(args)
+                if self.maas_health:
+                    self.maas_health = self.maas_health.advance('generating', model_loaded=True)
             
-            infer_info.update_info(args)
-            infer_info.save_path = save_path
+                infer_info.update_info(args)
+                infer_info.save_path = save_path
             
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            if maas_task is not None and getattr(args, 'h3_vae_backend', None) == 'native-stream':
-                with tempfile.NamedTemporaryFile(dir=Path(save_path).parent, prefix='.native-', suffix='.mp4', delete=False) as pending:
-                    native_pending = pending.name
-                infer_info.save_path = native_pending
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                if maas_task is not None and getattr(args, 'h3_vae_backend', None) == 'native-stream':
+                    with tempfile.NamedTemporaryFile(dir=Path(save_path).parent, prefix='.native-', suffix='.mp4', delete=False) as pending:
+                        native_pending = pending.name
+                    infer_info.save_path = native_pending
 
-            torch.cuda.synchronize()
-            clock = time.monotonic if maas_task is not None else time.time
-            start_time = clock()
+                torch.cuda.synchronize()
+                clock = time.monotonic if maas_task is not None else time.time
+                start_time = clock()
 
-            output = self.inference_manager.infer_single(args, task_id=task_id, task_manager=self)
+                output = self.inference_manager.infer_single(args, task_id=task_id, task_manager=self)
 
-            torch.cuda.synchronize()
-            infer_time = clock() - start_time
+                torch.cuda.synchronize()
+                infer_time = clock() - start_time
 
             if self.maas_health:
                 self.maas_health = self.maas_health.advance('saving')
             if maas_task is not None:
                 self._publish_maas_task(maas_task, output, save_path, args, infer_time)
                 output = None
-                from x_diffusers.adaptor.h3_memory import release_request_memory
+                from x_diffusers.adaptor.h3_runtime import release_request_memory
                 release_request_memory()
                 return True
             self._save_video(output, save_path, args)
             if "minimax-h3" in args.model.lower():
                 output = None
-                from x_diffusers.adaptor.h3_memory import release_request_memory
+                from x_diffusers.adaptor.h3_runtime import release_request_memory
                 release_request_memory()
             self._complete_task(task_id, save_path, infer_time)
 
@@ -3372,13 +3241,14 @@ class VideoGenerationService:
                         if args.guidance_scale is None or args.guidance_scale_2 is None:
                             args.guidance_scale, args.guidance_scale_2 = GUIDANCE_SCALE_MAP[args.model]
 
-                    self.inference_manager.initialize_pipe(args)
-                    infer_info.update_info(args)
-                    infer_info.save_path = save_path
-                    self.inference_manager.infer_single(args)
-                    if "minimax-h3" in args.model.lower():
-                        from x_diffusers.adaptor.h3_memory import release_request_memory
-                        release_request_memory()
+                    with refiner_worker_scope(self.inference_manager, args):
+                        self.inference_manager.initialize_pipe(args)
+                        infer_info.update_info(args)
+                        infer_info.save_path = save_path
+                        self.inference_manager.infer_single(args)
+                        if "minimax-h3" in args.model.lower():
+                            from x_diffusers.adaptor.h3_runtime import release_request_memory
+                            release_request_memory()
 
             except Exception as e:
                 logger.error(f"[Rank {self.rank}] Worker loop error: {str(e)}", exc_info=True)
@@ -3575,7 +3445,7 @@ def _apply_ten_second_config_args(args) -> None:
 
 def _apply_mmh3_config(service: VideoGenerationService, args, rank: int) -> None:
     """Apply MiniMax-H3 specific command line arguments."""
-    from x_diffusers.adaptor.h3_cuda_options import STARTUP_OPTIONS
+    from x_diffusers.adaptor.config import H3_CUDA_STARTUP_OPTIONS as STARTUP_OPTIONS
     for name in ('h3_vae_backend', 'h3_vae_model_path', 'h3_vae_trust_remote_code', 'h3_reference_image_short_edge'):
         value = getattr(args, name, None)
         if value is not None:
@@ -3686,15 +3556,16 @@ def _apply_service_config(service: VideoGenerationService, args, rank: int) -> N
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Video Generation Service")
-    from x_diffusers.adaptor.h3_refiner_config import add_arguments
+    from x_diffusers.adaptor.config import add_h3_refiner_arguments as add_arguments
     add_arguments(parser)
-    from x_diffusers.adaptor.h3_attention_config import add_arguments as add_h3_attention_arguments
+    from x_diffusers.adaptor.config import add_h3_attention_arguments
     add_h3_attention_arguments(parser, offline=False)
-    from x_diffusers.adaptor.h3_cuda_options import add_arguments as add_cuda_arguments
+    from x_diffusers.adaptor.config import add_h3_cuda_arguments as add_cuda_arguments
     add_cuda_arguments(parser, service=True)
     parser.add_argument('--h3_reference_image_short_edge', type=int, default=None,
                         help='Ref2VA Base fixed reference image short-edge override, 32..2048 in multiples of 32')
-    from x_diffusers.adaptor.h3_references import REFERENCE_RESIZE_MODES, reference_image_resize_mode
+    from x_diffusers.framework.h3_config import REFERENCE_RESIZE_MODES
+    from x_diffusers.adaptor.validation import h3_reference_image_resize_mode as reference_image_resize_mode
     parser.add_argument('--h3_reference_image_resize_mode', choices=REFERENCE_RESIZE_MODES, default=None,
                         help='Ref2VA Base reference image sizing (service default: max)')
 
@@ -3796,7 +3667,7 @@ def main():
     parser.add_argument('--turbo_mode', type=str, default="default", choices=["default", "faiz", "next_faiz"],
                        help="Use different turbo mode inference.")
 
-    from x_diffusers.adaptor.h3_features import add_aliases
+    from x_diffusers.adaptor.config import add_h3_aliases as add_aliases
     add_aliases(parser)
     args = parser.parse_args()
     if args.maas and (args.maas_queue_capacity < 1 or args.maas_queue_timeout_s < 1):
@@ -3815,7 +3686,7 @@ def main():
     preset = args.h3_cuda_preset if args.h3_cuda_preset is not None else startup_config.get('h3_cuda_preset')
     if (args.model or startup_config.get('model')) == 'MiniMax-H3' and device_type() == 'cuda':
         from types import SimpleNamespace
-        from x_diffusers.adaptor.h3_cuda_options import select_default_recipe
+        from x_diffusers.adaptor.validation import select_h3_default_recipe as select_default_recipe
         effective = dict(DEFAULT_MINIMAX_H3_CONFIG, **startup_config)
         explicit = {parser._option_string_actions[token.split('=', 1)[0]].dest
                     for token in sys.argv[1:] if token.split('=', 1)[0] in parser._option_string_actions}
@@ -3827,7 +3698,7 @@ def main():
         select_default_recipe(startup, 'cuda')
         preset = startup.h3_cuda_preset
     if preset not in (None, 'none'):
-        from x_diffusers.adaptor.h3_cuda_options import bootstrap_preset_environment
+        from x_diffusers.adaptor.validation import bootstrap_h3_preset_environment as bootstrap_preset_environment
         bootstrap_preset_environment(preset)
 
     if args.init:
@@ -3844,13 +3715,13 @@ def main():
     
     _apply_service_config(service, args, rank)
     if args.h3_attention != 'legacy' or service.default_config.get('h3_attention', 'legacy') != 'legacy':
-        from x_diffusers.adaptor.h3_attention_service import (
-            apply_startup_settings as apply_sparse_settings, validate_warmup as validate_sparse_warmup)
+        from x_diffusers.adaptor.validation import apply_h3_attention_startup_settings as apply_sparse_settings
+        from x_diffusers.adaptor.validation import validate_h3_attention_warmup as validate_sparse_warmup
         apply_sparse_settings(service.default_config, args, sys.argv[1:])
         validate_sparse_warmup(service.default_config, args.warmup)
 
     if args.h3_refiner:
-        from x_diffusers.adaptor.h3_refiner_service import apply_startup_settings
+        from x_diffusers.adaptor.validation import apply_h3_refiner_startup_settings as apply_startup_settings
         apply_startup_settings(service.default_config, args, sys.argv[1:])
 
     try:
@@ -3869,7 +3740,7 @@ def main():
     if service.default_config.get('h3_refiner', False):
         if args.warmup:
             raise ValueError('H3 Refiner does not use the legacy reduced-step warmup; submit a normal request')
-        from x_diffusers.adaptor.h3_refiner_config import validate_settings
+        from x_diffusers.adaptor.validation import validate_h3_refiner_settings as validate_settings
         validate_settings(service._build_args({}, require_prompt=False))
 
     if args.init:

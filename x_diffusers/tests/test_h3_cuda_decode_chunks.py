@@ -1,4 +1,5 @@
 """Compare the real native temporal loop against bounded CPU storage."""
+from importlib import import_module
 import importlib.util
 from pathlib import Path
 from types import MethodType,SimpleNamespace
@@ -7,10 +8,8 @@ import pytest
 import torch
 from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3
 
-path=Path(__file__).resolve().parents[1]/'x_diffusers/framework/vae/h3_cuda_chunks.py'
-spec=importlib.util.spec_from_file_location('h3_cuda_chunks',path)
-chunks=importlib.util.module_from_spec(spec)
-spec.loader.exec_module(chunks)
+path=Path(__file__).resolve().parents[1]/'x_diffusers/framework/vae/minimax_h3.py'
+chunks = import_module('x_diffusers.framework.vae.minimax_h3')
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')

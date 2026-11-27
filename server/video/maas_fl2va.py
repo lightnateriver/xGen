@@ -8,7 +8,8 @@ import re
 
 from PIL import Image
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
-from x_diffusers.adaptor.h3_refiner_config import H3_MAX_PROMPT_LENGTH, h3_prompt_length
+from x_diffusers.adaptor.validation import H3_MAX_PROMPT_LENGTH
+from x_diffusers.adaptor.validation import h3_prompt_length
 
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024

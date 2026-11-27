@@ -67,7 +67,7 @@ def test_fused_output_avoids_expanded_full_sequence_temporaries():
 
 
 def test_installer_is_opt_in():
-    from x_diffusers.adaptor.h3_cuda import install_dit_fusions
+    from x_diffusers.framework.transformer.minimax_h3 import install_dit_fusions
     model=SimpleNamespace(norm_out=SimpleNamespace())
     install_dit_fusions(model,frozenset())
     assert not hasattr(model.norm_out,'_h3_fused_indexed_affine')

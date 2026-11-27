@@ -1,4 +1,4 @@
-﻿# x_base 开发文档
+# x_base 开发文档
 
 > 基于代码结构和测试单元反向生成的开发文档
 
@@ -507,7 +507,7 @@ pipe = cache_on_pipe(pipe, args)
 
 ## 测试
 
-详见 [单元测试文档](../单元测试.md)。
+详见 [开发检查说明](../docs/ARCHITECTURE.md#validation)。
 
 ---
 

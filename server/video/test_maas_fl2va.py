@@ -18,7 +18,7 @@ from PIL import Image
 from maas_fl2va import FIXED_FIELDS, MAX_BODY_BYTES, MAX_IMAGE_BYTES, validate_startup
 import video_server
 from video_server import VideoGenerationService
-from x_diffusers.adaptor.h3_refiner_config import base_temporal_padding
+from x_diffusers.adaptor.h3_runtime import base_temporal_padding
 
 
 def image_bytes(width=64, height=64, image_format="PNG"):
@@ -179,7 +179,7 @@ class MaaSInputTests(unittest.TestCase):
              patch.object(video_server, "broadcast_dict", return_value={"data": {}, "save_path": "video.mp4"}), \
              patch.object(video_server.dist, "barrier"), patch.object(video_server, "infer_info"), \
              patch.object(self.service, "_build_args", return_value=args), \
-             patch("x_diffusers.adaptor.h3_memory.release_request_memory"):
+             patch("x_diffusers.adaptor.h3_runtime.release_request_memory"):
             self.service._worker_loop()
         self.service.inference_manager.infer_single.assert_called_once_with(args)
         self.assertFalse(path.exists())
@@ -203,7 +203,7 @@ class H3PromptLengthTests(unittest.TestCase):
         self.client = self.service.app.test_client()
 
     def test_utf16_length_matches_javascript_string_length(self):
-        from x_diffusers.adaptor.h3_refiner_config import h3_prompt_length
+        from x_diffusers.adaptor.validation import h3_prompt_length
 
         for text, expected in (('', 0), ('中a\n', 3), ('🙂', 2), ('e\u0301', 2),
                                ('\ud800', 1), ('\ud83d\ude42', 2),
@@ -233,8 +233,8 @@ class H3PromptLengthTests(unittest.TestCase):
                         self.service.tasks.clear()
 
     def test_h3_parameter_specs_and_wan_limit(self):
-        from x_diffusers.adaptor.h3_attention_service import parameter_spec as attention_spec
-        from x_diffusers.adaptor.h3_refiner_service import parameter_spec as refiner_spec
+        from x_diffusers.adaptor.validation import h3_attention_parameter_spec as attention_spec
+        from x_diffusers.adaptor.validation import h3_refiner_parameter_spec as refiner_spec
 
         self.assertEqual(self.client.get('/params').json['parameters']['prompt']['constraints']['max_length'], 7000)
         self.assertEqual(self.client.get('/params').json['parameters']['prompt']['length_unit'], 'utf16_code_units')

@@ -2,9 +2,7 @@
 
 ## 概述
 
-MiniMax-H3 模型中 AdaLN（Adaptive Layer Norm）相关参数占 13.04B（39.4%），
-仅在推理时用于根据 timestep 生成调制参数。由于 timestep schedule 是确定性的，
-这些参数可以离线预计算并缓存，从而在推理时跳过 AdaLN 计算、卸载对应权重。
+固定权重和 timestep schedule 下，MiniMax-H3 AdaLN 的调制结果可以预计算并缓存。推理查表时可跳过对应投影，并从配对模型中剥离已缓存的权重。
 
 本工具提供两个功能，可独立或组合使用：
 
@@ -13,14 +11,6 @@ MiniMax-H3 模型中 AdaLN（Adaptive Layer Norm）相关参数占 13.04B（39.4
 | 预计算缓存 | `--output` | 生成 safetensors 缓存文件，推理时跳过 adaln_proj 计算 |
 | 剥离权重 | `--strip_output` | 从 checkpoint 中删除 AdaLN 相关权重，减小模型体积 |
 
-## 优化效果
-
-| 阶段 | 模型体积 | 缓存体积 | 说明 |
-|------|---------|---------|------|
-| 原始 | ~62 GB | — | 完整权重 |
-| Step 1: 仅缓存 | ~62 GB | ~1.36 GB | 推理时跳过计算，权重仍在 |
-| Step 2: 缓存 + 剥离 | ~36 GB | ~1.36 GB | 卸载 AdaLN 权重，节省显存 |
-
 ## 前置条件
 
 - Python 3.8+
@@ -28,8 +18,7 @@ MiniMax-H3 模型中 AdaLN（Adaptive Layer Norm）相关参数占 13.04B（39.4
 - safetensors
 - diffusers（需支持 `ModularPipeline`、`MiniMaxH3Scheduler`、`enable_group_offload`）
 
-> **资源需求**：单卡即可运行。脚本使用 `enable_group_offload` 将 transformer blocks 保留在 CPU，
-> 每次仅搬 1 个 block（~1.2GB）到 device 计算，峰值显存 ~1.3GB。
+脚本使用 `enable_group_offload` 将 blocks 保留在 CPU，逐块搬到设备计算。需准备足够的 CPU 权重内存和产物磁盘空间，设备内存需求按所用模型与精度检查。
 
 ## 使用方法
 
@@ -120,3 +109,5 @@ tensors per step:
 1. **采样参数必须匹配**：预计算时使用的 `--steps`、`--video_shift`、`--audio_shift` 必须与推理时一致，否则缓存未命中会报错（权重已剥离时无法回退计算）。已有缓存按表内实际执行次数复用，例如旧 51 点表对应 50 步。
 2. **SP 场景**：8 卡 Ulysses SP 下每卡独立加载缓存，无需额外处理。
 3. **剥离权重后**：精简模型目录包含完整的非 AdaLN 权重 + config 文件，可直接用于推理（需配合 `--adaln_cache_file`）。
+
+当前 CUDA/NPU 推荐资产布局和工作流准备集中在 [模型文档](../../docs/H3-MODELS.md)。本页说明底层缓存工具的接口。

@@ -28,12 +28,8 @@ from diffusers.models.transformers.transformer_hunyuan_video import (
     HunyuanVideoPatchEmbed,
     HunyuanVideoTokenRefiner,
     HunyuanVideoConditionEmbedding,
-    HunyuanVideoSingleTransformerBlock,
-    HunyuanVideoTransformerBlock,
     HunyuanVideoTokenReplaceAdaLayerNormZero,
     HunyuanVideoTokenReplaceAdaLayerNormZeroSingle,
-    HunyuanVideoTokenReplaceSingleTransformerBlock,
-    HunyuanVideoTokenReplaceTransformerBlock,
 )
 
 from x_base import (

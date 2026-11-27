@@ -73,7 +73,7 @@ class TestCheckArgsConflict:
 
     def test_vae_lightning_with_sp_equals_one(self, mock_args):
         """Test that vae_lightning is disabled when sp=1."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.vae_lightning = True
         mock_args.sp = 1
@@ -84,7 +84,7 @@ class TestCheckArgsConflict:
 
     def test_vae_lightning_with_sp_greater_than_one(self, mock_args):
         """Test that vae_lightning is not disabled when sp>1."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.vae_lightning = True
         mock_args.sp = 4
@@ -95,7 +95,7 @@ class TestCheckArgsConflict:
 
     def test_t2i_task_frames_adjustment(self, mock_args):
         """Test that frames is set to 1 for t2i task."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.task_type = "t2i"
         mock_args.frames = 121
@@ -106,7 +106,7 @@ class TestCheckArgsConflict:
 
     def test_t2i_task_frames_already_one(self, mock_args):
         """Test that frames remains 1 for t2i task when already 1."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.task_type = "t2i"
         mock_args.frames = 1
@@ -117,7 +117,7 @@ class TestCheckArgsConflict:
 
     def test_fuse_lora_and_matmul_a8w8_conflict(self, mock_args):
         """Test that fuse_lora is disabled when matmul_a8w8 is True."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.fuse_lora = True
         mock_args.matmul_a8w8 = True
@@ -128,7 +128,7 @@ class TestCheckArgsConflict:
 
     def test_joint_without_wan22_i2v(self, mock_args):
         """Test that joint is disabled for non-Wan2.2 I2V."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.joint = True
         mock_args.x = True
@@ -140,7 +140,7 @@ class TestCheckArgsConflict:
 
     def test_joint_with_wan22_i2v_and_x(self, mock_args):
         """Test that joint remains enabled for Wan2.2 I2V with x flag."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.joint = True
         mock_args.x = True
@@ -153,7 +153,7 @@ class TestCheckArgsConflict:
 
     def test_ada_brighten_without_i2v(self, mock_args):
         """Test that ada_brighten is disabled for non-I2V task."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.ada_brighten = True
         mock_args.task_type = "t2v"
@@ -165,7 +165,7 @@ class TestCheckArgsConflict:
 
     def test_ada_brighten_with_i2v(self, mock_args):
         """Test that ada_brighten remains enabled for I2V task."""
-        from x_diffusers.adaptor.load_pipe import check_args_conflict
+        from x_diffusers.adaptor.validation import check_args_conflict
 
         mock_args.ada_brighten = True
         mock_args.task_type = "i2v"

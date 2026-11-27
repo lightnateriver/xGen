@@ -5,7 +5,10 @@ Cache 加速模块工具函数
 """
 from __future__ import annotations
 
-from typing import Dict, Union, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Union, Any, Optional, Tuple
+
+if TYPE_CHECKING:
+    from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
 import torch
 import logging
@@ -284,7 +287,7 @@ def cogvideox_pre_forward(
     attention_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple:
     """CogVideoX 模型前向传播前置处理"""
-    from x_base.sequence_parallelism import set_pad, split_sequence
+    from x_base.sequence_parallelism import set_pad, split_sequence, get_pad
     from diffusers.utils import is_torch_version
     
     lora_scale = pre_forward(self, attention_kwargs)

@@ -38,7 +38,7 @@ class NativeStreamOnlineTests(unittest.TestCase):
         transformer=SimpleNamespace(_h3_cuda_adaln_table=True,_adaln_cache=SimpleNamespace(_conditioning_type='none'))
         manager.pipe=SimpleNamespace(transformer=transformer)
         args=SimpleNamespace(adaln_cache_file='table.safetensors')
-        with patch('x_diffusers.adaptor.h3_references.select_adaln') as selected:
+        with patch('x_diffusers.adaptor.h3_runtime.select_h3_adaln') as selected:
             manager._mmh3_switch_adaln_cache(args,transformer,[],0)
         selected.assert_called_once_with(manager.pipe,args,'none')
 

@@ -35,7 +35,7 @@ def test_cached_http_pipeline_requires_restart_to_enable(backend):
 
 def test_omitted_cli_preserves_startup_json_and_explicit_false_overrides_it():
     import argparse
-    from x_diffusers.adaptor.h3_features import add_aliases
+    from x_diffusers.adaptor.config import add_h3_aliases as add_aliases
     parser=argparse.ArgumentParser()
     add_aliases(parser)
     service=SimpleNamespace(default_config=dict(h3_condition_overlap=True,h3_condition_overlap_timeout=900.))

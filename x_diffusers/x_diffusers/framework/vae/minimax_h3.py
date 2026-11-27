@@ -1,28 +1,887 @@
-"""NPU adaptation for the MiniMax-H3 video and audio VAEs.
+"""H3 video/audio VAE adaptation and decode mechanisms."""
+from __future__ import annotations
 
-The MiniMax-H3 video VAE (``AutoencoderKLMiniMaxH3``) uses causal 3-D
-convolutions with reflect spatial padding and per-frame GroupNorm.  On NPU
-the upstream encode / decode paths work correctly but cannot take advantage
-of VAE parallelism or frame-chunked decoding.  This module patches the VAE
-with NPU-friendly encode / decode entry points that mirror the Wan VAE
-adaptation: tiled / chunked decode with optional VAE-lightning support.
 
-The audio VAE (``AutoencoderKLMiniMaxH3Audio``) is a DAC-lineage 1-D
-convolutional stack that runs efficiently as-is; no adaptation is needed
-beyond ensuring the module is moved to the NPU device.
+# ------------------------------------------------------------------------
+# vae.h3.audio_precision
+# ------------------------------------------------------------------------
 
-Sequence-parallel (SP) mode
----------------------------
-When ``vae_lightning`` is enabled and ``torch.distributed`` is initialised,
-the ViT decoder runs with Ulysses-style sequence parallelism.  Each temporal
-chunk's token sequence is split across ranks; ``all_to_all`` converts between
-sequence-shard and head-shard before / after every attention layer so that the
-attention result is mathematically identical to single-card decode.  This
-replaces the approximate spatial-tiling approach (``VAEManager``) with an
-exact parallel decode — no seams, no blend artifacts.
-"""
+# Keep H3's DAC/BigVGAN audio VAE in FP32 independently of the DiT recipe.
+
+from functools import wraps
+
+import torch
+
+
+def prepare_audio_vae(audio):
+    """Preserve FP32 weights and disable surrounding autocast for audio calls."""
+    audio.float().eval()
+
+    def protect(method):
+        @wraps(method)
+        def call(*args, **kwargs):
+            def fp32(value):
+                return (
+                    value.float()
+                    if isinstance(value, torch.Tensor) and value.is_floating_point()
+                    else value
+                )
+
+            device_type = next(audio.parameters()).device.type
+            with torch.autocast(device_type=device_type, enabled=False):
+                return method(
+                    *(fp32(value) for value in args),
+                    **{name: fp32(value) for name, value in kwargs.items()},
+                )
+
+        return call
+
+    audio.encode = protect(audio.encode)
+    audio.decode = protect(audio.decode)
+
+
+def offload_audio(audio):
+    audio.to(torch.device("cpu"))
+    # Legacy weight_norm caches an unregistered weight tensor. Unused encoder
+    # caches can still be meta placeholders after loading; they carry no data.
+    for child in audio.modules():
+        if (
+            hasattr(child, "weight_g")
+            and hasattr(child, "weight_v")
+            and child.weight.device.type in ("cuda", "npu")
+        ):
+            child.weight = child.weight.to("cpu")
+
+
+# ------------------------------------------------------------------------
+# vae.h3.audio_receptive
+# ------------------------------------------------------------------------
+
+# Native H3 audio convolution/anti-alias receptive-field accounting.
 
 import math
+
+
+
+
+def _conv_span(lo, hi, kernel, stride=1, padding=0, dilation=1, transpose=False):
+    if transpose:
+        return (
+            -((-(lo + padding - dilation * (kernel - 1))) // stride),
+            (hi - 1 + padding) // stride + 1,
+        )
+    return lo * stride - padding, (hi - 1) * stride - padding + dilation * (
+        kernel - 1
+    ) + 1
+
+
+def audio_span(module, lo, hi):
+    """Back-propagate exact convolution/AA receptive intervals, no audio cuts."""
+    name = type(module).__name__
+    if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
+        return _conv_span(
+            lo,
+            hi,
+            module.kernel_size[0],
+            module.stride[0],
+            module.padding[0],
+            module.dilation[0],
+            isinstance(module, torch.nn.ConvTranspose1d),
+        )
+    if isinstance(module, torch.nn.Sequential):
+        for child in reversed(list(module)):
+            lo, hi = audio_span(child, lo, hi)
+        return lo, hi
+    if name in ("MiniMaxH3AudioEncoder", "MiniMaxH3AudioEncoderBlock"):
+        return audio_span(module.block, lo, hi)
+    if name == "MiniMaxH3AudioResidualUnit":
+        a, b = audio_span(module.block, lo, hi)
+        return min(a, lo), max(b, hi)
+    if name == "MiniMaxH3AudioActivation1d":
+        lo, hi = audio_span(module.downsample, lo, hi)
+        return audio_span(module.upsample, lo, hi)
+    if name == "MiniMaxH3AudioDownSample1d":
+        return audio_span(module.lowpass, lo, hi)
+    if name == "MiniMaxH3AudioLowPassFilter1d":
+        return _conv_span(
+            lo, hi, module.filter.shape[-1], module.stride, module.pad_left
+        )
+    if name == "MiniMaxH3AudioUpSample1d":
+        lo, hi = _conv_span(
+            lo + module.pad_left,
+            hi + module.pad_left,
+            module.filter.shape[-1],
+            module.stride,
+            transpose=True,
+        )
+        return lo - module.pad, hi - module.pad
+    if name == "MiniMaxH3AudioAMPBlock":
+        for i in reversed(range(len(module.convs1))):
+            a, b = audio_span(module.convs2[i], lo, hi)
+            a, b = audio_span(module.activations[2 * i + 1], a, b)
+            a, b = audio_span(module.convs1[i], a, b)
+            a, b = audio_span(module.activations[2 * i], a, b)
+            lo, hi = min(lo, a), max(hi, b)
+        return lo, hi
+    if name == "MiniMaxH3AudioBigVGANDecoder":
+        lo, hi = audio_span(module.conv_post, lo, hi)
+        lo, hi = audio_span(module.activation_post, lo, hi)
+        for i in reversed(range(module.num_upsamples)):
+            intervals = [
+                audio_span(module.resblocks[i * module.num_kernels + j], lo, hi)
+                for j in range(module.num_kernels)
+            ]
+            lo, hi = min(a for a, b in intervals), max(b for a, b in intervals)
+            lo, hi = audio_span(module.ups[i][0], lo, hi)
+        return audio_span(module.conv_pre, lo, hi)
+    if name in ("MiniMaxH3AudioSnake1d", "MiniMaxH3AudioSnakeBeta"):
+        return lo, hi
+    raise TypeError("Unhandled receptive field module: " + name)
+
+
+def audio_halos(model):
+    hop = model.hop_length
+    frame = 1000
+    a, b = audio_span(model.encoder, frame, frame + 1)
+    encoder = max(
+        math.ceil((frame * hop - a) / hop), math.ceil((b - (frame + 1) * hop) / hop)
+    )
+    a, b = audio_span(model.decoder, frame * hop, (frame + 1) * hop)
+    a, b = audio_span(model.dec_in_proj, a, b)
+    decoder = max(frame - a, b - frame - 1)
+    return dict(
+        encoder_required=encoder,
+        decoder_required=decoder,
+        encoder_used=math.ceil((encoder + 1) / 4) * 4,
+        decoder_used=math.ceil((decoder + 1) / 4) * 4,
+    )
+
+
+# ------------------------------------------------------------------------
+# vae.h3.parallel
+# ------------------------------------------------------------------------
+
+# Optional reference component parallelism; native H3 inference scheduling stays in charge.
+
+from x_diffusers.framework.h3_config import H3ExecutionOptions
+from contextlib import contextmanager
+
+import logging
+
+import time
+
+
+import torch.distributed as dist
+from x_base.sequence_parallelism.comm import gather_time, partition
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def strict_audio_convolution(device=None):
+    if device is not None and torch.device(device).type != "cuda":
+        yield
+        return
+    previous = torch.backends.cudnn.allow_tf32
+    torch.backends.cudnn.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.backends.cudnn.allow_tf32 = previous
+
+
+def register_encoder_stage(vae, weights, device):
+    """Keep native pipeline.to()/execution-device detection aware of staging.
+
+    Removing the final encoder leaf hooks otherwise makes pipeline.to() move
+    the entire VAE, invalidating the decoder group's buffer-keyed CPU master.
+    H3 calls encode/decode methods, so their wrappers own the stage lifetime.
+    """
+    from diffusers.hooks.group_offloading import (
+        GroupOffloadingConfig,
+        GroupOffloadingType,
+        _apply_group_offloading_hook,
+    )
+
+    config = GroupOffloadingConfig(
+        onload_device=torch.device(device),
+        offload_device=torch.device("cpu"),
+        offload_type=GroupOffloadingType.BLOCK_LEVEL,
+        non_blocking=False,
+        record_stream=False,
+        low_cpu_mem_usage=False,
+        stream=weights.stream,
+    )
+    _apply_group_offloading_hook(vae, weights, config=config)
+
+
+def install_video_encoder(vae, group_getter, device, *, stage_weights=True):
+    from diffusers.hooks.group_offloading import ModuleGroup
+    from x_diffusers.framework.offload import retain_module
+
+    accelerator = torch.get_device_module(torch.device(device).type)
+    cpu = torch.device("cpu")
+    weights = None
+    if stage_weights:
+        retain_module(vae.encoder, cpu)
+        retain_module(vae.quant_conv, cpu)
+        weights = ModuleGroup(
+            modules=[vae.encoder, vae.quant_conv],
+            offload_device=cpu,
+            onload_device=device,
+            offload_leader=vae.encoder,
+            stream=accelerator.Stream(device=device),
+            low_cpu_mem_usage=False,
+        )
+        weights.offload_()
+        register_encoder_stage(vae, weights, device)
+    metrics = dict(
+        calls=0,
+        completed=0,
+        clips=0,
+        local_tiles=0,
+        valid_tiles=0,
+        fallback_clips=0,
+        h2d_seconds=0.0,
+        return_master_seconds=0.0,
+    )
+    original_encode, original_clip = vae.encode, vae._encode_clip
+
+    @wraps(original_clip)
+    def encode_clip(pixels):
+        transport = getattr(vae, "_h3_overlap_transport", None)
+        group = group_getter() if transport is None else transport.group
+        world, rank = dist.get_world_size(group), dist.get_rank(group)
+        if not vae.use_tiling:
+            metrics["fallback_clips"] += 1
+            return original_clip(pixels)
+        ys, hs, yo = vae._split_tiles(
+            pixels.shape[-2],
+            vae.tile_sample_min_height,
+            vae.tile_sample_min_overlap_height,
+        )
+        xs, ws, xo = vae._split_tiles(
+            pixels.shape[-1],
+            vae.tile_sample_min_width,
+            vae.tile_sample_min_overlap_width,
+        )
+        total = len(ys) * len(xs)
+        # Native small/unequal tiles stay native. Every rank takes this same branch.
+        if total < world or len(set(hs)) > 1 or len(set(ws)) > 1:
+            metrics["fallback_clips"] += 1
+            return original_clip(pixels)
+        tasks = list(range(rank, total, world))
+        local = []
+        for task in tasks:
+            i, j = divmod(task, len(xs))
+            local.append(
+                vae.quant_conv(
+                    vae.encoder(
+                        pixels[..., ys[i] : ys[i] + hs[i], xs[j] : xs[j] + ws[j]]
+                    )
+                )
+            )
+        slots, batch = math.ceil(total / world), pixels.shape[0]
+        payload = torch.cat(
+            local + [torch.zeros_like(local[0])] * (slots - len(local)), dim=0
+        ).contiguous()
+        received = [torch.empty_like(payload) for _ in range(world)]
+        if transport is None:
+            dist.all_gather(received, payload, group=group)
+        else:
+            transport.gather(received, payload)
+        tiles = [
+            received[t % world][(t // world) * batch : (t // world + 1) * batch]
+            for t in range(total)
+        ]
+        rows = [tiles[i : i + len(xs)] for i in range(0, total, len(xs))]
+        ratio = vae.spatial_compression_ratio
+        result = vae._stitch_tiles(
+            rows, [v // ratio for v in yo], [v // ratio for v in xo]
+        )
+        metrics["clips"] += 1
+        metrics["local_tiles"] += len(tasks)
+        metrics["valid_tiles"] += total
+        return result
+
+    @wraps(original_encode)
+    def encode(*options, **kwargs):
+        if torch.is_grad_enabled():
+            raise ValueError("H3 parallel VAE encoder is inference-only")
+        metrics["calls"] += 1
+        if weights is None:
+            result = original_encode(*options, **kwargs)
+            metrics["completed"] += 1
+            return result
+        started = time.perf_counter()
+        weights.onload_()
+        accelerator.current_stream(device).wait_stream(weights.stream)
+        weights.stream.synchronize()
+        metrics["h2d_seconds"] += time.perf_counter() - started
+        try:
+            result = original_encode(*options, **kwargs)
+            metrics["completed"] += 1
+            return result
+        finally:
+            started = time.perf_counter()
+            weights.offload_()
+            metrics["return_master_seconds"] += time.perf_counter() - started
+
+    vae._encode_clip, vae.encode = encode_clip, encode
+    vae._h3_encoder_parallel_metrics = metrics
+    vae._h3_encoder_group = weights
+
+
+def install_audio_parallel(
+    audio, group_getter, device, encode_enabled, decode_profile, *, stage_weights=True
+):
+    from diffusers.models.autoencoders.autoencoder_kl_minimax_h3_audio import (
+        MiniMaxH3AudioDiagonalGaussianDistribution,
+        MiniMaxH3AudioEncoderOutput,
+    )
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    halos = audio_halos(audio)
+    metrics = dict(
+        encode_calls=0,
+        encode_parallel=0,
+        decode_calls=0,
+        decode_parallel=0,
+        encoder_halo=halos["encoder_used"],
+        decoder_halo=halos["decoder_used"],
+    )
+    original_encode, original_decode = audio.encode, audio.decode
+
+    @wraps(original_encode)
+    def encode(sample, return_dict=True):
+        metrics["encode_calls"] += 1
+        if sample.ndim != 3 or sample.shape[1] != 1:
+            return original_encode(sample, return_dict=return_dict)
+        hop = audio.hop_length
+        sample = torch.nn.functional.pad(sample, (0, (-sample.shape[-1]) % hop))
+        total, group = sample.shape[-1] // hop, group_getter()
+        if total < dist.get_world_size(group):
+            return original_encode(sample, return_dict=return_dict)
+        if torch.is_grad_enabled():
+            raise ValueError("H3 parallel audio encoder is inference-only")
+        if stage_weights:
+            audio.to(device)
+        try:
+            with (
+                torch.autocast(device_type=torch.device(device).type, enabled=False),
+                strict_audio_convolution(device),
+            ):
+                lo, hi, a, b = partition(total, halos["encoder_used"], group)
+                hidden = audio.encoder(
+                    sample[..., a * hop : b * hop].to(device, torch.float32)
+                )
+                hidden = gather_time(hidden[..., lo - a : hi - a], total, group)
+                hidden = audio.pre_block(hidden.transpose(1, 2)).transpose(1, 2)
+                posterior = MiniMaxH3AudioDiagonalGaussianDistribution(
+                    audio.mean_proj(hidden), audio.logs_proj(hidden)
+                )
+            metrics["encode_parallel"] += 1
+            return (
+                MiniMaxH3AudioEncoderOutput(latent_dist=posterior)
+                if return_dict
+                else (posterior,)
+            )
+        finally:
+            if stage_weights:
+                offload_audio(audio)
+
+    @wraps(original_decode)
+    def decode(latents, return_dict=True):
+        metrics["decode_calls"] += 1
+        # Native video durations include alignment frames (e.g. 405, 603 audio latents).
+        # Limit this opt-in to the 10/15-second operating ranges; 5s stays unchanged.
+        total = latents.shape[-1]
+        metrics["last_decode_latents"] = total
+        if not (400 <= total <= 420 or 600 <= total <= 620):
+            return original_decode(latents, return_dict=return_dict)
+        group = group_getter()
+        with strict_audio_convolution(device):
+            lo, hi, a, b = partition(total, halos["decoder_used"], group)
+            wave = original_decode(latents[..., a:b], return_dict=False)[0]
+            local = wave[..., (lo - a) * audio.hop_length : (hi - a) * audio.hop_length]
+            result = gather_time(local, total, group, unit=audio.hop_length)
+        metrics["decode_parallel"] += 1
+        return DecoderOutput(sample=result) if return_dict else (result,)
+
+    if encode_enabled:
+        audio.encode = encode
+    if decode_profile == "long":
+        audio.decode = decode
+    audio._h3_parallel_metrics = metrics
+
+
+def install_condition_parallel(
+    pipe, options: H3ExecutionOptions, device, *, stage_weights=True
+):
+    def group():
+        manager = getattr(
+            pipe.transformer,
+            "_h3_condition_parallel_manager",
+            getattr(pipe.transformer, "parallel_manager", None),
+        )
+        if (
+            manager is None
+            or manager.sp_group is None
+            or manager.sp_size not in (2, 4, 8)
+        ):
+            raise ValueError(
+                "H3 condition parallelism requires an initialized SP2/4/8 group"
+            )
+        return manager.sp_group
+
+    if getattr(options, "h3_cuda_vision_sp", False):
+        from x_diffusers.framework.h3_encoders import install_vision_sp
+
+        install_vision_sp(pipe.text_encoder.model.visual, group)
+    if getattr(options, "h3_cuda_vae_encoder_parallel", False):
+        install_video_encoder(pipe.vae, group, device, stage_weights=stage_weights)
+    encoder = bool(getattr(options, "h3_cuda_audio_encoder_parallel", False))
+    decoder = getattr(options, "h3_cuda_audio_decoder_parallel", "none")
+    if encoder or decoder != "none":
+        install_audio_parallel(
+            pipe.audio_vae, group, device, encoder, decoder, stage_weights=stage_weights
+        )
+    logger.info(
+        "Experimental H3 condition parallelism: vision=%s video_encoder=%s audio_encoder=%s audio_decoder=%s",
+        getattr(options, "h3_cuda_vision_sp", False),
+        getattr(options, "h3_cuda_vae_encoder_parallel", False),
+        encoder,
+        decoder,
+    )
+
+
+# ------------------------------------------------------------------------
+# vae.h3_compile
+# ------------------------------------------------------------------------
+
+# Optional Torch Compiler integration for the CUDA native H3 VAE decoder.
+
+
+
+
+
+
+
+
+
+def compile_decoder_tile_subgraph(decoder: torch.nn.Module) -> torch.nn.Module:
+    """Compile only the native decoder tile module and preserve its module API.
+
+    The native-stream wrapper performs distributed tile ownership and gather
+    outside this module.  Keeping those collectives in Python avoids compiling
+    the request-level stream choreography.  ``max-autotune-no-cudagraphs`` is
+    deliberate: CUDA Graph capture can retain stale all-gather output buffers
+    across native tile calls.
+    """
+
+    if getattr(decoder, "_xgen_torch_compile_enabled", False):
+        return decoder
+    original = decoder.forward
+    try:
+        compiled = torch.compile(
+            original,
+            dynamic=True,
+            fullgraph=False,
+            mode="max-autotune-no-cudagraphs",
+        )
+    except TypeError as exc:
+        raise RuntimeError(
+            "Torch Compiler for H3 requires a PyTorch build supporting "
+            "mode='max-autotune-no-cudagraphs'"
+        ) from exc
+    decoder._xgen_torch_compile_original_forward = original
+    decoder.forward = compiled
+    decoder._xgen_torch_compile_enabled = True
+    logger.info(
+        "H3 native-stream VAE decoder tile subgraph compiled with Torch Compiler"
+    )
+    return decoder
+
+
+# ------------------------------------------------------------------------
+# vae.h3_cuda_chunks
+# ------------------------------------------------------------------------
+
+# SPDX-License-Identifier: Apache-2.0
+# Bound decoded temporal storage while retaining the native H3 decode loop.
+
+
+
+
+
+
+def rgb8_to_pil(rgb):
+    """Match VideoProcessor's non-normalizing PIL path before the D2H copy."""
+    from PIL import Image
+
+    pixels=(rgb*255).round().to(torch.uint8).permute(0,2,3,4,1).contiguous().cpu().numpy()
+    return [[Image.fromarray(frame) for frame in batch] for batch in pixels]
+
+
+def prepare_decoder_linears(decoder):
+    """Store Linear weights as their FP16 autocast operands; retain other dtypes."""
+    count=0
+    for layer in decoder.modules():
+        if isinstance(layer,torch.nn.Linear):
+            layer.to(dtype=torch.float16)
+            count+=1
+    return count
+
+
+def install_staged_decoder(vae,device,retain_module):
+    """Load the decode half once per video, with native autocast weight rounding."""
+    cpu=torch.device('cpu')
+    retain_module(vae.decoder,cpu)
+    retain_module(vae.post_quant_conv,cpu)
+    prepare_decoder_linears(vae.decoder)
+    from diffusers.hooks.group_offloading import ModuleGroup
+
+    group=ModuleGroup(modules=[vae.decoder,vae.post_quant_conv],offload_device=cpu,
+                      onload_device=torch.device(device),offload_leader=vae.decoder,
+                      stream=torch.cuda.Stream(device=device),low_cpu_mem_usage=False)
+    group.offload_()
+    vae._h3_decoder_group=group
+    native_decode=vae.decode
+
+    @wraps(native_decode)
+    def decode(*values,**kwargs):
+        import time
+        started=time.perf_counter()
+        group.onload_()
+        torch.cuda.current_stream(device).wait_stream(group.stream)
+        group.stream.synchronize()
+        loaded=time.perf_counter()
+        try:
+            return native_decode(*values,**kwargs)
+        finally:
+            unloading=time.perf_counter()
+            group.offload_()
+            vae._h3_decoder_staging={'h2d_seconds':loaded-started,
+                                     'd2h_seconds':time.perf_counter()-unloading}
+    vae.decode=decode
+
+
+def install_cpu_decode_chunks(vae):
+    native_decode=vae._decode
+
+    @wraps(native_decode)
+    def decode(z):
+        native_clip,native_blend=vae._decode_clip,vae._blend
+        clips=0
+        copied_bytes=0
+
+        def clip(*values,**kwargs):
+            nonlocal clips,copied_bytes
+            output=native_clip(*values,**kwargs)
+            clips+=1
+            copied_bytes+=output.numel()*output.element_size()
+            return output.to('cpu')
+
+        def blend(a,b,*values,**kwargs):
+            # Spatial tile stitching still operates on CUDA tensors. Only the
+            # native temporal loop now sees CPU clips; perform its blend on the
+            # original device/dtype so its arithmetic and rounding stay intact.
+            if a.device.type=='cpu' and b.device.type=='cpu':
+                return native_blend(a.to(z.device),b.to(z.device),*values,**kwargs).to('cpu')
+            return native_blend(a,b,*values,**kwargs)
+
+        vae._decode_clip,vae._blend=clip,blend
+        try:
+            return native_decode(z)
+        finally:
+            vae._decode_clip,vae._blend=native_clip,native_blend
+            vae._h3_cpu_decode_stats={'clips':clips,'copied_bytes':copied_bytes}
+
+    vae._decode=decode
+
+
+# ------------------------------------------------------------------------
+# vae.h3_cuda_tiles
+# ------------------------------------------------------------------------
+
+# SPDX-License-Identifier: Apache-2.0
+# Distribute existing H3 spatial decode tiles across the CUDA SP group.
+
+from types import MethodType
+
+
+
+
+
+def install_vae_parallel(vae, manager, *, tile_parallel=False):
+    """Attach the explicit SP manager and optionally parallelize spatial tiles."""
+    heads = vae.decoder.transformer_blocks[0].attn.heads
+    if heads % manager.sp_size:
+        raise ValueError("CUDA H3 VAE attention heads must divide evenly across SP ranks")
+    vae._h3_cuda_vae_parallel = manager
+    if tile_parallel:
+        vae._h3_original_decode_clip = vae._decode_clip
+        vae._decode_clip = MethodType(decode_clip_tiles, vae)
+        vae._h3_cuda_vae_tiles = True
+
+
+def decode_clip_tiles(vae, z):
+    if not vae._h3_cuda_vae_tiles or not vae.use_tiling:
+        return vae._h3_original_decode_clip(z)
+
+    ratio = vae.spatial_compression_ratio
+    y, heights, y_overlap = vae._split_tiles(
+        z.shape[-2] * ratio, vae.tile_sample_min_height, vae.tile_sample_min_overlap_height,
+    )
+    x, widths, x_overlap = vae._split_tiles(
+        z.shape[-1] * ratio, vae.tile_sample_min_width, vae.tile_sample_min_overlap_width,
+    )
+    group = vae._h3_cuda_vae_parallel.sp_group
+    size, rank = dist.get_world_size(group), dist.get_rank(group)
+    num_tiles = len(y) * len(x)
+    tiles = []
+    for start in range(0, num_tiles, size):
+        tile_id = min(start + rank, num_tiles - 1)
+        i, j = divmod(tile_id, len(x))
+        top, left = y[i] // ratio, x[j] // ratio
+        tile = z[..., top:top + heights[i] // ratio, left:left + widths[j] // ratio]
+        local = vae.decoder(vae.post_quant_conv(tile)).contiguous()
+        gathered = [torch.empty_like(local) for _ in range(size)]
+        dist.all_gather(gathered, local, group=group)
+        tiles.extend(gathered[:num_tiles - start])
+
+    rows = [tiles[start:start + len(x)] for start in range(0, num_tiles, len(x))]
+    return vae._stitch_tiles(rows, y_overlap, x_overlap)
+
+
+# ------------------------------------------------------------------------
+# vae.h3_refiner_output
+# ------------------------------------------------------------------------
+
+# Refiner pixel/crop adapter over the existing SaveAVStream codec, not a new encoder.
+from pathlib import Path
+
+
+from x_base.vae_parallelism.audio_utils import save_audio_to_wav
+from x_base.vae_parallelism.save_av_stream import SaveAVStream
+
+
+def refiner_rgb_frames(chunk):
+    """Convert normalized [1,C,T,H,W] Refiner pixels into RGB8 [T,H,W,C]."""
+    if not torch.isfinite(chunk).all():
+        raise ValueError("Nonfinite pixels before video export")
+    mean = chunk.new_tensor([.485, .456, .406]).view(1, 3, 1, 1, 1)
+    std = chunk.new_tensor([.229, .224, .225]).view(1, 3, 1, 1, 1)
+    return ((chunk.float() * std + mean).clamp(0, 1) * 255).round().byte()[0].permute(1, 2, 3, 0)
+
+
+# ------------------------------------------------------------------------
+# vae.omni_decoder
+# ------------------------------------------------------------------------
+
+# SPDX-License-Identifier: Apache-2.0
+# Opt-in native Omni H3 decoder, behind the existing H3 decode block.
+from dataclasses import asdict
+
+
+
+
+import numpy as np
+
+
+
+
+
+
+class OmniH3Decoder:
+    def __init__(self, path, device, *, trust_remote_code=False, fp16_linears=False,
+                 torch_compile=False):
+        from diffusers.hooks.group_offloading import ModuleGroup
+        from x_diffusers.framework._vendor.omni_h3 import MiniMaxH3VideoVAE
+
+        self.device = torch.device(device)
+        self.device_module = torch.get_device_module(self.device.type)
+        self.path = path
+        self.vae = MiniMaxH3VideoVAE(path, device=self.device, load_device=torch.device("cpu"),
+                                   trust_remote_code=trust_remote_code)
+        if fp16_linears:
+            count = prepare_decoder_linears(self.vae.model.decoder)
+            logger.info("H3 native decoder: %d Linear modules stored as FP16 autocast operands", count)
+        self.torch_compile_enabled = bool(torch_compile)
+        if self.torch_compile_enabled:
+            compile_decoder_tile_subgraph(self.vae.model.decoder)
+        # Reuse xGen/Diffusers' CPU-master staging contract. No re-read,
+        # requantization or GPU-to-host weight copy between requests.
+        self.group = ModuleGroup(modules=[self.vae.model], offload_device=torch.device("cpu"),
+                                 onload_device=self.device, offload_leader=self.vae.model,
+                                 stream=self.device_module.Stream(device=self.device), low_cpu_mem_usage=False)
+        self.group.offload_()
+        if dist.is_initialized():
+            self.vae.set_parallel_size(dist.get_world_size(), process_group=dist.group.WORLD)
+        self.audio = None
+        self.sample_rate = None
+        self.metrics = {}
+
+    def decode_step(self, block, pipeline, state):
+        pipeline, state = block.sub_blocks["audio"](pipeline, state)
+        self.audio, self.sample_rate = state.get("audio"), state.get("sampling_rate")
+        try:
+            return block.sub_blocks["video"](pipeline, state)
+        finally:
+            self.audio = self.sample_rate = None
+
+    @torch.no_grad()
+    def decode_video(self, block, pipeline, state):
+        from x_base.utils.infer_info import infer_info
+        from x_diffusers.framework._vendor.omni_h3.chunked_video import ChunkedVideoMP4Session
+        from x_diffusers.framework._vendor.omni_h3.chunked_video import decode_to_mp4
+
+        values = block.get_block_state(state)
+        infer_info._route_b_saved = False
+        if values.output_type == "latent":
+            values.videos = values.latents
+            block.set_block_state(state, values)
+            return pipeline, state
+        started = time.perf_counter()
+        weights_started = None
+        loaded = None
+        session = None
+        succeeded = False
+        try:
+            prepare = getattr(pipeline, "_h3_prepare_video_decode", None)
+            if prepare is not None:
+                prepare()
+            weights_started = time.perf_counter()
+            self.group.onload_()
+            self.group.stream.synchronize()
+            loaded = time.perf_counter()
+            with torch.autocast(self.device.type, dtype=self.vae.decode_dtype):
+                if values.output_type != "pil":
+                    frames = self.vae.decode_latent(values.latents)
+                    if frames.dtype == torch.uint8:
+                        frames = frames.float().div_(255)
+                    values.videos = pipeline.video_processor.postprocess_video(frames, output_type=values.output_type)
+                else:
+                    if values.latents.shape[0] != 1:
+                        raise ValueError("Native-stream H3 file output currently supports one video per request")
+                    audio = self.audio
+                    if audio is not None:
+                        if isinstance(audio, torch.Tensor):
+                            audio = audio.detach().float().cpu().numpy()
+                        audio = np.asarray(audio, dtype=np.float32)
+                        if audio.ndim == 3:
+                            audio = audio[0]
+                        if audio.ndim == 1:
+                            audio = audio[None, :]
+                        if audio.shape[0] > 2 and audio.shape[-1] <= 2:
+                            audio = audio.T
+                        audio = np.ascontiguousarray(audio)
+                    frame_limit = getattr(infer_info, '_h3_native_frame_limit', None)
+                    if frame_limit is not None and audio is not None:
+                        audio = audio[..., :round(frame_limit / infer_info.fps * self.sample_rate)]
+                    height = int(getattr(infer_info, "save_height", 0) or infer_info.height)
+                    width = int(getattr(infer_info, "save_width", 0) or infer_info.width)
+                    session = ChunkedVideoMP4Session(value_range=self.vae.chunk_value_range,
+                        fps=infer_info.fps, audio_waveforms=[audio] if audio is not None else None,
+                        audio_sample_rate=self.sample_rate, batch_frames=17,
+                        video_codec_options={"preset": "fast", "crf": "10", "threads": "0"}, crop=(height, width),
+                        frame_limit=frame_limit)
+                    # Agree on encoder startup before any rank enters tile collectives.
+                    error = None
+                    owner = not dist.is_initialized() or dist.get_rank() == 0
+                    if owner:
+                        try:
+                            session.start(width=width, height=height, batch_size=1)
+                        except BaseException as exc:
+                            error = exc
+                    failed = torch.tensor([int(error is not None)], device=self.device, dtype=torch.int32)
+                    if dist.is_initialized():
+                        dist.broadcast(failed, src=0)
+                    if failed.item():
+                        raise RuntimeError("Native-stream H3 MP4 encoder startup failed") from error
+                    error = None
+                    try:
+                        videos = decode_to_mp4(self.vae, values.latents, session=session)
+                        if owner:
+                            Path(infer_info.save_path).write_bytes(videos[0])
+                    except BaseException as exc:
+                        error = exc
+                    failed.fill_(int(error is not None))
+                    if dist.is_initialized():
+                        dist.all_reduce(failed, op=dist.ReduceOp.MAX)
+                    if failed.item():
+                        raise RuntimeError("Native-stream H3 decode or MP4 publication failed") from error
+                    values.videos = [None]
+                    infer_info._route_b_saved = True
+            succeeded = True
+        except BaseException:
+            logger.exception("H3 native-stream decode failed before cleanup")
+            raise
+        finally:
+            # Always attempt master restoration, even if onload, encoder abort
+            # or device synchronization failed. Keep the original failure.
+            cleanup_error = None
+            for name, cleanup in (
+                ("encoder", session.abort if session is not None else lambda: None),
+                # A failed rank may have peer collectives pending. A global
+                # device sync here can hide its original OOM indefinitely.
+                ("device", lambda: self.device_module.synchronize(self.device) if succeeded else None),
+            ):
+                try:
+                    cleanup()
+                except Exception as exc:
+                    cleanup_error = cleanup_error or exc
+                    logger.exception("H3 VAE %s cleanup failed", name)
+            decoded = time.perf_counter()
+            try:
+                self.group.offload_()
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
+                logger.exception("H3 VAE CPU master restoration failed")
+            if not succeeded or cleanup_error is not None:
+                infer_info._route_b_saved = False
+            transfer = session.transfer_stats() if session is not None else None
+            self.metrics = dict(prepare_seconds=(weights_started or decoded)-started,
+                                h2d_seconds=(loaded or decoded)-(weights_started or decoded),
+                                decode_output_seconds=decoded-loaded if loaded is not None else 0.0,
+                                offload_seconds=time.perf_counter()-decoded,
+                                success=succeeded and cleanup_error is None,
+                                transfer=asdict(transfer) if transfer else None)
+            logger.info("H3 VAE backend=native-stream metrics=%s", self.metrics)
+            if succeeded and cleanup_error is not None:
+                raise cleanup_error
+        block.set_block_state(state, values)
+        return pipeline, state
+
+
+# ------------------------------------------------------------------------
+# vae.minimax_h3
+# ------------------------------------------------------------------------
+
+# NPU adaptation for the MiniMax-H3 video and audio VAEs.
+#
+# The MiniMax-H3 video VAE (``AutoencoderKLMiniMaxH3``) uses causal 3-D
+# convolutions with reflect spatial padding and per-frame GroupNorm.  On NPU
+# the upstream encode / decode paths work correctly but cannot take advantage
+# of VAE parallelism or frame-chunked decoding.  This module patches the VAE
+# with NPU-friendly encode / decode entry points that mirror the Wan VAE
+# adaptation: tiled / chunked decode with optional VAE-lightning support.
+#
+# The audio VAE (``AutoencoderKLMiniMaxH3Audio``) is a DAC-lineage 1-D
+# convolutional stack that runs efficiently as-is; no adaptation is needed
+# beyond ensuring the module is moved to the NPU device.
+#
+# Sequence-parallel (SP) mode
+# ---------------------------
+# When ``vae_lightning`` is enabled and ``torch.distributed`` is initialised,
+# the ViT decoder runs with Ulysses-style sequence parallelism.  Each temporal
+# chunk's token sequence is split across ranks; ``all_to_all`` converts between
+# sequence-shard and head-shard before / after every attention layer so that the
+# attention result is mathematically identical to single-card decode.  This
+# replaces the approximate spatial-tiling approach (``VAEManager``) with an
+# exact parallel decode — no seams, no blend artifacts.
+
+
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -31,13 +890,13 @@ from concurrent.futures import ThreadPoolExecutor
 # Set VAE_COPY_STREAM=1 to enable async D2H on a separate stream.
 _USE_COPY_STREAM = os.environ.get("VAE_COPY_STREAM", "0") == "1"
 
-import torch
+
 from x_base.device import device_type
 
 if device_type() == "npu":
     import torch_npu  # noqa: F401
     from torch_npu.contrib import transfer_to_npu  # noqa: F401
-import numpy as np
+
 
 from diffusers.models.autoencoders import autoencoder_kl_minimax_h3
 from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import (
@@ -51,8 +910,8 @@ from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
 from x_base.vae_parallelism.vae_mgr import VAEManager
 from x_base.vae_parallelism.utils import enable_lightning, add_lightning_init
-from x_base.vae_parallelism.save_av_stream import SaveAVStream
-from x_base.vae_parallelism.audio_utils import save_audio_to_wav
+
+
 from x_base.utils.infer_info import infer_info
 from x_base.sequence_parallelism import (
     all_to_all_before_attn,
@@ -447,7 +1306,7 @@ def _decode_chunks_streaming(vae, z, vae_manager, av_stream, frame_callback=None
                     chunk = vae_manager.collect_out(chunk)
                 decoded_chunks.append(chunk)
                 # Stream frames (rank 0 only, av_stream may be None before integration)
-                if rank == 0 and av_stream is not None:
+                if rank == 0 and (av_stream is not None or frame_callback is not None):
                     if frame_callback is None:
                         _stream_frames_to_av(av_stream, chunk)
                     else:
@@ -460,7 +1319,7 @@ def _decode_chunks_streaming(vae, z, vae_manager, av_stream, frame_callback=None
             overlap = vae_manager.align_out(overlap)
             overlap = vae_manager.collect_out(overlap)
         decoded_chunks.append(overlap)
-        if rank == 0 and av_stream is not None:
+        if rank == 0 and (av_stream is not None or frame_callback is not None):
             if frame_callback is None:
                 _stream_frames_to_av(av_stream, overlap)
             else:
@@ -836,7 +1695,6 @@ def _decode_long_cuda_video(self, pipeline, state):
             frames = frames.to(device)
         rgb = (frames.float() * pixel_std + pixel_mean).clamp(0, 1)
         if cpu_chunks and not getattr(pipeline.video_processor.config,"do_normalize",True):
-            from .h3_cuda_chunks import rgb8_to_pil
 
             processed = rgb8_to_pil(rgb)
         else:

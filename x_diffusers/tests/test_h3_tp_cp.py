@@ -1,14 +1,20 @@
 """Shard-layout and boundary tests complement the real distributed block test."""
+import ast
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 import torch
 
-from x_diffusers.adaptor import h3_parallel
-from x_diffusers.adaptor.h3_parallel_config import H3ParallelConfig, validate_resident_args
-from x_diffusers.adaptor import h3_cuda_precision
-from x_diffusers.framework.transformer.h3_local_io import LocalSpan, prepare_local
+import x_diffusers.framework.transformer.minimax_h3 as h3_parallel
+from x_diffusers.adaptor.validation import H3ParallelConfig
+from x_diffusers.adaptor.validation import validate_h3_resident_args as validate_resident_args
+from x_diffusers.adaptor.validation import resolve_parallel_config
+from x_diffusers.adaptor import validation as h3_cuda_precision
+from x_diffusers.framework.transformer.minimax_h3 import LocalSpan
+from x_diffusers.framework.transformer.minimax_h3 import prepare_local
 
 
 def test_shared_layout_accepts_full_condition_profile_without_changing_sp_defaults():
@@ -19,21 +25,25 @@ def test_shared_layout_accepts_full_condition_profile_without_changing_sp_defaul
         h3_cuda_precompute_conditioning=True,h3_cuda_vision_sp=True,
         h3_cuda_vae_encoder_parallel=True,h3_cuda_audio_encoder_parallel=True,
         h3_cuda_audio_decoder_parallel='long')
-    assert h3_cuda_precision.resolve(args,'cuda')=='fp8-sage'
-    with patch.object(h3_cuda_precision.dist,'is_initialized',return_value=True), \
-         patch.object(h3_cuda_precision.dist,'get_world_size',return_value=8):
-        h3_cuda_precision.validate(args,'cuda')
-    original=H3ParallelConfig.from_args(SimpleNamespace(),'npu',8)
+    assert h3_cuda_precision.resolve_h3_precision(args,'cuda')=='fp8-sage'
+    with patch.object(torch.distributed,'is_initialized',return_value=True), \
+         patch.object(torch.distributed,'get_world_size',return_value=8):
+        h3_cuda_precision.validate_h3_precision(args,'cuda')
+    original=resolve_parallel_config(SimpleNamespace(),'npu',8)
     assert original==H3ParallelConfig()
 
 
 def test_shared_layout_does_not_claim_unused_phaa_transport():
-    from x_diffusers.adaptor.h3_cuda import configure_parallelism
+    path=Path(__file__).resolve().parents[1]/'x_diffusers/adaptor/load_pipe.py'
+    function=next(node for node in ast.parse(path.read_text(encoding='utf-8')).body
+                  if isinstance(node,ast.FunctionDef) and node.name=='configure_h3_parallelism')
+    namespace=dict(os=os,logger=Mock())
+    exec(compile(ast.Module(body=[function],type_ignores=[]),str(path),'exec'),namespace)
     attention=SimpleNamespace()
     model=SimpleNamespace(_h3_parallel_config=H3ParallelConfig('tp_cp_shared',8,8,'fp8','fp8'),
                           transformer_blocks=[SimpleNamespace(attn=attention)])
     with patch.dict('os.environ',{'XGEN_H3_CUDA_VAE_TILES':'0'}):
-        configure_parallelism(SimpleNamespace(transformer=model),SimpleNamespace(h3_cuda_vae_sp=False))
+        namespace['configure_h3_parallelism'](SimpleNamespace(transformer=model),SimpleNamespace(h3_cuda_vae_sp=False))
     assert not hasattr(attention,'_h3_phaa_fp8')
 
 
@@ -87,7 +97,7 @@ def test_reference_audio_staging_always_returns_cpu(fails):
     audio=Mock()
     audio.encode=Mock(side_effect=RuntimeError('encode failed')) if fails else Mock(return_value='encoded')
     pipe=SimpleNamespace(audio_vae=audio)
-    with patch.object(h3_cuda_precision,'offload_audio') as offload:
+    with patch('x_diffusers.framework.vae.minimax_h3.offload_audio') as offload:
         h3_parallel.stage_reference_audio(pipe,'cuda:0')
         if fails:
             with pytest.raises(RuntimeError,match='encode failed'): audio.encode('input')
@@ -101,9 +111,9 @@ def test_resident_service_rejects_transport_changes():
     manager=SimpleNamespace(pipe=object(),_h3_parallel_key=H3ParallelConfig('tp_cp',2,4,'bf16','bf16'))
     args=SimpleNamespace(h3_parallel_mode='tp_cp',h3_dit_tp=2,sp=4,h3_tp_comm='fp8',h3_cp_comm='bf16',
                          h3_cuda_precision='fp8-sage',model='MiniMax-H3',task_type='ref2va',h3_vae_backend='legacy')
-    with patch.object(h3_cuda_precision.dist,'is_initialized',return_value=True),patch.object(h3_cuda_precision.dist,'get_world_size',return_value=8):
+    with patch.object(torch.distributed,'is_initialized',return_value=True),patch.object(torch.distributed,'get_world_size',return_value=8):
         with pytest.raises(ValueError,match='Restart the service'):
-            h3_cuda_precision.validate_manager(manager,args,'cuda')
+            h3_cuda_precision.validate_h3_manager(manager,args,'cuda')
 
 
 def test_invalid_packed_index_is_not_silently_filtered():
@@ -117,7 +127,7 @@ def test_invalid_packed_index_is_not_silently_filtered():
 @torch.no_grad()
 @pytest.mark.parametrize('peers,rank',[(1,0),(8,0),(8,1),(8,7),(4,3)])
 def test_local_io_reuses_only_fixed_conditions_across_steps(peers,rank):
-    from x_diffusers.adaptor.h3_conditioning import request_conditioning
+    from x_diffusers.framework.transformer.minimax_h3 import request_conditioning
 
     model=SimpleNamespace(parallel_manager=SimpleNamespace(sp_size=peers,sp_rank=rank,sp_group=object()),
         context_embedder=torch.nn.Linear(4,8),token_refiner=torch.nn.Linear(8,8),
@@ -129,7 +139,7 @@ def test_local_io_reuses_only_fixed_conditions_across_steps(peers,rank):
     indices=(torch.tensor([0,3]),torch.tensor([1,4]),torch.tensor([2]))
     def run(step):
         return prepare_local(model,video+step,audio-step,text,positions,*indices)[0]
-    with patch('x_diffusers.framework.transformer.h3_local_io.set_pad'):
+    with patch('x_diffusers.framework.transformer.minimax_h3.set_pad'):
         expected=[run(step) for step in range(20)]
         assert len(calls)==20
         calls.clear();model._h3_precompute_conditioning=True
@@ -143,8 +153,16 @@ def test_local_io_reuses_only_fixed_conditions_across_steps(peers,rank):
 
 
 def test_resident_manager_reuses_fl2va_but_reloads_ref2va():
-    from x_diffusers import InferenceManager
-    manager=InferenceManager()
+    # Exercise the actual manager contract without package-level GPU patch
+    # registration or unrelated video codecs in this CPU-only test.
+    path = Path(__file__).resolve().parents[1] / 'x_diffusers/adaptor/infer_tools.py'
+    manager_class = next(node for node in ast.parse(path.read_text(encoding='utf-8')).body
+                         if isinstance(node, ast.ClassDef) and node.name == 'InferenceManager')
+    manager_class.body = [node for node in manager_class.body if isinstance(node, ast.FunctionDef)
+                          and node.name in ('__init__', 'check_abilities_args_consistent')]
+    namespace = {'dist': torch.distributed, 'logger': Mock()}
+    exec(compile(ast.Module(body=[manager_class], type_ignores=[]), str(path), 'exec'), namespace)
+    manager=namespace['InferenceManager']()
     values=dict(h3_parallel_mode='tp_cp',task_type='t2va',model='MiniMax-H3',
                 pretrained_model_name_or_path='models/h3',fuse_lora=False)
     manager.init_args=SimpleNamespace(**values)
@@ -162,3 +180,19 @@ def test_resident_layout_changes_fail_before_reloading(change):
     validate_resident_args(initial,SimpleNamespace(**(values|dict(task_type='fl2va',frames=362))))
     with pytest.raises(ValueError,match='Restart the manager'):
         validate_resident_args(initial,SimpleNamespace(**(values|change)))
+
+
+def test_h3_fp8_adapter_preserves_full_tensor_scale_and_partition_bytes():
+    from x_base.tensor_parallelism.projections import shard_fused_tensor
+    original = torch.nn.Linear(64, 192, dtype=torch.bfloat16)
+    with torch.no_grad():
+        original.weight.copy_(torch.linspace(-2, 3, 192 * 64).reshape(192, 64))
+    scale = (original.weight.float().abs().amax() / 448).clamp_min(torch.finfo(torch.float32).tiny)
+    for rank in (0, 1):
+        manager = SimpleNamespace(tp_group=object(), tp_size=2, tp_rank=rank)
+        with patch('torch.distributed.get_world_size', return_value=2):
+            layer = h3_parallel.shard_projection(original, manager, column=True, parts=3, fp8=True)
+        expected = shard_fused_tensor(original.weight, axis=0, rank=rank, world_size=2, parts=3)
+        quantized = (expected.float() / scale).clamp(-448, 448).to(torch.float8_e4m3fn)
+        assert torch.equal(layer.weight_scale, scale)
+        assert torch.equal(layer.weight.view(torch.uint8), quantized.view(torch.uint8))

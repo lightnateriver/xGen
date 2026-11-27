@@ -987,3 +987,24 @@ def batch_func(func, *args):
             batch.append(arg)
     
     return batch
+
+
+def gather_time(local, total, group, unit=1):
+    """Uneven temporal partitions: pad transport only, never add modeled frames."""
+    world = dist.get_world_size(group)
+    sizes = [
+        (total * (i + 1) // world - total * i // world) * unit for i in range(world)
+    ]
+    width = max(sizes)
+    payload = torch.nn.functional.pad(local, (0, width - local.shape[-1])).contiguous()
+    received = [torch.empty_like(payload) for _ in range(world)]
+    dist.all_gather(received, payload, group=group)
+    return torch.cat(
+        [tensor[..., :size] for tensor, size in zip(received, sizes)], dim=-1
+    )
+
+
+def partition(total, halo, group):
+    world, rank = dist.get_world_size(group), dist.get_rank(group)
+    lo, hi = total * rank // world, total * (rank + 1) // world
+    return lo, hi, max(0, lo - halo), min(total, hi + halo)

@@ -1,7 +1,7 @@
 """CPU checks for H3 request-boundary cleanup without loading model weights."""
+from importlib import import_module
 import ast
 import gc
-import importlib.util
 from pathlib import Path
 import sys
 import time
@@ -12,6 +12,7 @@ import weakref
 
 ROOT = Path(__file__).resolve().parents[2]
 ADAPTOR = ROOT / 'x_diffusers/x_diffusers/adaptor'
+sys.path.insert(0, str(ROOT / 'tools'))
 
 
 def load_method(path, class_name, method_name, namespace):
@@ -40,12 +41,10 @@ class MemoryTests(unittest.TestCase):
                     empty_cache=lambda: events.append('empty'),
                 )
                 torch = SimpleNamespace(get_device_module=Mock(return_value=accelerator))
-                spec = importlib.util.spec_from_file_location('h3_memory_test', ADAPTOR / 'h3_memory.py')
-                memory = importlib.util.module_from_spec(spec)
-                with patch.dict(sys.modules, {'torch': torch,
-                        'x_base.device': SimpleNamespace(device_type=lambda: backend)}):
-                    spec.loader.exec_module(memory)
-                with (patch.object(memory, 'gc', SimpleNamespace(collect=lambda: events.append('gc'))),
+                memory = import_module('x_diffusers.adaptor.h3_runtime')
+                with (patch.dict(sys.modules, {'torch': torch,
+                        'x_base.device': SimpleNamespace(device_type=lambda: backend)}),
+                      patch.object(memory, 'gc', SimpleNamespace(collect=lambda: events.append('gc'))),
                       patch.object(memory, 'logger') as logger):
                     memory.release_request_memory()
                 self.assertEqual(events, ['gc', 'sync', 'empty', 'sync'])
@@ -62,7 +61,7 @@ class MemoryTests(unittest.TestCase):
                     events.append('saved')
                 release = lambda: events.append('release')
                 manager = SimpleNamespace(_infer_minimax_h3=infer)
-                with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_memory':
+                with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_runtime':
                                              SimpleNamespace(release_request_memory=release)}):
                     method(manager, SimpleNamespace(model='MiniMax-H3', h3_refiner=refiner))
                 self.assertEqual(events, ['saved', 'release'])
@@ -72,7 +71,7 @@ class MemoryTests(unittest.TestCase):
                              {'__package__': 'x_diffusers.adaptor'})
         manager = SimpleNamespace(_infer_minimax_h3=Mock(side_effect=RuntimeError('decode failed')))
         release = Mock()
-        with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_memory':
+        with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_runtime':
                                      SimpleNamespace(release_request_memory=release)}):
             with self.assertRaisesRegex(RuntimeError, 'decode failed'):
                 method(manager, SimpleNamespace(model='MiniMax-H3'))
@@ -104,7 +103,7 @@ class MemoryTests(unittest.TestCase):
                     inference_manager=manager, maas=maas, maas_health=None, _save_video=save, _publish_maas_task=save,
                     _complete_task=lambda *args: events.append('completed'))
                 cleanup = Mock()
-                with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_memory':
+                with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_runtime':
                                              SimpleNamespace(release_request_memory=release),
                                              'maas_media': SimpleNamespace(cleanup=cleanup)}):
                     method(service, 'test', {}, 'test.mp4', maas_task=object() if maas else None)
@@ -125,7 +124,7 @@ class MemoryTests(unittest.TestCase):
             _build_args=lambda *args: SimpleNamespace(model='MiniMax-H3'),
             inference_manager=SimpleNamespace(initialize_pipe=Mock(),
                 infer_single=lambda *args: events.append('generated')))
-        with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_memory':
+        with patch.dict(sys.modules, {'x_diffusers.adaptor.h3_runtime':
                                      SimpleNamespace(release_request_memory=lambda: events.append('release'))}):
             method(service)
         self.assertEqual(events, ['generated', 'release'])

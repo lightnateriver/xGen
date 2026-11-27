@@ -132,103 +132,20 @@ class NPUTurbo:
         return float("NaN")
 
     def apply(self, attention_mode, phaa_split, quant,
-             adaln, adaln_cache_file, adaln_transformer_path,
-             text_tp, rope_fused):
-        """Set global NPU runtime flags.
+              adaln, adaln_cache_file, adaln_transformer_path,
+              text_tp, rope_fused):
+        """Apply the same resolved settings used by the workflow loading hook."""
+        from .env import resolve_runtime_options
+        from .model_hooks import apply_runtime_options
 
-        Overrides X_ATTENTION_MODE, X_PHAA_SPLIT env vars
-        (immediate effect), and X_QUANT, X_ADALN_CACHE_FILE,
-        X_ADALN_TRANSFORMER_PATH env vars (takes effect on next model load).
-        """
-        # --- 1. Attention mode ---
-        from x_base import attention_manager
-
-        attention_manager.disable_sage_attention()
-        attention_manager.disable_laser_attention()
-        attention_manager.disable_rainfusion_attention()
-        attention_manager.disable_sparse_attention()
-
-        if attention_mode == "sageattn":
-            attention_manager.enable_sage_attention()
-        elif attention_mode == "laserattn":
-            attention_manager.enable_laser_attention()
-        elif attention_mode == "rainfusion":
-            attention_manager.enable_rainfusion_attention()
-        elif attention_mode == "sparse":
-            attention_manager.enable_sparse_attention()
-        # "sdpa" = default, all flags already disabled
-
-        # --- 2. PHAA ---
-        # x_base does not export enable_phaa/disable_phaa from __init__.
-        # PHAA globals live in x_base.phaa.globals as ENABLE_PHAA (bool)
-        # and PHAA_SPLIT_NUM (int or None). There is no disable_phaa() —
-        # we set ENABLE_PHAA = False directly.
-        import x_base.phaa.globals as _phaa_globals
-        split_num = int(phaa_split)
-        if split_num > 1:
-            _phaa_globals.ENABLE_PHAA = True
-            _phaa_globals.PHAA_SPLIT_NUM = split_num
-        else:
-            _phaa_globals.ENABLE_PHAA = False
-            _phaa_globals.PHAA_SPLIT_NUM = None
-
-        # --- 3. Quant (takes effect on next model load) ---
-        # When enabled, get_quant() returns 'int8' (reads X_QUANT for mode).
-        # When disabled, get_quant() returns '' (no quantization).
-        from x_comfyui.adaptor.env import set_quant_override
-        set_quant_override(quant == "enable")
-
-        # --- 4. AdaLN cache (takes effect on next model load) ---
-        # When enabled, get_adaln_cache_file() returns the cache file path
-        # (from text input or X_ADALN_CACHE_FILE env var).
-        # Adaln weights are stripped from the state dict during loading,
-        # saving ~26GB.  If adaln_transformer_path is also set, a
-        # pre-stripped checkpoint is loaded from that path instead of
-        # filtering the original state dict.
-        # conditioning_type is auto-detected from the cache file at load time.
-        # When disabled, get_adaln_cache_file() returns None (no cache).
-        from x_comfyui.adaptor.env import (
-            set_adaln_override, set_adaln_cache_file_override,
-            set_adaln_transformer_path_override,
-        )
-        set_adaln_override(adaln == "enable")
-        set_adaln_cache_file_override(
-            adaln_cache_file if adaln_cache_file else None)
-
-        # --- 5. AdaLN transformer path (takes effect on next model load) ---
-        # When non-empty, overrides X_ADALN_TRANSFORMER_PATH env var.
-        # When empty, falls back to env var.
-        # Only takes effect when adaln is enabled.
-        set_adaln_transformer_path_override(
-            adaln_transformer_path if adaln_transformer_path else None)
-
-        # --- 6. Text Encoder TP (takes effect on next model load) ---
-        # When enabled, uses X_TEXT_TP env var for TP size.
-        # When disabled, forces TP size to 0 (disabled).
-        from x_comfyui.adaptor.env import set_text_tp_override
-        set_text_tp_override(text_tp == "enable")
-
-        # --- 7. RoPE fused (immediate effect, global singleton) ---
-        # NOTE: rope_manager is a global singleton — toggling is_rope_fused here
-        # affects ALL models using rope_manager (Wan/Flux/MiniMax-H3).
-        # See plan guardrail G7.
-        from x_base.operator.rope import rope_manager
-        if rope_fused == "enable":
-            rope_manager.enable_rope_fused()
-        else:
-            rope_manager.is_rope_fused = False
-        from x_comfyui.adaptor.env import set_rope_fused_override
-        set_rope_fused_override(rope_fused == "enable")
-
-        logger.info(
-            f"NPUTurbo: attention_mode={attention_mode}, "
-            f"phaa_split={phaa_split}, "
-            f"quant={quant}, adaln={adaln}, "
-            f"adaln_cache_file={adaln_cache_file or '(env)'}, "
-            f"adaln_transformer_path={adaln_transformer_path or '(env)'}, "
-            f"text_tp={text_tp}, "
-            f"rope_fused={rope_fused}"
-        )
+        options = resolve_runtime_options(dict(
+            attention_mode=attention_mode, phaa_split=phaa_split, quant=quant,
+            adaln=adaln, adaln_cache_file=adaln_cache_file,
+            adaln_transformer_path=adaln_transformer_path,
+            text_tp=text_tp, rope_fused=rope_fused,
+        ))
+        apply_runtime_options(options)
+        logger.info("NPUTurbo effective settings: %s", options)
         return ()
 
 

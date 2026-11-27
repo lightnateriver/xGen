@@ -38,7 +38,6 @@ import numpy as np
 import torch
 import torch_npu  # noqa: F401
 
-from x_comfyui.adaptor.env import get_vae_copy_stream
 from x_base.vae_parallelism.save_av_stream import SaveAVStream
 
 logger = logging.getLogger("x_comfyui")
@@ -54,6 +53,7 @@ _pixel_stats_cache: dict = {}
 
 # Async D2H infrastructure (only used when X_VAE_COPY_STREAM=1)
 _copy_stream = None
+_copy_stream_enabled = False
 _write_executor = ThreadPoolExecutor(max_workers=1)
 
 
@@ -77,7 +77,7 @@ def _flush_writes():
 
     No-op when X_VAE_COPY_STREAM is off (sync path writes inline).
     """
-    if not get_vae_copy_stream():
+    if not _copy_stream_enabled:
         return
     _write_executor.submit(lambda: None).result()
 
@@ -96,7 +96,7 @@ def _stream_frames_to_av(av_stream, chunk):
     frames = frames.squeeze(0).permute(1, 2, 3, 0)  # (F, H, W, C)
     frames = (frames * 255).to(torch.uint8)
 
-    if get_vae_copy_stream():
+    if _copy_stream_enabled:
         _stream_frames_async(av_stream, frames)
     else:
         """D2H on compute stream, write frames inline."""
@@ -267,12 +267,14 @@ def _create_vae_manager(vae, z):
     )
 
 
-def patch_vae_classes():
+def patch_vae_classes(*, copy_stream=False):
     """Patch VAE classes for MiniMax-H3 NPU acceleration.
 
     Call this once at import time (from x_comfyui.__init__).
     Silently skips if ComfyUI doesn't have MiniMax-H3 VAE support.
     """
+    global _copy_stream_enabled
+    _copy_stream_enabled = bool(copy_stream)
     try:
         from comfy.ldm.minimax.vae import (
             MiniMaxH3VideoVAE,

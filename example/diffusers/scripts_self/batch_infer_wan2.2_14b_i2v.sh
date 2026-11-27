@@ -20,7 +20,7 @@ torchrun --nproc_per_node=$N_NPUS --master_addr $MASTER_ADDR --master_port $MAST
          --fsdp text_encoder\
          --inf_vram_blocks_num 1 \
          --vae_lightning "decoder" \
-         --batch_test_input_dir aigc_i2v_dataset/ \
+         --batch_input_dir aigc_i2v_dataset/ \
          --width 832 \
          --height 480 \
          --atten sage \

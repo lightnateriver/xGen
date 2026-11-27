@@ -1,4 +1,5 @@
 """Device-transition and error contract without loading an H3 checkpoint."""
+from importlib import import_module
 import importlib.util
 import inspect
 from pathlib import Path
@@ -7,9 +8,8 @@ from unittest.mock import Mock,patch
 import pytest
 import torch
 
-path=Path(__file__).resolve().parents[1]/'x_diffusers/adaptor/h3_cuda_staging.py'
-spec=importlib.util.spec_from_file_location('h3_conditioning_staging_test',path)
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+path=Path(__file__).resolve().parents[1]/'x_diffusers/framework/pipeline/minimax_h3.py'
+module = import_module('x_diffusers.framework.pipeline.minimax_h3')
 
 
 @pytest.mark.parametrize('fails',[False,True])
